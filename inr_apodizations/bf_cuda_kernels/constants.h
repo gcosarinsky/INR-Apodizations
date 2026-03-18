@@ -1,0 +1,3 @@
+#define MAX_FIR_SIZE 64
+#define FLT_EPSILON 1.1920929e-7f
+#define PI 3.1415926f
