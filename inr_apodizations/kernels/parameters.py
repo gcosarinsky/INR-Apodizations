@@ -56,7 +56,8 @@ class KernelParametersBase(ABC):
             warnings.warn(
                 (
                     "The following parameters were not provided and default values were used:\n"
-                    f" {missing_text}"
+                    f" {missing_text}\n"
+                    "Please review the default values and provide explicit values if needed.\n"
                 ),
                 stacklevel=2,
             )

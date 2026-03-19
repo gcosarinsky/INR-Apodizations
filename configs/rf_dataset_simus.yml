@@ -4,19 +4,19 @@
 # IMPORTANT: pymust uses meters, Hz, seconds as units, so all parameters are converted to these units in the code.
 # Some values come from PICMUS dataset
 
-probe:
-  pitch: 0.3            # mm
-  element_width: 0.27   # mm
-  element_height: 5     # mm
-  n_elements: 128
-  fc: 5.208             # MHz - center frequency
-  bandwidth: 67         # % bandwidth
+# probe parameters
+pitch: 0.3            # mm
+element_width: 0.27   # mm
+element_height: 5     # mm
+n_elements: 128
+fc: 5.208             # MHz - center frequency
+bandwidth: 67         # % bandwidth
 
-plane_wave_acquisition:
-  fs: 20.832            # MHz - sampling frequency
-  n_pulses: 2.5
-  angles: [-5, 6, 1]    # [start, stop, step] in degrees (np.arange)
-  t_start: 0           # us - start time offset (negative to include earlier echoes)
+# plane wave acquisition parameters
+fs: 20.832            # MHz - sampling frequency
+n_pulses: 2.5
+angles: [-5, 6, 1]    # [start, stop, step] in degrees (np.arange)
+t_start: 0           # us - start time offset (negative to include earlier echoes)
 
 c1: 1.54              # mm/us - speed of sound
 

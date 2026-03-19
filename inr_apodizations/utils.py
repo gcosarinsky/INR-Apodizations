@@ -22,18 +22,16 @@ def cfg_to_must_param(cfg):
     Returns:
         pymust.utils.Param: Parameter object with SI units required by pymust.
     """
-    probe = cfg["probe"]
-    acq = cfg["plane_wave_acquisition"]
 
     param = pymust.utils.Param()
-    param.fs = acq["fs"] * 1e6                    # MHz -> Hz
-    param.fc = probe["fc"] * 1e6                  # MHz -> Hz
-    param.pitch = probe["pitch"] * 1e-3           # mm -> m
-    param.Nelements = probe["n_elements"]
+    param.fs = cfg["fs"] * 1e6                    # MHz -> Hz
+    param.fc = cfg["fc"] * 1e6                  # MHz -> Hz
+    param.pitch = cfg["pitch"] * 1e-3           # mm -> m
+    param.Nelements = cfg["n_elements"]
     param.c = cfg["c1"] * 1e3                     # mm/us -> m/s
-    param.bandwidth = probe["bandwidth"]          # Percent bandwidth
-    param.width = probe["element_width"] * 1e-3   # mm -> m
-    param.height = probe["element_height"] * 1e-3 # mm -> m
+    param.bandwidth = cfg["bandwidth"]          # Percent bandwidth
+    param.width = cfg["element_width"] * 1e-3   # mm -> m
+    param.height = cfg["element_height"] * 1e-3 # mm -> m
     param.radius = np.inf
 
     # Optional linear array element positions:

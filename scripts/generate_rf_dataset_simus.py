@@ -24,10 +24,10 @@ with open(config_file, 'r') as f:
 
 #%%
 param_must = cfg_to_must_param(cfg)
-angles = np.arange(*cfg['plane_wave_acquisition']['angles'])
+angles = np.arange(*cfg['angles'])
 angles = np.deg2rad(angles)
 n_angles = len(angles)
-n_elements = cfg['probe']['n_elements']
+n_elements = cfg['n_elements']
 
 # Dataset parameters from cfg (with defaults)
 n_examples = cfg['dataset_generation'].get('n_examples', 10)
@@ -49,7 +49,7 @@ diagonal = np.hypot(d1, d2) * 1000  # en mm, factor de 0.8 para que no quede muy
 
 # Tiempo para recorrer 2*diagonal (ida y vuelta)
 t_total = 2 * diagonal / cfg['c1']
-n_samples = int(np.ceil(t_total * cfg['plane_wave_acquisition']['fs'] ))
+n_samples = int(np.ceil(t_total * cfg['fs'] ))
 print(f"Estimated n_samples: {n_samples}")
 
 # Prealocar RF array
@@ -113,4 +113,4 @@ if PLOT_RESULTS:
     plt.colorbar(label='Amplitude')
     plt.show()
 
-# %%
+
