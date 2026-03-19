@@ -45,14 +45,21 @@ def cfg_to_must_param(cfg):
 def save_config_yaml(config_path, cfg, extra_params):
     """
     Save configuration and extra parameters to a YAML file.
+    All lists and tuples are saved in flat (flow) style.
 
     Args:
         config_path (Path): Output YAML file path.
         cfg (dict): Main configuration dictionary.
         extra_params (dict): Additional parameters to save.
     """
+    def flat_seq_representer(dumper, data):
+        return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
+
+    yaml.add_representer(list, flat_seq_representer, Dumper=yaml.SafeDumper)
+    yaml.add_representer(tuple, flat_seq_representer, Dumper=yaml.SafeDumper)
+
     config_to_save = dict(cfg)
     config_to_save.update(extra_params)
     with open(config_path, 'w', encoding='utf-8') as f:
-        yaml.dump(config_to_save, f, allow_unicode=True)
+        yaml.dump(config_to_save, f, allow_unicode=True, Dumper=yaml.SafeDumper)
     
