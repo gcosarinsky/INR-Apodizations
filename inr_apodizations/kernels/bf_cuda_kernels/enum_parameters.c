@@ -17,7 +17,7 @@ enum FloatParams {
 enum IntParams {
     TAPS,
     N_BATCH,
-    N_ELEMENTOS,
+    N_ELEMENTS,
     N_CH,
     N_ANGLES,
     NX,

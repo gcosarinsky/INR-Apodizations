@@ -25,7 +25,7 @@ class KernelParametersBase(ABC):
 
     def __init__(self, params_dict):
         self.param_dict = params_dict  # Store original parameters dictionary provided by user
-
+    
         # Ensure required class variables are defined
         required_vars = [
             "user_param_names",
@@ -37,38 +37,21 @@ class KernelParametersBase(ABC):
         for var in required_vars:
             if getattr(self, var) is None:
                 raise NotImplementedError(f"Subclass must define {var}.")
-
+    
         # Check for missing user parameters
         missing = [name for name in self.user_param_names if name not in params_dict]
-        missing_with_defaults = []
-
-        # Fill missing parameters with default values if available
-        for name in missing:
-            if name in self.default_param_values:
-                params_dict[name] = self.default_param_values[name]
-                missing_with_defaults.append((name, self.default_param_values[name]))
-            else:
-                raise ValueError(f"Missing user parameter '{name}' and no default value is defined.")
-
-        # Print a single warning with all missing parameters and their default values
-        if missing_with_defaults:
-            missing_text = ", ".join([f"'{name}': {value}" for name, value in missing_with_defaults])
-            warnings.warn(
-                (
-                    "The following parameters were not provided and default values were used:\n"
-                    f" {missing_text}\n"
-                    "Please review the default values and provide explicit values if needed.\n"
-                ),
-                stacklevel=2,
+        if missing:
+            raise ValueError(
+                f"The following required parameters are missing: {', '.join(missing)}"
             )
-
+    
         # Assign user parameters as attributes
         for name in self.user_param_names:
             setattr(self, name, params_dict[name])
-
+    
         # Ensure blocksize_img is a tuple
         self.blocksize_img = tuple(self.blocksize_img)
-
+    
         # Calculate and set dependent parameters
         self.calculate_dependent_parameters()
 
@@ -146,7 +129,7 @@ class KernelParameters2D(KernelParametersBase):
         "t_start",  # floats
         "taps",
         "n_batch",
-        "n_elementos",
+        "n_elements",
         "n_ch",
         "n_angles",
         "n_samples",  # ints
@@ -172,7 +155,7 @@ class KernelParameters2D(KernelParametersBase):
     kernel_int_names = [
         "taps",
         "n_batch",
-        "n_elementos",
+        "n_elements",
         "n_ch",
         "n_angles",
         "nx",
@@ -197,7 +180,7 @@ class KernelParameters2D(KernelParametersBase):
         "t_start": 0.0,  # us
         "taps": 62,  # Number of taps for bandpass filter
         "n_batch": 0,  # Not used in this case
-        "n_elementos": 128,
+        "n_elements": 128,
         "n_ch": 128,
         "n_angles": 20,
         "n_samples": 1000,
@@ -217,9 +200,9 @@ class KernelParameters2D(KernelParametersBase):
             self.nx // self.blocksize_img[1],
         )
         self.img_shape = (self.nz, self.nx)
-        self.matrix_shape = (self.n_angles, self.n_elementos, self.n_samples)
+        self.matrix_shape = (self.n_angles, self.n_elements, self.n_samples)
         if "x_0" not in self.param_dict:
-            self.x_0 = np.around((self.n_elementos - 1) * self.pitch / 2, decimals=2)
+            self.x_0 = np.around((self.n_elements - 1) * self.pitch / 2, decimals=2)
         else:
             self.x_0 = self.param_dict["x_0"]
 
@@ -287,7 +270,7 @@ class KernelParameters3D(KernelParametersBase):
         "fc",  # floats
         "taps",
         "n_batch",
-        "n_elementos",
+        "n_elements",
         "nel_x",
         "nel_y",
         "n_ch",
@@ -323,7 +306,7 @@ class KernelParameters3D(KernelParametersBase):
     kernel_int_names = [
         "taps",
         "n_batch",
-        "n_elementos",
+        "n_elements",
         "nel_x",
         "nel_y",
         "n_ch",
@@ -356,7 +339,7 @@ class KernelParameters3D(KernelParametersBase):
         "n_batch": 0,  # Not used in this case
         "nel_x": 16,  # Number of elements in x direction
         "nel_y": 8,  # Number of elements in y direction
-        "n_elementos": 128,
+        "n_elements": 128,
         "n_ch": 128,
         "n_waves": 5,
         "n_samples": 1000,
@@ -386,7 +369,7 @@ class KernelParameters3D(KernelParametersBase):
             self.nz // self.blocksize_img[2],
         )
         self.img_shape = (self.nx, self.ny, self.nz)
-        self.matrix_shape = (self.n_waves, self.n_elementos, self.n_samples)
+        self.matrix_shape = (self.n_waves, self.n_elements, self.n_samples)
         if "x_0" not in self.param_dict:
             self.x_0 = np.around((self.nel_x - 1) * self.pitch_x / 2, decimals=decimals)
             self.y_0 = np.around((self.nel_y - 1) * self.pitch_y / 2, decimals=decimals)

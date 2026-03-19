@@ -24,7 +24,7 @@ extern "C" __global__ void pwi_1pix_per_thread(
 
     // Obtener los parámetros enteros y flotantes
     // int_params
-    int nel = int_params[N_ELEMENTOS];
+    int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
     int nx = int_params[NX];
@@ -102,7 +102,7 @@ extern "C" __global__ void pwi_gather_delayed_samples(
 
     // Obtener los parámetros enteros y flotantes
     // int_params
-    int nel = int_params[N_ELEMENTOS];
+    int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
     int nx = int_params[NX];
@@ -178,7 +178,7 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
     if (point_idx >= n_points) return;
 
     // int_params
-    int nel = int_params[N_ELEMENTOS];
+    int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
 

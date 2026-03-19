@@ -23,7 +23,7 @@ extern "C" __global__ void fir_filter(const int *int_params, const short *datain
     // Calcular índices globales del hilo
     int tid = blockIdx.x * blockDim.x + threadIdx.x;  // Índice de thread
 
-    int nel = int_params[N_ELEMENTOS];
+    int nel = int_params[N_ELEMENTS];
     int ns = int_params[N_SAMPLES];
     int taps = int_params[TAPS];
 

@@ -22,22 +22,17 @@ dataset_path = DATA_DIR / "rf_dataset_simus" / cfg['rf_dataset_name']
 rf_config_path = dataset_path / 'config_rf_info.yml'
 with open(rf_config_path, 'r', encoding='utf-8') as f:
     rf_cfg = yaml.safe_load(f)
-cfg['rf_cfg'] = rf_cfg  # Merge RF config into main config 
-# Add params from RF config, they are needed when passing to KernelParameters2D 
-cfg['fs'] = rf_cfg['fs']
-cfg['pitch'] = rf_cfg['pitch']
+cfg.update(rf_cfg)  # Add RF config to main config
 
 # Load RF data and RF config (probe/acquisition params saved with the dataset)
 RF = np.load(dataset_path / 'rf.npy')  # shape: (n_examples, n_angles, n_elements, n_samples)
 scatterers = np.load(dataset_path / 'scatterers.npy', allow_pickle=True)  # list of (n_scatterers, 3)
 
-#%%
-kp = KernelParameters2D(cfg)
-angles = np.arange(*cfg['rf_cfg']['angles'])
+angles = np.arange(*cfg['angles'])
 angles = np.deg2rad(angles)
-print('Replace incorrect values in kp with actual dimensions from RF and angles')
-kp.n_angles = angles.size
-kp.n_samples = RF.shape[-1]
+cfg['n_angles'] = len(angles)  # Add n_angles to config for kernel use
+
+kp = KernelParameters2D(cfg)
 
 n_examples, n_angles, n_elements, n_samples = RF.shape
 nz, nx = kp.nz, kp.nx
@@ -52,8 +47,7 @@ z = np.linspace(kp.roi_effective[2], kp.roi_effective[3], kp.nz)
 x_grid, z_grid = np.meshgrid(x, z)
 
 # filter coefficients (using bf params for filter design, fs from RF config)
-fs = cfg['rf_cfg']['fs']
-bandpass_coef = signal.firwin(cfg['taps'] + 1, [2 * cfg['f1'] / fs, 2 * cfg['f2'] / fs],
+bandpass_coef = signal.firwin(cfg['taps'] + 1, [2 * cfg['f1'] / cfg['fs'], 2 * cfg['f2'] / cfg['fs']],
                               pass_zero=False)
 bandpass_coef_gpu = cp.asarray(bandpass_coef, dtype=cp.float32)
 # Hilbert coefficients
@@ -99,7 +93,7 @@ for idx in range(n_examples):
     RF_imag_gpu = cp.zeros_like(RF_gpu)
     filt_kernel(grid_size, block_size, (int_params, RF_gpu, bandpass_coef_gpu, RF_filt_gpu))
     filt_kernel(grid_size, block_size, (int_params, RF_filt_gpu, hilb_coef_gpu, RF_imag_gpu))
-    delayed_samples_gpu = cp.zeros((kp.n_angles, kp.n_elementos, kp.nz, kp.nx), dtype=cp.complex64)
+    delayed_samples_gpu = cp.zeros((kp.n_angles, kp.n_elements, kp.nz, kp.nx), dtype=cp.complex64)
     pwi_gather_kernel(
         kp.gridsize_img, kp.blocksize_img,
         (int_params, float_params, angles_gpu, RF_filt_gpu, RF_imag_gpu, delayed_samples_gpu)
