@@ -1,0 +1,28 @@
+# Configuration for delayed samples / beamforming computation.
+# These parameters are independent of the RF dataset and can vary between runs.
+# Saved alongside the delayed samples dataset.
+
+# RF input dataset
+rf_dataset_name: "20260319_113609"   # name of the RF dataset to use as input
+
+# Bandpass filter
+f1: 1       # MHz - lower cutoff
+f2: 10      # MHz - upper cutoff
+taps: 62    # FIR filter taps
+
+# Beamforming parameters
+bfd: 2                          # f-number for dynamic focusing (chequear definicion, tal vez esta invertido!)
+x_step: 0.2                     # mm - lateral pixel spacing
+z_step: 0.2                     # mm - axial pixel spacing
+roi_user: [-20, 20, 1, 40]      # [xmin, xmax, zmin, zmax] in mm
+t_start: 0                      # us - start time offset
+
+# CUDA kernel settings
+blocksize_img: [32, 8]
+n_batch: 0
+n_ch: 128
+
+# Dataset generation settings
+target:
+  sigma_x: 0.5    # target size of the point spread function in mm (lateral)
+  sigma_z: 0.5    # target size of the point spread function in mm (axial)

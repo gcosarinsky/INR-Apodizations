@@ -17,6 +17,7 @@ PROCESSED_DATA_DIR = DATA_DIR / "processed"
 EXTERNAL_DATA_DIR = DATA_DIR / "external"
 MODELS_DIR = PROJ_ROOT / "models"
 CONFIGS_DIR = PROJ_ROOT / "configs"
+CUDA_DIR = PROJ_ROOT / "inr_apodizations" / "kernels" / "bf_cuda_kernels"
 REPORTS_DIR = PROJ_ROOT / "reports"
 FIGURES_DIR = REPORTS_DIR / "figures"
 

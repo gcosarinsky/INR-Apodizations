@@ -1,0 +1,163 @@
+#%%
+import matplotlib
+matplotlib.use('TkAgg')  # Use TkAgg backend for matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import cupy as cp
+from pathlib import Path
+from datetime import datetime
+from scipy import signal
+import inr_apodizations.hilbert_coef as hilb
+from inr_apodizations.kernels import KernelParameters2D
+from inr_apodizations.dataset import generate_das_modulated_target
+from inr_apodizations.config import CONFIGS_DIR, DATA_DIR, CUDA_DIR
+import yaml
+
+# Load beamforming config (independent of the RF dataset)
+with open(CONFIGS_DIR / 'delayed_samples_dataset.yml', 'r', encoding='utf-8') as f:
+    cfg = yaml.safe_load(f)
+
+# Load RF dataset config 
+dataset_path = DATA_DIR / "rf_dataset_simus" / cfg['rf_dataset_name']
+rf_config_path = dataset_path / 'config_rf_info.yml'
+with open(rf_config_path, 'r', encoding='utf-8') as f:
+    rf_cfg = yaml.safe_load(f)
+cfg['rf_cfg'] = rf_cfg  # Merge RF config into main config for easy access
+# Add fs from RF config 
+cfg['fs'] = rf_cfg['plane_wave_acquisition']['fs']
+
+# Load RF data and RF config (probe/acquisition params saved with the dataset)
+RF = np.load(dataset_path / 'rf.npy')  # shape: (n_examples, n_angles, n_elements, n_samples)
+scatterers = np.load(dataset_path / 'scatterers.npy', allow_pickle=True)  # list of (n_scatterers, 3)
+
+#%%
+kp = KernelParameters2D(cfg)
+angles = np.arange(*cfg['rf_cfg']['plane_wave_acquisition']['angles'])
+angles = np.deg2rad(angles)
+print('Replace incorrect values in kp with actual dimensions from RF and angles')
+kp.n_angles = angles.size
+kp.n_samples = RF.shape[-1]
+
+n_examples, n_angles, n_elements, n_samples = RF.shape
+nz, nx = kp.nz, kp.nx
+
+# Pre-allocate arrays for delayed samples and targets
+delayed_samples_all = np.zeros((n_examples, n_elements, nz, nx), dtype=np.complex64)
+targets_all = np.zeros((n_examples, nz, nx), dtype=np.float32)
+
+# Prepare grids for target generation
+x = np.linspace(kp.roi_effective[0], kp.roi_effective[1], kp.nx)
+z = np.linspace(kp.roi_effective[2], kp.roi_effective[3], kp.nz)
+x_grid, z_grid = np.meshgrid(x, z)
+
+# filter coefficients (using bf params for filter design, fs from RF config)
+fs = cfg['rf_cfg']['plane_wave_acquisition']['fs']
+bandpass_coef = signal.firwin(cfg['taps'] + 1, [2 * cfg['f1'] / fs, 2 * cfg['f2'] / fs],
+                              pass_zero=False)
+bandpass_coef_gpu = cp.asarray(bandpass_coef, dtype=cp.float32)
+# Hilbert coefficients
+hilb_coef_gpu = cp.asarray(hilb.coef, dtype=cp.float32)
+
+#%% load CUDA code
+codepath = CUDA_DIR
+codefiles = [
+    'constants.h',
+    'enum_parameters.c',
+    'fir_filter.cu',
+    'pwi_1pix_per_thread.cu'
+]
+code = ''
+for codefile in codefiles:
+    with open(codepath / codefile, encoding='utf-8') as f:
+        code += f.read() + '\n'
+
+kp.check_enum_consistency(code)  # Check consistency of enum names with kernel parameters
+module = cp.RawModule(code=code, options=('--use_fast_math',))
+filt_kernel = module.get_function('fir_filter')
+# pwi_kernel = module.get_function('pwi_1pix_per_thread')
+pwi_gather_kernel = module.get_function('pwi_gather_delayed_samples')
+
+int_params = cp.asarray(kp.get_int_array(), dtype=cp.int32)
+float_params = cp.asarray(kp.get_float_array(), dtype=cp.float32)
+angles_gpu = cp.asarray(angles, dtype=cp.float32)
+
+# CUDA filtering parameters
+nblock = 128
+n_ascans = RF.shape[1] * RF.shape[2]
+grid_size = ((n_ascans + nblock - 1) // nblock,)
+block_size = (nblock,)
+
+#%% --- Main Loop: Compute delayed samples and targets ---
+for idx in range(n_examples):
+    print(f'Processing example {idx+1} / {n_examples}')
+    RF_ex = RF[idx]  # shape: (n_angles, n_elements, n_samples)
+    scat = scatterers[idx]
+    # Transfer to GPU for processing
+    RF_gpu = cp.asarray(RF_ex)
+    RF_filt_gpu = cp.zeros_like(RF_gpu)
+    RF_imag_gpu = cp.zeros_like(RF_gpu)
+    filt_kernel(grid_size, block_size, (int_params, RF_gpu, bandpass_coef_gpu, RF_filt_gpu))
+    filt_kernel(grid_size, block_size, (int_params, RF_filt_gpu, hilb_coef_gpu, RF_imag_gpu))
+    delayed_samples_gpu = cp.zeros((kp.n_angles, kp.n_elementos, kp.nz, kp.nx), dtype=cp.complex64)
+    pwi_gather_kernel(
+        kp.gridsize_img, kp.blocksize_img,
+        (int_params, float_params, angles_gpu, RF_filt_gpu, RF_imag_gpu, delayed_samples_gpu)
+    )
+    delayed_samples = cp.asnumpy(delayed_samples_gpu.sum(axis=0))  # sum over angles
+    delayed_samples_all[idx, ...] = delayed_samples  # (n_elements, nz, nx)
+
+    # Uniform DAS image (sum over receive elements) modulated by unit-amplitude Gaussian mask
+    das_uniform = delayed_samples.sum(axis=0)
+    target_img = generate_das_modulated_target(
+        das_uniform,
+        1000 * scat,
+        x_grid,
+        z_grid,
+        sigma_x=cfg['target']['sigma_x'],
+        sigma_z=cfg['target']['sigma_z'],
+    )
+    targets_all[idx] = target_img
+
+cp.cuda.Device().synchronize()  # Ensure all operations are complete
+
+#%% Save results
+output_folder = DATA_DIR / "delayed_samples_dataset" / datetime.now().strftime("%Y%m%d_%H%M%S")
+output_folder.mkdir(parents=True, exist_ok=True)    
+np.save(output_folder / 'delayed_samples_dataset.npy', delayed_samples_all)
+np.save(output_folder / 'targets_dataset.npy', targets_all)
+np.save(output_folder / 'cfg_delayed_samples.npy', cfg)
+
+# Guardar la configuración de beamforming y metadatos en YAML
+info_yaml_path = output_folder / 'delayed_samples_info.yaml'
+info = {
+    'generated': datetime.now().strftime("%Y%m%d_%H%M%S"),
+    'delayed_samples_shape': list(delayed_samples_all.shape),
+    'roi_effective': kp.roi_effective,
+    'rf_dataset': dataset_path.name,
+    'config': cfg,    
+}
+
+with open(info_yaml_path, 'w', encoding='utf-8') as f:
+    yaml.dump(info, f, allow_unicode=True)
+print(f'Delayed samples dataset configuration saved to: {info_yaml_path}')
+
+#%% plot example, do sum over elements
+log_offset = 1e-6  # Pequeño valor para evitar log(0)
+example_idx = 0
+fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+
+# Escala logarítmica para delayed samples
+delayed_samples_log = 20 * np.log10(np.abs(delayed_samples_all[example_idx, ...].sum(axis=0)) /
+                                    np.max(np.abs(delayed_samples_all[example_idx, ...].sum(axis=0))) + log_offset)
+ax[0].imshow(delayed_samples_log, aspect='auto', cmap='gray', extent=kp.get_imshow_extent(), vmin=-60)
+ax[0].set_title('Delayed Samples Log Scale (Example 0)')
+ax[0].set_xlabel('Lateral [m]')
+ax[0].set_ylabel('Axial [m]')
+
+# Escala logarítmica para el target
+targets_log = 20 * np.log10(targets_all[example_idx] / np.max(targets_all[example_idx]) + log_offset)
+ax[1].imshow(targets_log, aspect='auto', cmap='gray', extent=kp.get_imshow_extent(), vmin=-60)
+ax[1].set_title('Target Log Scale (Example 0)')
+
+plt.tight_layout()
+plt.show()
