@@ -194,4 +194,7 @@ cython_debug/
 
 # Visual Studio Code
 INR-Apodizations.code-workspace
+
+# others
 sandbox/figures/
+TODO.md

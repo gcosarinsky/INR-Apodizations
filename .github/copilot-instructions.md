@@ -1,5 +1,8 @@
 # INR-Apodizations - Copilot Instructions
 
+  - INR: Implicit Neural Representations
+  - Apodizations: weighting functions for ultrasound beamforming
+
 ## Idioma y estilo de interacción
 
 - El chat con el usuario debe ser en castellano.
