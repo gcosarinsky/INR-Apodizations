@@ -13,6 +13,7 @@ import tensorflow as tf
 from inr_apodizations.config import DATA_DIR
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.coordinate_manager import CoordinateManager
+from inr_apodizations.utils import find_latest_dataset_folder
 
 from sandbox.apodizations_tf import (
     compute_dynamic_apodizations_tf,
@@ -22,22 +23,12 @@ from sandbox.apodizations_tf import (
 
 plt.ion()  # Interactive mode for plotting
 
-def _find_latest_delayed_folder(base_dir: Path):
-    folder = base_dir / "delayed_samples_dataset"
-    if not folder.exists():
-        raise FileNotFoundError(f"No delayed_samples_dataset folder at {folder}")
-    subdirs = [d for d in folder.iterdir() if d.is_dir()]
-    if not subdirs:
-        raise FileNotFoundError(f"No subfolders in {folder}")
-    latest = max(subdirs, key=lambda p: p.stat().st_mtime)
-    return latest
-
 
 def ensure_fig_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
 
-latest = _find_latest_delayed_folder(DATA_DIR)
+latest = find_latest_dataset_folder(DATA_DIR, "delayed_samples_dataset")
 print(f"Using dataset: {latest}")
 
 cfg_path = latest / 'cfg_delayed_samples.npy'

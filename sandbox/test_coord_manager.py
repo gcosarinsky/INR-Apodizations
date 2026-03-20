@@ -6,7 +6,6 @@ memory usage before and after feature construction.
 
 Code and docstrings in English; test prompts and prints in Spanish.
 """
-from pathlib import Path
 import os
 import time
 import subprocess
@@ -17,17 +16,7 @@ import tensorflow as tf
 from inr_apodizations.config import DATA_DIR
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.coordinate_manager import CoordinateManager
-
-
-def _find_latest_delayed_folder(base_dir: Path):
-    folder = base_dir / "delayed_samples_dataset"
-    if not folder.exists():
-        raise FileNotFoundError(f"No delayed_samples_dataset folder at {folder}")
-    subdirs = [d for d in folder.iterdir() if d.is_dir()]
-    if not subdirs:
-        raise FileNotFoundError(f"No subfolders in {folder}")
-    latest = max(subdirs, key=lambda p: p.stat().st_mtime)
-    return latest
+from inr_apodizations.utils import find_latest_dataset_folder
 
 
 def _get_gpu_memory_tf():
@@ -53,7 +42,7 @@ def _get_gpu_memory_tf():
 
 def test_coordinate_manager_gpu_memory():
     """Basic test: build CoordinateManager features and report VRAM usage."""
-    latest = _find_latest_delayed_folder(DATA_DIR)
+    latest = find_latest_dataset_folder(DATA_DIR, "delayed_samples_dataset")
     print(f"Usando dataset: {latest}")
 
     # Try to load config saved by the dataset creation script

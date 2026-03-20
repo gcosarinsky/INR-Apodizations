@@ -7,37 +7,13 @@ This script:
 4. Runs inference over the full coordinate features grid.
 """
 
-from pathlib import Path
-
 import numpy as np
 import tensorflow as tf
 
 from inr_apodizations.config import DATA_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
-
-
-def find_latest_delayed_folder(base_dir: Path) -> Path:
-    """Return the most recently modified delayed-samples dataset folder.
-
-    Args:
-        base_dir: Base data directory that contains delayed_samples_dataset.
-
-    Returns:
-        Path to the latest delayed-samples subfolder.
-
-    Raises:
-        FileNotFoundError: If the delayed_samples_dataset folder or subfolders do not exist.
-    """
-    delayed_root = base_dir / "delayed_samples_dataset"
-    if not delayed_root.exists():
-        raise FileNotFoundError(f"No delayed_samples_dataset folder at {delayed_root}")
-
-    subfolders = [folder for folder in delayed_root.iterdir() if folder.is_dir()]
-    if not subfolders:
-        raise FileNotFoundError(f"No delayed-samples subfolders found in {delayed_root}")
-
-    return max(subfolders, key=lambda folder: folder.stat().st_mtime)
+from inr_apodizations.utils import find_latest_dataset_folder
 
 
 def build_random_mlp() -> tf.keras.Model:
@@ -59,7 +35,7 @@ def build_random_mlp() -> tf.keras.Model:
     return model
 
 
-latest_folder = find_latest_delayed_folder(DATA_DIR)
+latest_folder = find_latest_dataset_folder(DATA_DIR, "delayed_samples_dataset")
 print(f"Using delayed-samples dataset: {latest_folder}")
 
 cfg_path = latest_folder / "cfg_delayed_samples.npy"

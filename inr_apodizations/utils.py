@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pymust
 import numpy as np
 import yaml
@@ -60,4 +62,28 @@ def save_config_yaml(config_path, cfg, extra_params):
     config_to_save.update(extra_params)
     with open(config_path, 'w', encoding='utf-8') as f:
         yaml.dump(config_to_save, f, allow_unicode=True, Dumper=yaml.SafeDumper)
+
+
+def find_latest_dataset_folder(data_dir: Path, dataset_subdir: str) -> Path:
+    """Return the most recently modified dataset run folder.
+
+    Args:
+        data_dir: Base data directory.
+        dataset_subdir: Dataset parent directory name inside data_dir.
+
+    Returns:
+        Path to the latest dataset run folder.
+
+    Raises:
+        FileNotFoundError: If the dataset directory does not exist or has no subfolders.
+    """
+    dataset_root = data_dir / dataset_subdir
+    if not dataset_root.exists():
+        raise FileNotFoundError(f"No dataset folder found at {dataset_root}")
+
+    subfolders = [folder for folder in dataset_root.iterdir() if folder.is_dir()]
+    if not subfolders:
+        raise FileNotFoundError(f"No dataset subfolders found in {dataset_root}")
+
+    return max(subfolders, key=lambda folder: folder.stat().st_mtime)
     
