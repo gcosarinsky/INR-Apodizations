@@ -1,6 +1,4 @@
 #%%
-import matplotlib
-matplotlib.use('TkAgg')  # Use TkAgg backend for matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import cupy as cp

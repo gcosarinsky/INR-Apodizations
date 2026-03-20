@@ -7,8 +7,6 @@ This script:
 4. Plots four images in dB: uniform, boxcar, hanning, and target.
 """
 
-import matplotlib
-matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
