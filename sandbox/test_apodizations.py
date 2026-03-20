@@ -15,7 +15,7 @@ from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.utils import find_latest_dataset_folder
 
-from sandbox.apodizations_tf import (
+from inr_apodizations.apodizations import (
     compute_dynamic_apodizations_tf,
     extract_map_for_x,
     extract_profile_for_z,

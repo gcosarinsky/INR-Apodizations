@@ -16,8 +16,8 @@ import tensorflow as tf
 from inr_apodizations.config import DATA_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
+from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.utils import find_latest_dataset_folder
-from sandbox.apodizations_tf import compute_dynamic_apodizations_tf
 
 
 def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
