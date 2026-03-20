@@ -1,0 +1,26 @@
+# Copy this file to configs/das_apodizations.yml and edit values as needed.
+
+dataset_subdir: delayed_samples_dataset
+example_idx: 0
+methods: [boxcar, hanning]
+scaled: false
+
+# Apodization plotting slices
+x_fixed: 0.0
+z_fixed: 20.0
+
+# DAS display range (dB)
+vmin_db: -60.0
+vmax_db: 0.0
+normalize_per_image: true
+
+# Output controls
+save: true
+show: true
+save_npy: false
+output_dir: sandbox/figures
+
+# Optional runtime controls
+use_mmap: true
+dpi: 150
+cmap: gray
