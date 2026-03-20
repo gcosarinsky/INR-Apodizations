@@ -39,6 +39,7 @@ nz, nx = kp.nz, kp.nx
 
 # Pre-allocate arrays for delayed samples and targets
 delayed_samples_all = np.zeros((n_examples, n_elements, nz, nx), dtype=np.complex64)
+print(f'Pre-allocated delayed_samples_all with size in MB: {delayed_samples_all.nbytes / (1024*1024)} MB')
 targets_all = np.zeros((n_examples, nz, nx), dtype=np.float32)
 
 # Prepare grids for target generation
