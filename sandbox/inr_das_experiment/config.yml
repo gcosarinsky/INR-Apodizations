@@ -1,0 +1,22 @@
+io:
+  dataset_folder: data/delayed_samples_dataset/20260319_154506
+  processed_root: sandbox/inr_das_experiment/outputs/processed
+  sandbox_output_root: sandbox/inr_das_experiment/outputs
+
+model:
+  hidden_units: 8
+  n_hidden_layers: 3
+  activation: relu
+  output_activation: sigmoid
+  scaled_features: true
+  feature_chunk_size: 262144
+
+training:
+  batch_size: 1
+  epochs: 5
+  learning_rate: 0.001
+  train_fraction: 0.8
+  seed: 42
+  max_examples: null
+  early_stopping_patience: 5
+  reduce_lr_patience: 3
