@@ -1,0 +1,16 @@
+{
+    // Los settings python-envs son para el plugin Python Environments. Los he quitado porque me daban problemas
+    // al ejecutar los scripts 
+
+    "python-envs.pythonProjects": [
+        {
+            "path": ".",
+            "envManager": "ms-python.python:conda",
+            "packageManager": "ms-python.python:conda"
+        }
+    ],
+    
+    "python-envs.terminal.autoActivationType": "shellStartup",
+    
+    "python.terminal.launchArgs": ["-m", "IPython", "-i", "--"],
+}
