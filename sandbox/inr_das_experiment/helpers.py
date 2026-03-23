@@ -12,10 +12,12 @@ import os
 from datetime import datetime
 from typing import Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import yaml
 
+from inr_apodizations.apodizations import extract_map_for_x
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 
@@ -233,3 +235,187 @@ def save_debug_arrays(output_dir: str, arrays: dict[str, np.ndarray]) -> None:
     os.makedirs(output_dir, exist_ok=True)
     for name, array in arrays.items():
         np.save(os.path.join(output_dir, f"{name}.npy"), array)
+
+
+def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
+    """Convert an image magnitude from linear domain to decibels.
+
+    Args:
+        image: Real or complex image in linear domain.
+        ref: Positive reference magnitude used as 0 dB.
+        eps: Small value to avoid numerical instability.
+
+    Returns:
+        NumPy array with image values in dB.
+    """
+    magnitude = np.abs(image)
+    return 20.0 * np.log10((magnitude / (ref + eps)) + eps)
+
+
+def plot_training_curves(history: dict, output_path: str) -> None:
+    """Save a training curve figure from a Keras history dictionary.
+
+    Args:
+        history: Mapping with metric lists, typically ``history.history``.
+        output_path: Path to the output PNG file.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+
+    if "loss" in history:
+        axes[0].plot(history["loss"], label="loss", color="black")
+    if "val_loss" in history:
+        axes[0].plot(history["val_loss"], label="val_loss", color="tab:red")
+    axes[0].set_title("Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("RMSE")
+    axes[0].grid(True, alpha=0.3)
+    if axes[0].lines:
+        axes[0].legend()
+
+    has_rmse = False
+    if "rmse" in history:
+        axes[1].plot(history["rmse"], label="rmse", color="tab:blue")
+        has_rmse = True
+    if "val_rmse" in history:
+        axes[1].plot(history["val_rmse"], label="val_rmse", color="tab:orange")
+        has_rmse = True
+    if has_rmse:
+        axes[1].set_title("RMSE metric")
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("RMSE")
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend()
+    else:
+        axes[1].axis("off")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_das_comparison_db(
+    uniform_image: np.ndarray,
+    inr_before_image: np.ndarray,
+    inr_after_image: np.ndarray,
+    target_image: np.ndarray,
+    output_path: str,
+    extent: tuple[float, float, float, float],
+    cmap: str = "gray",
+    vmin_db: float = -60.0,
+    vmax_db: float = 0.0,
+) -> None:
+    """Save a four-panel DAS comparison in decibels.
+
+    Args:
+        uniform_image: DAS image using uniform apodization.
+        inr_before_image: INR reconstruction before training.
+        inr_after_image: INR reconstruction after training.
+        target_image: Reference target image.
+        output_path: Path to the output PNG file.
+        extent: Matplotlib imshow extent from beamforming geometry.
+        cmap: Colormap used for all panels.
+        vmin_db: Lower dB display bound.
+        vmax_db: Upper dB display bound.
+    """
+    images_linear = {
+        "Uniform": np.asarray(uniform_image),
+        "INR before": np.asarray(inr_before_image),
+        "INR after": np.asarray(inr_after_image),
+        "Target": np.asarray(target_image),
+    }
+    shared_ref = max(float(np.max(np.abs(image))) for image in images_linear.values())
+    images_db = {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
+
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5), sharex=True, sharey=True)
+    first_im = None
+    for idx, (title, image_db) in enumerate(images_db.items()):
+        current_im = axes[idx].imshow(
+            image_db,
+            cmap=cmap,
+            vmin=vmin_db,
+            vmax=vmax_db,
+            extent=extent,
+            aspect="auto",
+        )
+        if first_im is None:
+            first_im = current_im
+        axes[idx].set_title(f"DAS {title} (dB)")
+        axes[idx].set_xlabel("x (mm)")
+        if idx == 0:
+            axes[idx].set_ylabel("z (mm)")
+
+    fig.suptitle("DAS comparison")
+    fig.tight_layout(rect=[0, 0, 0.94, 1])
+    cbar_ax = fig.add_axes([0.95, 0.13, 0.012, 0.74])
+    fig.colorbar(first_im, cax=cbar_ax, label="dB")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_apodization_before_after(
+    cm: CoordinateManager,
+    apod_before: np.ndarray,
+    apod_after: np.ndarray,
+    output_path: str,
+    x_fixed: float = 0.0,
+    scaled: bool = False,
+    cmap: str = "viridis",
+) -> None:
+    """Save a two-panel map comparing apodization before and after training.
+
+    Args:
+        cm: Coordinate manager used to extract geometry coordinates.
+        apod_before: INR weights before training with shape (E, Z, X).
+        apod_after: INR weights after training with shape (E, Z, X).
+        output_path: Path to the output PNG file.
+        x_fixed: Lateral x value used for map extraction.
+        scaled: Whether CoordinateManager scaled coordinates are used.
+        cmap: Colormap used for both maps.
+    """
+    coords = cm.get_coordinates_1d(scaled=scaled)
+    x_elems = np.asarray(coords["x_elem"])
+    z_coords = np.asarray(coords["z"])
+    map_extent = (float(x_elems[0]), float(x_elems[-1]), float(z_coords[-1]), float(z_coords[0]))
+
+    map_before = extract_map_for_x(tf.convert_to_tensor(apod_before), cm, x_fixed=x_fixed, scaled=scaled)
+    map_after = extract_map_for_x(tf.convert_to_tensor(apod_after), cm, x_fixed=x_fixed, scaled=scaled)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharex=True, sharey=True)
+    mb = map_before.numpy()
+    ma = map_after.numpy()
+    vmin = float(min(float(mb.min()), float(ma.min())))
+    vmax = float(max(float(mb.max()), float(ma.max())))
+
+    im0 = axes[0].imshow(
+        mb,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        extent=map_extent,
+        aspect="auto",
+    )
+    axes[0].set_title("Apodization INR before")
+    axes[0].set_xlabel("Element lateral coordinate (mm)")
+    axes[0].set_ylabel("Depth z (mm)")
+
+    im1 = axes[1].imshow(
+        ma,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        extent=map_extent,
+        aspect="auto",
+    )
+    axes[1].set_title("Apodization INR after")
+    axes[1].set_xlabel("Element lateral coordinate (mm)")
+    fig.colorbar(im0, ax=axes[0], label="Weight")
+    fig.colorbar(im1, ax=axes[1], label="Weight")
+
+    fig.suptitle(f"Apodization maps at x={x_fixed:.2f}")
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)

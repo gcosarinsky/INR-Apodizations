@@ -21,6 +21,6 @@ t_start: 0           # us - start time offset (negative to include earlier echoe
 c1: 1.54              # mm/us - speed of sound
 
 dataset_generation:
-  n_examples: 1
+  n_examples: 20
   n_scat: 100             # number of scatterers per example
   roi_simulation: [-22, 22, 1, 42]  # [xmin, xmax, zmin, zmax] in mm

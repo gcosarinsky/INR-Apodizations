@@ -24,3 +24,9 @@ Notes:
 - Main artifacts are saved to `data/processed/inr_das_experiment/<timestamp>/`.
 - A sandbox copy is also saved to `sandbox/inr_das_experiment/outputs/<timestamp>/`.
 - If the dataset has a single example, the script reuses it for validation to keep the sandbox runnable.
+
+Generated plots (saved in the sandbox output run directory):
+- `training_loss.png`: training/validation loss curves (and RMSE metrics when available).
+- `das_images_comparison_db.png`: DAS comparison panel with Uniform, INR before training,
+  INR after training, and Target in shared dB scale.
+- `apodization_map_before_after.png`: apodization maps before and after training at fixed x.

@@ -21,75 +21,7 @@ import numpy as np
 import tensorflow as tf
 
 import helpers
-
-
-def rmse(y_true, y_pred):
-    """Compute RMSE between target and prediction images."""
-    return tf.sqrt(tf.reduce_mean(tf.square(y_true - y_pred)))
-
-
-class DasInrTrainer(tf.keras.Model):
-    """Keras model that wraps the INR and the physical DAS forward."""
-
-    def __init__(self, apodization_model: tf.keras.Model, features_grid: tf.Tensor, feature_chunk_size: int):
-        super().__init__(name="das_inr_trainer")
-        self.apodization_model = apodization_model
-        self.features_flat = tf.reshape(tf.cast(features_grid, tf.float32), (-1, 3))
-        self.n_elem, self.nz, self.nx = [int(dim) for dim in features_grid.shape[:3]]
-        self.feature_chunk_size = int(feature_chunk_size)
-        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
-        self.rmse_tracker = tf.keras.metrics.Mean(name="rmse")
-
-    @property
-    def metrics(self):
-        """Expose tracked metrics to Keras."""
-        return [self.loss_tracker, self.rmse_tracker]
-
-    def predict_weights_grid(self, training: bool = False) -> tf.Tensor:
-        """Run the INR on geometry features and reshape to ``(E, Z, X)``."""
-        n_features = int(self.features_flat.shape[0])
-        predictions = []
-        for start_idx in range(0, n_features, self.feature_chunk_size):
-            end_idx = min(start_idx + self.feature_chunk_size, n_features)
-            chunk_pred = self.apodization_model(self.features_flat[start_idx:end_idx], training=training)
-            predictions.append(chunk_pred)
-
-        weights_flat = tf.concat(predictions, axis=0)
-        weights_grid = tf.reshape(weights_flat, (self.n_elem, self.nz, self.nx))
-        return tf.cast(weights_grid, tf.float32)
-
-    def reconstruct_image(self, delayed_batch: tf.Tensor, training: bool = False) -> tuple[tf.Tensor, tf.Tensor]:
-        """Apply weights to delayed samples and reconstruct ``abs(DAS)`` images."""
-        weights_grid = self.predict_weights_grid(training=training)
-        weighted_delayed = delayed_batch * tf.cast(weights_grid[tf.newaxis, ...], delayed_batch.dtype)
-        predicted_complex = tf.reduce_sum(weighted_delayed, axis=1)
-        predicted_image = tf.abs(predicted_complex)
-        return predicted_image, weights_grid
-
-    def train_step(self, data):
-        """Execute one optimization step on a batch of examples."""
-        delayed_batch, target_batch = data
-        with tf.GradientTape() as tape:
-            predicted_image, _ = self.reconstruct_image(delayed_batch, training=True)
-            loss_value = rmse(tf.cast(target_batch, tf.float32), predicted_image)
-            if self.losses:
-                loss_value += tf.add_n(self.losses)
-
-        gradients = tape.gradient(loss_value, self.apodization_model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.apodization_model.trainable_variables))
-
-        self.loss_tracker.update_state(loss_value)
-        self.rmse_tracker.update_state(loss_value)
-        return {metric.name: metric.result() for metric in self.metrics}
-
-    def test_step(self, data):
-        """Evaluate the model on a validation batch."""
-        delayed_batch, target_batch = data
-        predicted_image, _ = self.reconstruct_image(delayed_batch, training=False)
-        loss_value = rmse(tf.cast(target_batch, tf.float32), predicted_image)
-        self.loss_tracker.update_state(loss_value)
-        self.rmse_tracker.update_state(loss_value)
-        return {metric.name: metric.result() for metric in self.metrics}
+from model_defs import DasInrTrainer
 
 
 CONFIG_PATH = Path("sandbox/inr_das_experiment/config.yml")
@@ -162,6 +94,10 @@ trainer = DasInrTrainer(
 )
 trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])))
 
+# Keep a deterministic baseline prediction from random INR initialization.
+sample_delayed = tf.convert_to_tensor(val_delayed[:1])
+predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_delayed, training=False)
+
 # Resolve output roots using project config and avoid writing into global data/ by
 # default — prefer sandbox outputs for processed artifacts when processed_root
 # points to the central `data/` folder.
@@ -207,8 +143,7 @@ history = trainer.fit(
     verbose=1,
 )
 
-sample_delayed = tf.convert_to_tensor(val_delayed[:1])
-predicted_image, weights_grid = trainer.reconstruct_image(sample_delayed, training=False)
+predicted_after_image, weights_after_grid = trainer.reconstruct_image(sample_delayed, training=False)
 uniform_image = tf.abs(tf.reduce_sum(sample_delayed, axis=1))
 
 effective_cfg = {
@@ -228,8 +163,10 @@ helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effectiv
 helpers.save_debug_arrays(
     processed_dir,
     {
-        "weights_grid": weights_grid.numpy(),
-        "predicted_image": predicted_image.numpy(),
+        "weights_grid": weights_after_grid.numpy(),
+        "predicted_image": predicted_after_image.numpy(),
+        "predicted_before_image": predicted_before_image.numpy(),
+        "weights_before_grid": weights_before_grid.numpy(),
         "target_image": val_targets[:1],
         "uniform_image": uniform_image.numpy(),
     },
@@ -237,11 +174,39 @@ helpers.save_debug_arrays(
 helpers.save_debug_arrays(
     sandbox_dir,
     {
-        "weights_grid": weights_grid.numpy(),
-        "predicted_image": predicted_image.numpy(),
+        "weights_grid": weights_after_grid.numpy(),
+        "predicted_image": predicted_after_image.numpy(),
+        "predicted_before_image": predicted_before_image.numpy(),
+        "weights_before_grid": weights_before_grid.numpy(),
         "target_image": val_targets[:1],
         "uniform_image": uniform_image.numpy(),
     },
+)
+
+plot_cfg = cfg.get("plots", {})
+helpers.plot_training_curves(
+    history.history,
+    output_path=str(Path(sandbox_dir) / "training_loss.png"),
+)
+helpers.plot_das_comparison_db(
+    uniform_image=uniform_image.numpy()[0],
+    inr_before_image=predicted_before_image.numpy()[0],
+    inr_after_image=predicted_after_image.numpy()[0],
+    target_image=val_targets[0],
+    output_path=str(Path(sandbox_dir) / "das_images_comparison_db.png"),
+    extent=kp.get_imshow_extent(),
+    cmap=str(plot_cfg.get("cmap", "gray")),
+    vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
+    vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+)
+helpers.plot_apodization_before_after(
+    cm=cm,
+    apod_before=weights_before_grid.numpy(),
+    apod_after=weights_after_grid.numpy(),
+    output_path=str(Path(sandbox_dir) / "apodization_map_before_after.png"),
+    x_fixed=float(plot_cfg.get("x_fixed_apod", 0.0)),
+    scaled=bool(cfg["model"]["scaled_features"]),
+    cmap=str(plot_cfg.get("apod_cmap", "viridis")),
 )
 
 print("Training finished.")
