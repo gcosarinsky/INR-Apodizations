@@ -18,6 +18,7 @@ import tensorflow as tf
 import helpers
 from inr_apodizations import config
 from model_defs import DasInrTrainer, rmse
+from model_defs import ssim_metric
 
 
 # Load config and seeds.
@@ -77,7 +78,15 @@ trainer = DasInrTrainer(
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),
 )
-trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])))
+trainer.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])),
+    loss=tf.keras.losses.MeanSquaredError(),
+    metrics=[tf.keras.metrics.RootMeanSquaredError(name="rmse")],
+        metrics=[
+            tf.keras.metrics.MeanAbsoluteError(name="mae"),
+            ssim_metric,
+        ],
+    )
 
 train_batch = next(iter(train_ds))
 val_batch = next(iter(val_ds))

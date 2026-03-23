@@ -267,24 +267,53 @@ def plot_training_curves(history: dict, output_path: str) -> None:
         axes[0].plot(history["val_loss"], label="val_loss", color="tab:red")
     axes[0].set_title("Loss")
     axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("RMSE")
+    axes[0].set_ylabel("Loss")
     axes[0].grid(True, alpha=0.3)
     if axes[0].lines:
         axes[0].legend()
 
-    has_rmse = False
-    if "rmse" in history:
-        axes[1].plot(history["rmse"], label="rmse", color="tab:blue")
-        has_rmse = True
-    if "val_rmse" in history:
-        axes[1].plot(history["val_rmse"], label="val_rmse", color="tab:orange")
-        has_rmse = True
-    if has_rmse:
-        axes[1].set_title("RMSE metric")
+    # Plot MAE on the primary y-axis and SSIM on a secondary y-axis if present.
+    has_metric = False
+    mae_plotted = False
+    ssim_plotted = False
+    if "mae" in history or "val_mae" in history:
+        if "mae" in history:
+            axes[1].plot(history["mae"], label="mae", color="tab:blue")
+            mae_plotted = True
+        if "val_mae" in history:
+            axes[1].plot(history["val_mae"], label="val_mae", color="tab:orange")
+            mae_plotted = True
+        has_metric = True
+
+    ssim_ax = None
+    if "ssim" in history or "val_ssim_metric" in history:
+        # use a twin y-axis for SSIM (range ~[0,1]) to avoid mixing scales
+        ssim_ax = axes[1].twinx()
+        if "ssim" in history:
+            ssim_ax.plot(history["ssim"], label="ssim", color="tab:green")
+            ssim_plotted = True
+        if "val_ssim" in history:
+            ssim_ax.plot(history["val_ssim_metric"], label="val_ssim", color="tab:red")
+            ssim_plotted = True
+        has_metric = True
+
+    if has_metric:
+        axes[1].set_title("Metrics")
         axes[1].set_xlabel("Epoch")
-        axes[1].set_ylabel("RMSE")
-        axes[1].grid(True, alpha=0.3)
-        axes[1].legend()
+        if mae_plotted:
+            axes[1].set_ylabel("MAE")
+            axes[1].grid(True, alpha=0.3)
+        if ssim_plotted and ssim_ax is not None:
+            ssim_ax.set_ylabel("SSIM")
+
+        # build combined legend from both axes if needed
+        lines, labels = axes[1].get_legend_handles_labels()
+        if ssim_ax is not None:
+            l2, lbl2 = ssim_ax.get_legend_handles_labels()
+            lines += l2
+            labels += lbl2
+        if lines:
+            axes[1].legend(lines, labels)
     else:
         axes[1].axis("off")
 

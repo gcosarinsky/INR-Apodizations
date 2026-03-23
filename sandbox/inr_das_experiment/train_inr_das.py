@@ -17,11 +17,14 @@ import pprint
 from pathlib import Path
 from inr_apodizations import config
 
+import os
+from datetime import datetime
+
 import numpy as np
 import tensorflow as tf
 
 import helpers
-from model_defs import DasInrTrainer
+from model_defs import DasInrTrainer, ssim_metric
 
 
 CONFIG_PATH = Path("sandbox/inr_das_experiment/config.yml")
@@ -92,35 +95,27 @@ trainer = DasInrTrainer(
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),
 )
-trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])))
+trainer.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])),
+    loss=tf.keras.losses.MeanAbsoluteError(name="mae"),
+    metrics=[ssim_metric],
+)
 
 # Keep a deterministic baseline prediction from random INR initialization.
 sample_delayed = tf.convert_to_tensor(val_delayed[:1])
 predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_delayed, training=False)
 
-# Resolve output roots using project config and avoid writing into global data/ by
-# default — prefer sandbox outputs for processed artifacts when processed_root
-# points to the central `data/` folder.
-proc_root_cfg = Path(cfg["io"]["processed_root"])
+# Resolve sandbox output root and create a timestamped sandbox outputs folder.
 sandbox_root_cfg = Path(cfg["io"]["sandbox_output_root"])
-if not proc_root_cfg.is_absolute():
-    proc_root = config.PROJ_ROOT / proc_root_cfg
-else:
-    proc_root = proc_root_cfg
 if not sandbox_root_cfg.is_absolute():
     sandbox_root = config.PROJ_ROOT / sandbox_root_cfg
 else:
     sandbox_root = sandbox_root_cfg
 
-# If processed root would write into the repository `data/` folder, redirect
-# processed outputs to a sandbox location to avoid modifying `data/`.
-if "data" in str(proc_root):
-    proc_root = config.PROJ_ROOT / "sandbox" / "inr_das_experiment" / "outputs" / "processed"
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+sandbox_dir = str(Path(sandbox_root) / timestamp)
+os.makedirs(sandbox_dir, exist_ok=True)
 
-timestamp, processed_dir, sandbox_dir = helpers.create_run_directories(
-    str(proc_root),
-    str(sandbox_root),
-)
 callbacks = [
     tf.keras.callbacks.EarlyStopping(
         monitor="val_loss",
@@ -158,19 +153,7 @@ effective_cfg = {
     },
     "experiment": cfg,
 }
-helpers.save_artifacts(processed_dir, apodization_model, history.history, effective_cfg)
 helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
-helpers.save_debug_arrays(
-    processed_dir,
-    {
-        "weights_grid": weights_after_grid.numpy(),
-        "predicted_image": predicted_after_image.numpy(),
-        "predicted_before_image": predicted_before_image.numpy(),
-        "weights_before_grid": weights_before_grid.numpy(),
-        "target_image": val_targets[:1],
-        "uniform_image": uniform_image.numpy(),
-    },
-)
 helpers.save_debug_arrays(
     sandbox_dir,
     {
@@ -210,5 +193,4 @@ helpers.plot_apodization_before_after(
 )
 
 print("Training finished.")
-print("Processed artifacts:", processed_dir)
 print("Sandbox artifacts:", sandbox_dir)

@@ -21,6 +21,34 @@ def rmse(y_true, y_pred):
     return tf.sqrt(tf.reduce_mean(tf.square(y_true - y_pred)))
 
 
+def ssim_metric(y_true, y_pred, max_val: float = 1.0):
+    """Compute mean SSIM across a batch.
+
+    Notes:
+        - `tf.image.ssim` expects images in a known dynamic range; set ``max_val``
+          accordingly (e.g. 1.0 if images are normalized to [0, 1]).
+        - Returned value is averaged across the batch.
+
+    Args:
+        y_true: Ground-truth image tensor.
+        y_pred: Predicted image tensor.
+        max_val: Maximum possible pixel value (for SSIM computation).
+
+    Returns:
+        Scalar tensor with mean SSIM over the batch.
+    """
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    # tf.image.ssim expects images with a channels dimension; add one if missing.
+    if tf.rank(y_true) == 3:
+        y_true = y_true[..., tf.newaxis]
+        y_pred = y_pred[..., tf.newaxis]
+    # Use a small filter size to support small spatial dims (avoids negative output size).
+    # 11 is the default but fails when height/width < 11; 3 is safer and still meaningful.
+    ssim_per_example = tf.image.ssim(y_true, y_pred, max_val=max_val, filter_size=3)
+    return tf.reduce_mean(ssim_per_example)
+
+
 class GlobalRMSE(tf.keras.metrics.Metric):
     """Accumulate sum-of-squares and count to compute global RMSE per epoch.
 
@@ -68,13 +96,6 @@ class DasInrTrainer(tf.keras.Model):
         self.features_flat = tf.reshape(tf.cast(features_grid, tf.float32), (-1, 3))
         self.n_elem, self.nz, self.nx = [int(dim) for dim in features_grid.shape[:3]]
         self.feature_chunk_size = int(feature_chunk_size)
-        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
-        self.rmse_tracker = GlobalRMSE(name="rmse")
-
-    @property
-    def metrics(self):
-        """Expose tracked metrics to Keras."""
-        return [self.loss_tracker, self.rmse_tracker]
 
     def predict_weights_grid(self, training: bool = False) -> tf.Tensor:
         """Run the INR on geometry features and reshape to ``(E, Z, X)``."""
@@ -97,29 +118,15 @@ class DasInrTrainer(tf.keras.Model):
         predicted_image = tf.abs(predicted_complex)
         return predicted_image, weights_grid
 
-    def train_step(self, data):
-        """Execute one optimization step on a batch of examples."""
-        delayed_batch, target_batch = data
-        with tf.GradientTape() as tape:
-            predicted_image, _ = self.reconstruct_image(delayed_batch, training=True)
-            rmse_batch = rmse(tf.cast(target_batch, tf.float32), predicted_image)
-            loss_value = rmse_batch
-            if self.losses:
-                loss_value += tf.add_n(self.losses)
+    def call(self, delayed_batch: tf.Tensor, training: bool = False) -> tf.Tensor:
+        """Run forward reconstruction with chunked INR evaluation.
 
-        gradients = tape.gradient(loss_value, self.apodization_model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.apodization_model.trainable_variables))
+        Args:
+            delayed_batch: Delayed samples with shape ``(B, E, Z, X)``.
+            training: Whether to run the INR in training mode.
 
-        self.loss_tracker.update_state(loss_value)
-        self.rmse_tracker.update_state(target_batch, predicted_image)
-        return {metric.name: metric.result() for metric in self.metrics}
-
-    def test_step(self, data):
-        """Evaluate the model on a validation batch."""
-        delayed_batch, target_batch = data
-        predicted_image, _ = self.reconstruct_image(delayed_batch, training=False)
-        rmse_batch = rmse(tf.cast(target_batch, tf.float32), predicted_image)
-        loss_value = rmse_batch
-        self.loss_tracker.update_state(loss_value)
-        self.rmse_tracker.update_state(target_batch, predicted_image)
-        return {metric.name: metric.result() for metric in self.metrics}
+        Returns:
+            Predicted magnitude image with shape ``(B, Z, X)``.
+        """
+        predicted_image, _ = self.reconstruct_image(delayed_batch, training=training)
+        return predicted_image

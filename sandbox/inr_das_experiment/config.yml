@@ -13,9 +13,9 @@ model:
 
 training:
   batch_size: 1
-  epochs: 15
+  epochs: 30
   learning_rate: 0.001
-  train_fraction: 0.8
+  train_fraction: 0.5
   seed: 42
   max_examples: null
   early_stopping_patience: 5
