@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
+import math
 import yaml
 
 from inr_apodizations.apodizations import extract_map_for_x
@@ -355,10 +356,20 @@ def plot_das_comparison_db(
     shared_ref = max(float(np.max(np.abs(image))) for image in images_linear.values())
     images_db = {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
 
-    fig, axes = plt.subplots(1, 4, figsize=(22, 5), sharex=True, sharey=True)
+    # Dynamic layout: prefer a compact grid (up to 2 columns) to avoid excessively
+    # wide horizontal figures. Each panel kept near square by default.
+    n_panels = len(images_db)
+    ncols = 2 if n_panels > 1 else 1
+    nrows = math.ceil(n_panels / ncols)
+    width_per_panel = 5
+    height_per_panel = 5
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_per_panel * ncols, height_per_panel * nrows), sharex=True, sharey=True)
+
+    axes_flat = np.array(axes).ravel() if isinstance(axes, (list, tuple, np.ndarray)) else np.array([axes])
     first_im = None
     for idx, (title, image_db) in enumerate(images_db.items()):
-        current_im = axes[idx].imshow(
+        ax = axes_flat[idx]
+        current_im = ax.imshow(
             image_db,
             cmap=cmap,
             vmin=vmin_db,
@@ -368,15 +379,24 @@ def plot_das_comparison_db(
         )
         if first_im is None:
             first_im = current_im
-        axes[idx].set_title(f"DAS {title} (dB)")
-        axes[idx].set_xlabel("x (mm)")
-        if idx == 0:
-            axes[idx].set_ylabel("z (mm)")
+        ax.set_title(f"DAS {title} (dB)")
+        ax.set_xlabel("x (mm)")
+        if idx % ncols == 0:
+            ax.set_ylabel("z (mm)")
+
+    # Hide any unused subplots
+    for j in range(n_panels, axes_flat.size):
+        try:
+            axes_flat[j].axis("off")
+        except Exception:
+            pass
 
     fig.suptitle("DAS comparison")
-    fig.tight_layout(rect=[0, 0, 0.94, 1])
-    cbar_ax = fig.add_axes([0.95, 0.13, 0.012, 0.74])
-    fig.colorbar(first_im, cax=cbar_ax, label="dB")
+    # Leave room on the right for a single colorbar
+    fig.tight_layout(rect=[0, 0, 0.9, 1])
+    cbar_ax = fig.add_axes([0.92, 0.13, 0.02, 0.74])
+    if first_im is not None:
+        fig.colorbar(first_im, cax=cbar_ax, label="dB")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=150)
@@ -390,7 +410,9 @@ def plot_apodization_before_after(
     output_path: str,
     x_fixed: float = 0.0,
     scaled: bool = False,
+    z_fixed: float | None = None,
     cmap: str = "viridis",
+    hanning_apod: np.ndarray | None = None,
 ) -> None:
     """Save a two-panel map comparing apodization before and after training.
 
@@ -411,13 +433,35 @@ def plot_apodization_before_after(
     map_before = extract_map_for_x(tf.convert_to_tensor(apod_before), cm, x_fixed=x_fixed, scaled=scaled)
     map_after = extract_map_for_x(tf.convert_to_tensor(apod_after), cm, x_fixed=x_fixed, scaled=scaled)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharex=True, sharey=True)
+    # Convert maps to numpy arrays for plotting
     mb = map_before.numpy()
     ma = map_after.numpy()
     vmin = float(min(float(mb.min()), float(ma.min())))
     vmax = float(max(float(mb.max()), float(ma.max())))
 
-    im0 = axes[0].imshow(
+    # Determine z index for profile extraction
+    if z_fixed is None:
+        z_idx = len(z_coords) // 2
+        z_value = float(z_coords[z_idx])
+    else:
+        z_idx = int(np.argmin(np.abs(z_coords - float(z_fixed))))
+        z_value = float(z_coords[z_idx])
+
+    # lateral x index for profile extraction
+    x_coords = np.asarray(coords["x"])
+    x_idx = int(np.argmin(np.abs(x_coords - float(x_fixed))))
+
+    # Extract element-axis profiles at chosen z,x
+    profile_before = np.asarray(apod_before)[:, z_idx, x_idx]
+    profile_after = np.asarray(apod_after)[:, z_idx, x_idx]
+    profile_hanning = None
+    if hanning_apod is not None:
+        profile_hanning = np.asarray(hanning_apod)[:, z_idx, x_idx]
+
+    # Layout: 2x2 (maps on top row, profile on bottom-left, empty on bottom-right)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10), sharex=False, sharey=False, constrained_layout=True)
+
+    im0 = axes[0, 0].imshow(
         mb,
         cmap=cmap,
         vmin=vmin,
@@ -425,11 +469,11 @@ def plot_apodization_before_after(
         extent=map_extent,
         aspect="auto",
     )
-    axes[0].set_title("Apodization INR before")
-    axes[0].set_xlabel("Element lateral coordinate (mm)")
-    axes[0].set_ylabel("Depth z (mm)")
+    axes[0, 0].set_title("Apodization INR before")
+    axes[0, 0].set_xlabel("Element lateral coordinate (mm)")
+    axes[0, 0].set_ylabel("Depth z (mm)")
 
-    im1 = axes[1].imshow(
+    im1 = axes[0, 1].imshow(
         ma,
         cmap=cmap,
         vmin=vmin,
@@ -437,13 +481,46 @@ def plot_apodization_before_after(
         extent=map_extent,
         aspect="auto",
     )
-    axes[1].set_title("Apodization INR after")
-    axes[1].set_xlabel("Element lateral coordinate (mm)")
-    fig.colorbar(im0, ax=axes[0], label="Weight")
-    fig.colorbar(im1, ax=axes[1], label="Weight")
+    axes[0, 1].set_title("Apodization INR after")
+    axes[0, 1].set_xlabel("Element lateral coordinate (mm)")
+
+    # Profile plot
+    # Plot profiles: include Hanning if provided
+    if profile_hanning is not None:
+        axes[1, 0].plot(x_elems, profile_hanning, label="Hanning", linewidth=2, color="tab:green")
+    axes[1, 0].plot(x_elems, profile_before, label="INR before", linewidth=2)
+    axes[1, 0].plot(x_elems, profile_after, label="INR after", linestyle="--")
+    axes[1, 0].set_title(f"Profile at z={z_value:.2f} mm, x={x_fixed:.2f} mm")
+    axes[1, 0].set_xlabel("Element lateral coordinate (mm)")
+    axes[1, 0].set_ylabel("Apodization weight")
+    axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].legend()
+
+    # Bottom-right: show Hanning map if provided, else hide
+    if hanning_apod is not None:
+        # Convert the full (E, Z, X) Hanning apodization into a 2D map
+        # consistent with the INR maps using the same extraction routine.
+        map_hanning = extract_map_for_x(tf.convert_to_tensor(hanning_apod), cm, x_fixed=x_fixed, scaled=scaled)
+        mh = map_hanning.numpy()
+        im2 = axes[1, 1].imshow(
+            mh,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            extent=map_extent,
+            aspect="auto",
+        )
+        axes[1, 1].set_title("Hanning apodization")
+        axes[1, 1].set_xlabel("Element lateral coordinate (mm)")
+        fig.colorbar(im2, ax=axes[1, 1], label="Weight")
+    else:
+        axes[1, 1].axis("off")
+
+    # Colorbars for maps (original two maps)
+    fig.colorbar(im0, ax=axes[0, 0], label="Weight")
+    fig.colorbar(im1, ax=axes[0, 1], label="Weight")
 
     fig.suptitle(f"Apodization maps at x={x_fixed:.2f}")
-    fig.tight_layout()
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=150)

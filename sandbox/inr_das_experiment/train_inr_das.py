@@ -25,6 +25,7 @@ import tensorflow as tf
 
 import helpers
 from model_defs import DasInrTrainer, ssim_metric
+from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 
 
 CONFIG_PATH = Path("sandbox/inr_das_experiment/config.yml")
@@ -113,7 +114,7 @@ except Exception:
 trainer.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])),
     loss=loss_obj,
-    metrics=[ssim_metric],
+    metrics=['mae'],
 )
 
 # Keep a deterministic baseline prediction from random INR initialization.
@@ -156,6 +157,16 @@ history = trainer.fit(
 predicted_after_image, weights_after_grid = trainer.reconstruct_image(sample_delayed, training=False)
 uniform_image = tf.abs(tf.reduce_sum(sample_delayed, axis=1))
 
+# Compute Hanning baseline DAS image using library apodizations (single example batch)
+apods_h = compute_dynamic_apodizations_tf(
+    cm=cm, bfd=kp.bfd, methods=("hanning",), scaled=bool(cfg["model"]["scaled_features"]))
+
+hanning_weights = apods_h["hanning"]  # shape: (E, Z, X)
+hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)  # add batch dim -> (1, E, Z, X)
+hanning_image_complex = tf.reduce_sum(sample_delayed * tf.cast(hanning_weights_b, sample_delayed.dtype), axis=1)
+hanning_image = tf.abs(hanning_image_complex)
+
+
 effective_cfg = {
     "config_path": str(CONFIG_PATH),
     "dataset_folder": dataset_folder,
@@ -178,6 +189,8 @@ helpers.save_debug_arrays(
         "weights_before_grid": weights_before_grid.numpy(),
         "target_image": val_targets[:1],
         "uniform_image": uniform_image.numpy(),
+        "hanning_image": hanning_image.numpy(),
+        "hanning_weights": hanning_weights.numpy(),
     },
 )
 
@@ -197,14 +210,29 @@ helpers.plot_das_comparison_db(
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
 )
+# Also save a comparison figure using Hanning as the baseline instead of Uniform
+helpers.plot_das_comparison_db(
+    uniform_image=hanning_image.numpy()[0],
+    inr_before_image=predicted_before_image.numpy()[0],
+    inr_after_image=predicted_after_image.numpy()[0],
+    target_image=val_targets[0],
+    output_path=str(Path(sandbox_dir) / "das_images_comparison_db_hanning.png"),
+    extent=kp.get_imshow_extent(),
+    cmap=str(plot_cfg.get("cmap", "gray")),
+    vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
+    vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+)
+
+# Also save a version that includes the Hanning profile in the lower panel
 helpers.plot_apodization_before_after(
     cm=cm,
     apod_before=weights_before_grid.numpy(),
     apod_after=weights_after_grid.numpy(),
-    output_path=str(Path(sandbox_dir) / "apodization_map_before_after.png"),
+    output_path=str(Path(sandbox_dir) / "apodization_map_before_after_with_hanning.png"),
     x_fixed=float(plot_cfg.get("x_fixed_apod", 0.0)),
     scaled=bool(cfg["model"]["scaled_features"]),
     cmap=str(plot_cfg.get("apod_cmap", "viridis")),
+    hanning_apod=hanning_weights.numpy(),
 )
 
 print("Training finished.")
