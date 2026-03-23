@@ -286,13 +286,13 @@ def plot_training_curves(history: dict, output_path: str) -> None:
         has_metric = True
 
     ssim_ax = None
-    if "ssim" in history or "val_ssim_metric" in history:
+    if "ssim_metric" in history or "val_ssim_metric" in history:
         # use a twin y-axis for SSIM (range ~[0,1]) to avoid mixing scales
         ssim_ax = axes[1].twinx()
-        if "ssim" in history:
-            ssim_ax.plot(history["ssim"], label="ssim", color="tab:green")
+        if "ssim_metric" in history:
+            ssim_ax.plot(history["ssim_metric"], label="ssim", color="tab:green")
             ssim_plotted = True
-        if "val_ssim" in history:
+        if "val_ssim_metric" in history:
             ssim_ax.plot(history["val_ssim_metric"], label="val_ssim", color="tab:red")
             ssim_plotted = True
         has_metric = True

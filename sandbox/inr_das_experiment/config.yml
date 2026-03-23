@@ -15,6 +15,7 @@ training:
   batch_size: 1
   epochs: 30
   learning_rate: 0.001
+  loss: mae
   train_fraction: 0.5
   seed: 42
   max_examples: null

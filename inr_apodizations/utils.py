@@ -58,8 +58,21 @@ def save_config_yaml(config_path, cfg, extra_params):
     yaml.add_representer(list, flat_seq_representer, Dumper=yaml.SafeDumper)
     yaml.add_representer(tuple, flat_seq_representer, Dumper=yaml.SafeDumper)
 
-    config_to_save = dict(cfg)
-    config_to_save.update(extra_params)
+    def _convert_tuples(obj):
+        """
+        Recursively convert tuples to lists so YAML dumper does not emit !!python/tuple tags.
+        """
+        if isinstance(obj, tuple):
+            return [_convert_tuples(v) for v in obj]
+        if isinstance(obj, list):
+            return [_convert_tuples(v) for v in obj]
+        if isinstance(obj, dict):
+            return {k: _convert_tuples(v) for k, v in obj.items()}
+        return obj
+
+    config_to_save = _convert_tuples(dict(cfg))
+    extra_clean = _convert_tuples(dict(extra_params))
+    config_to_save.update(extra_clean)
     with open(config_path, 'w', encoding='utf-8') as f:
         yaml.dump(config_to_save, f, allow_unicode=True, Dumper=yaml.SafeDumper)
 

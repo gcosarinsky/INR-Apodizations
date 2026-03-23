@@ -95,9 +95,24 @@ trainer = DasInrTrainer(
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),
 )
+# Resolve loss from config and instantiate a Keras loss object.
+# The config can contain any valid identifier accepted by `tf.keras.losses.get`,
+# fallback to MAE if resolution fails.
+loss_name = cfg["training"].get("loss", "mae")
+try:
+    loss_obj = tf.keras.losses.get(loss_name)
+except Exception:
+    loss_str = str(loss_name).lower()
+    if loss_str in ("mae", "mean_absolute_error"):
+        loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+    elif loss_str in ("mse", "mean_squared_error"):
+        loss_obj = tf.keras.losses.MeanSquaredError(name="mse")
+    else:
+        loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+
 trainer.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])),
-    loss=tf.keras.losses.MeanAbsoluteError(name="mae"),
+    loss=loss_obj,
     metrics=[ssim_metric],
 )
 
