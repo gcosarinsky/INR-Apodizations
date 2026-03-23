@@ -23,7 +23,7 @@ from inr_apodizations.apodizations import (
     extract_map_for_x,
     extract_profile_for_z,
 )
-from inr_apodizations.config import DATA_DIR, CONFIGS_DIR
+from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.utils import find_latest_dataset_folder
