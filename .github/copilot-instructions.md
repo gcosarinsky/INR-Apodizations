@@ -3,6 +3,9 @@
   - INR: Implicit Neural Representations
   - Apodizations: weighting functions for ultrasound beamforming
 
+## Istrucciones para agentes
+  - No intentar ejecutar comandos ni scripts sin que el usuario lo solicite explícitamente.
+    
 ## Idioma y estilo de interacción
 
 - El chat con el usuario debe ser en castellano.
