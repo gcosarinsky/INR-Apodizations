@@ -126,13 +126,13 @@ info_yaml_path = output_folder / 'delayed_samples_info.yaml'
 info = {
     'generated': datetime.now().strftime("%Y%m%d_%H%M%S"),
     'delayed_samples_shape': list(delayed_samples_all.shape),
-    'roi_effective': kp.roi_effective,
+    'roi_effective': list(kp.roi_effective),
     'rf_dataset': dataset_path.name,
     'config': cfg,    
 }
 
 with open(info_yaml_path, 'w', encoding='utf-8') as f:
-    yaml.dump(info, f, allow_unicode=True)
+    yaml.safe_dump(info, f, allow_unicode=True)
 print(f'Delayed samples dataset configuration saved to: {info_yaml_path}')
 
 #%% plot example, do sum over elements
