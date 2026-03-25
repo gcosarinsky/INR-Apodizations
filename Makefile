@@ -63,6 +63,12 @@ data: requirements
 	$(PYTHON_INTERPRETER) inr_apodizations/dataset.py
 
 
+## Run create_delayed_samples_dataset script (generates delayed samples dataset)
+.PHONY: run-delayed-samples
+run-delayed-samples:
+	$(PYTHON_INTERPRETER) scripts/create_delayed_samples_dataset.py
+
+
 #################################################################################
 # Self Documenting Commands                                                     #
 #################################################################################
