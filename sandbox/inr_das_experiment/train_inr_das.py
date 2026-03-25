@@ -13,12 +13,15 @@ The script keeps logic direct and sandbox-oriented. Configuration lives in
 """
 from __future__ import annotations
 
-import pprint
-from pathlib import Path
-from inr_apodizations import config
-
 import os
+import pprint
+import random
 from datetime import datetime
+from pathlib import Path
+
+os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
+
+from inr_apodizations import config
 
 import numpy as np
 import tensorflow as tf
@@ -30,8 +33,11 @@ from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 
 CONFIG_PATH = Path("sandbox/inr_das_experiment/config.yml")
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
-tf.random.set_seed(int(cfg["training"]["seed"]))
-np.random.seed(int(cfg["training"]["seed"]))
+seed = int(cfg["training"]["seed"])
+tf.keras.utils.set_random_seed(seed)
+tf.config.experimental.enable_op_determinism()
+random.seed(seed)
+np.random.seed(seed)
 
 # Resolve dataset folder relative to project root when given as a relative path
 dataset_folder = Path(cfg["io"]["dataset_folder"])
@@ -223,17 +229,35 @@ helpers.plot_das_comparison_db(
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
 )
 
-# Also save a version that includes the Hanning profile in the lower panel
-helpers.plot_apodization_before_after(
-    cm=cm,
-    apod_before=weights_before_grid.numpy(),
-    apod_after=weights_after_grid.numpy(),
-    output_path=str(Path(sandbox_dir) / "apodization_map_before_after_with_hanning.png"),
-    x_fixed=float(plot_cfg.get("x_fixed_apod", 0.0)),
-    scaled=bool(cfg["model"]["scaled_features"]),
-    cmap=str(plot_cfg.get("apod_cmap", "viridis")),
-    hanning_apod=hanning_weights.numpy(),
-)
+# Save one apodization figure per selected x, with multiple z profiles overlaid.
+x_values_cfg = plot_cfg.get("x_values_apod", None)
+if x_values_cfg is None:
+    raise ValueError("plots.x_values_apod must be provided in config.yml")
+if isinstance(x_values_cfg, (int, float)):
+    x_values_apod = [float(x_values_cfg)]
+else:
+    x_values_apod = [float(x_val) for x_val in x_values_cfg]
+
+z_profiles_cfg = plot_cfg.get("z_profiles_mm", None)
+if z_profiles_cfg is None:
+    z_profiles_mm = None
+elif isinstance(z_profiles_cfg, (int, float)):
+    z_profiles_mm = [float(z_profiles_cfg)]
+else:
+    z_profiles_mm = [float(z_val) for z_val in z_profiles_cfg]
+
+for x_value in x_values_apod:
+    x_token = f"{x_value:.2f}".replace("-", "m").replace(".", "p")
+    helpers.plot_apodization_before_after(
+        cm=cm,
+        apod_before=weights_before_grid.numpy(),
+        apod_after=weights_after_grid.numpy(),
+        output_path=str(Path(sandbox_dir) / f"apodization_map_x_{x_token}_with_hanning.png"),
+        x_fixed=float(x_value),
+        z_profiles=z_profiles_mm,
+        cmap=str(plot_cfg.get("apod_cmap", "viridis")),
+        hanning_apod=hanning_weights.numpy(),
+    )
 
 print("Training finished.")
 print("Sandbox artifacts:", sandbox_dir)

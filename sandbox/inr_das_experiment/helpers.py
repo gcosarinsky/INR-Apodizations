@@ -409,12 +409,12 @@ def plot_apodization_before_after(
     apod_after: np.ndarray,
     output_path: str,
     x_fixed: float = 0.0,
-    scaled: bool = False,
     z_fixed: float | None = None,
+    z_profiles: list[float] | tuple[float, ...] | None = None,
     cmap: str = "viridis",
     hanning_apod: np.ndarray | None = None,
 ) -> None:
-    """Save a two-panel map comparing apodization before and after training.
+    """Save apodization maps and element-axis profiles at selected depths.
 
     Args:
         cm: Coordinate manager used to extract geometry coordinates.
@@ -423,15 +423,19 @@ def plot_apodization_before_after(
         output_path: Path to the output PNG file.
         x_fixed: Lateral x value used for map extraction.
         scaled: Whether CoordinateManager scaled coordinates are used.
+        z_fixed: Single depth used for profile extraction when ``z_profiles`` is not provided.
+        z_profiles: Optional list/tuple of depths (mm) used for profile extraction.
         cmap: Colormap used for both maps.
     """
-    coords = cm.get_coordinates_1d(scaled=scaled)
-    x_elems = np.asarray(coords["x_elem"])
-    z_coords = np.asarray(coords["z"])
+    # Plotting and profile requests are interpreted in physical units (mm)
+    # to keep config values intuitive even when training uses scaled features.
+    coords_phys = cm.get_coordinates_1d(scaled=False)
+    x_elems = np.asarray(coords_phys["x_elem"])
+    z_coords = np.asarray(coords_phys["z"])
     map_extent = (float(x_elems[0]), float(x_elems[-1]), float(z_coords[-1]), float(z_coords[0]))
 
-    map_before = extract_map_for_x(tf.convert_to_tensor(apod_before), cm, x_fixed=x_fixed, scaled=scaled)
-    map_after = extract_map_for_x(tf.convert_to_tensor(apod_after), cm, x_fixed=x_fixed, scaled=scaled)
+    map_before = extract_map_for_x(tf.convert_to_tensor(apod_before), cm, x_fixed=x_fixed, scaled=False)
+    map_after = extract_map_for_x(tf.convert_to_tensor(apod_after), cm, x_fixed=x_fixed, scaled=False)
 
     # Convert maps to numpy arrays for plotting
     mb = map_before.numpy()
@@ -439,24 +443,25 @@ def plot_apodization_before_after(
     vmin = float(min(float(mb.min()), float(ma.min())))
     vmax = float(max(float(mb.max()), float(ma.max())))
 
-    # Determine z index for profile extraction
-    if z_fixed is None:
-        z_idx = len(z_coords) // 2
-        z_value = float(z_coords[z_idx])
+    # Determine z indices for profile extraction.
+    if z_profiles is None or len(z_profiles) == 0:
+        if z_fixed is None:
+            z_indices = [len(z_coords) // 2]
+        else:
+            z_indices = [int(np.argmin(np.abs(z_coords - float(z_fixed))))]
     else:
-        z_idx = int(np.argmin(np.abs(z_coords - float(z_fixed))))
-        z_value = float(z_coords[z_idx])
+        z_indices = [int(np.argmin(np.abs(z_coords - float(z)))) for z in z_profiles]
+        # Keep order and avoid duplicated nearest-neighbor indices.
+        z_indices = list(dict.fromkeys(z_indices))
+    z_values = [float(z_coords[idx]) for idx in z_indices]
 
     # lateral x index for profile extraction
-    x_coords = np.asarray(coords["x"])
+    x_coords = np.asarray(coords_phys["x"])
     x_idx = int(np.argmin(np.abs(x_coords - float(x_fixed))))
 
-    # Extract element-axis profiles at chosen z,x
-    profile_before = np.asarray(apod_before)[:, z_idx, x_idx]
-    profile_after = np.asarray(apod_after)[:, z_idx, x_idx]
-    profile_hanning = None
-    if hanning_apod is not None:
-        profile_hanning = np.asarray(hanning_apod)[:, z_idx, x_idx]
+    apod_before_np = np.asarray(apod_before)
+    apod_after_np = np.asarray(apod_after)
+    hanning_np = np.asarray(hanning_apod) if hanning_apod is not None else None
 
     # Layout: 2x2 (maps on top row, profile on bottom-left, empty on bottom-right)
     fig, axes = plt.subplots(2, 2, figsize=(12, 10), sharex=False, sharey=False, constrained_layout=True)
@@ -484,13 +489,42 @@ def plot_apodization_before_after(
     axes[0, 1].set_title("Apodization INR after")
     axes[0, 1].set_xlabel("Element lateral coordinate (mm)")
 
-    # Profile plot
-    # Plot profiles: include Hanning if provided
-    if profile_hanning is not None:
-        axes[1, 0].plot(x_elems, profile_hanning, label="Hanning", linewidth=2, color="tab:green")
-    axes[1, 0].plot(x_elems, profile_before, label="INR before", linewidth=2)
-    axes[1, 0].plot(x_elems, profile_after, label="INR after", linestyle="--")
-    axes[1, 0].set_title(f"Profile at z={z_value:.2f} mm, x={x_fixed:.2f} mm")
+    # Profile plot: one pair/triple of curves per selected depth on the same axes.
+    depth_colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(z_indices))))
+    for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
+        profile_before = apod_before_np[:, z_idx, x_idx]
+        profile_after = apod_after_np[:, z_idx, x_idx]
+        axes[1, 0].plot(
+            x_elems,
+            profile_before,
+            label=f"INR before z={z_value:.2f} mm",
+            linewidth=2,
+            color=color,
+            linestyle="-",
+        )
+        axes[1, 0].plot(
+            x_elems,
+            profile_after,
+            label=f"INR after z={z_value:.2f} mm",
+            linewidth=2,
+            color=color,
+            linestyle="--",
+        )
+        if hanning_np is not None:
+            profile_hanning = hanning_np[:, z_idx, x_idx]
+            axes[1, 0].plot(
+                x_elems,
+                profile_hanning,
+                label=f"Hanning z={z_value:.2f} mm",
+                linewidth=1.8,
+                color=color,
+                linestyle=":",
+            )
+
+    depth_list_text = ", ".join(f"{z:.2f}" for z in z_values)
+    axes[1, 0].set_title(
+        f"Profiles at x={x_fixed:.2f} mm, z=[{depth_list_text}] mm"
+    )
     axes[1, 0].set_xlabel("Element lateral coordinate (mm)")
     axes[1, 0].set_ylabel("Apodization weight")
     axes[1, 0].grid(True, alpha=0.3)
@@ -500,7 +534,7 @@ def plot_apodization_before_after(
     if hanning_apod is not None:
         # Convert the full (E, Z, X) Hanning apodization into a 2D map
         # consistent with the INR maps using the same extraction routine.
-        map_hanning = extract_map_for_x(tf.convert_to_tensor(hanning_apod), cm, x_fixed=x_fixed, scaled=scaled)
+        map_hanning = extract_map_for_x(tf.convert_to_tensor(hanning_apod), cm, x_fixed=x_fixed, scaled=False)
         mh = map_hanning.numpy()
         im2 = axes[1, 1].imshow(
             mh,

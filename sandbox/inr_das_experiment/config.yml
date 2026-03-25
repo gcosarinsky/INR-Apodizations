@@ -26,5 +26,6 @@ plots:
   cmap: gray
   vmin_db: -60.0
   vmax_db: 0.0
-  x_fixed_apod: 0.0
+  x_values_apod: [0.0, -10.0, 10.0]
+  z_profiles_mm: [15.0, 25.0, 35.0]
   apod_cmap: viridis
