@@ -1,5 +1,5 @@
 io:
-  dataset_folder: data/delayed_samples_dataset/20260323_123231
+  dataset_folder: data/delayed_samples_dataset/20260325_103815
   processed_root: sandbox/inr_das_experiment/outputs/processed
   sandbox_output_root: sandbox/inr_das_experiment/outputs
 
@@ -12,9 +12,9 @@ model:
   feature_chunk_size: 262144
 
 training:
-  batch_size: 1
+  batch_size: 4
   epochs: 50
-  learning_rate: 0.001
+  learning_rate: 0.01
   loss: mae
   train_fraction: 0.7
   seed: 42

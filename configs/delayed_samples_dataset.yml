@@ -3,7 +3,7 @@
 # Saved alongside the delayed samples dataset.
 
 # RF input dataset
-rf_dataset_name: "20260323_123049"   # name of the RF dataset to use as input
+rf_dataset_name: "20260325_103101"   # name of the RF dataset to use as input
 
 # Bandpass filter
 f1: 1       # MHz - lower cutoff
