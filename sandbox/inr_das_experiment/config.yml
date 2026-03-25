@@ -15,9 +15,9 @@ training:
   batch_size: 4
   epochs: 50
   learning_rate: 0.01
-  loss: mae_db
+  loss: mae
   metric: mae_db
-  mae_db_ref: [1, 1]
+  mae_db_ref: null
   mae_db_eps: 1.0e-8
   train_fraction: 0.7
   seed: 42

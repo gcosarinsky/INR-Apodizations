@@ -125,6 +125,37 @@ def split_train_validation_examples(
     return delayed[train_idx], targets[train_idx], delayed[val_idx], targets[val_idx]
 
 
+def split_train_validation_indices(
+    n_examples: int,
+    train_fraction: float = 0.8,
+    seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split example indices into train/validation subsets.
+
+    If there is a single example, the same index is returned for both
+    training and validation so sandbox flows remain runnable.
+    """
+    if n_examples <= 0:
+        raise ValueError("n_examples must be > 0")
+
+    if n_examples == 1:
+        idx = np.array([0], dtype=np.int64)
+        return idx, idx.copy()
+
+    if train_fraction <= 0.0 or train_fraction >= 1.0:
+        raise ValueError("train_fraction must be in the open interval (0, 1)")
+
+    rng = np.random.default_rng(seed)
+    indices = np.arange(n_examples, dtype=np.int64)
+    rng.shuffle(indices)
+
+    n_train = max(1, int(np.floor(n_examples * train_fraction)))
+    n_train = min(n_train, n_examples - 1)
+    train_idx = np.sort(indices[:n_train])
+    val_idx = np.sort(indices[n_train:])
+    return train_idx, val_idx
+
+
 def build_tf_dataset_by_examples(delayed: np.ndarray,
                                  targets: np.ndarray,
                                  batch_size: int = 1,
@@ -146,6 +177,52 @@ def build_tf_dataset_by_examples(delayed: np.ndarray,
         ds = ds.shuffle(buffer_size=N, seed=seed, reshuffle_each_iteration=True)
     ds = ds.batch(batch_size)
     ds = ds.prefetch(tf.data.AUTOTUNE)
+    return ds
+
+
+def build_tf_dataset_by_indices(
+    delayed: np.ndarray,
+    targets: np.ndarray,
+    indices: np.ndarray,
+    batch_size: int = 1,
+    shuffle: bool = True,
+    seed: Optional[int] = 42,
+) -> tf.data.Dataset:
+    """Build a dataset that streams examples selected by index.
+
+    This avoids materializing full delayed/target arrays as TensorFlow constants,
+    which can trigger large GPU allocations during pipeline creation.
+    """
+    idx = np.asarray(indices, dtype=np.int64)
+    if idx.ndim != 1:
+        raise ValueError("indices must be a 1D array")
+
+    ds = tf.data.Dataset.from_tensor_slices(idx)
+    if shuffle:
+        ds = ds.shuffle(buffer_size=len(idx), seed=seed, reshuffle_each_iteration=True)
+
+    delayed_shape = tuple(delayed.shape[1:])
+    targets_shape = tuple(targets.shape[1:])
+
+    def _load_np(example_idx):
+        i = int(example_idx)
+        delayed_example = delayed[i].astype(np.complex64, copy=False)
+        target_example = targets[i].astype(np.float32, copy=False)
+        return delayed_example, target_example
+
+    def _load_tf(example_idx):
+        delayed_example, target_example = tf.numpy_function(
+            _load_np,
+            [example_idx],
+            [tf.complex64, tf.float32],
+        )
+        delayed_example.set_shape(delayed_shape)
+        target_example.set_shape(targets_shape)
+        return delayed_example, target_example
+
+    ds = ds.map(_load_tf, num_parallel_calls=1)
+    ds = ds.batch(batch_size, drop_remainder=False)
+    ds = ds.prefetch(1)
     return ds
 
 

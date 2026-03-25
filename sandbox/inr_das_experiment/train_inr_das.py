@@ -56,9 +56,8 @@ if max_examples is not None:
     delayed = delayed[: int(max_examples)]
     targets = targets[: int(max_examples)]
 
-train_delayed, train_targets, val_delayed, val_targets = helpers.split_train_validation_examples(
-    delayed,
-    targets,
+train_idx, val_idx = helpers.split_train_validation_indices(
+    n_examples=delayed.shape[0],
     train_fraction=float(cfg["training"]["train_fraction"]),
     seed=int(cfg["training"]["seed"]),
 )
@@ -68,24 +67,26 @@ pprint.pprint(
     {
         "delayed.shape": delayed.shape,
         "targets.shape": targets.shape,
-        "train_delayed.shape": train_delayed.shape,
-        "val_delayed.shape": val_delayed.shape,
+        "n_train_examples": int(train_idx.shape[0]),
+        "n_val_examples": int(val_idx.shape[0]),
         "n_elements": kp.n_elements,
         "nz": kp.nz,
         "nx": kp.nx,
     }
 )
 
-train_ds = helpers.build_tf_dataset_by_examples(
-    train_delayed,
-    train_targets,
+train_ds = helpers.build_tf_dataset_by_indices(
+    delayed,
+    targets,
+    indices=train_idx,
     batch_size=int(cfg["training"]["batch_size"]),
     shuffle=True,
     seed=int(cfg["training"]["seed"]),
 )
-val_ds = helpers.build_tf_dataset_by_examples(
-    val_delayed,
-    val_targets,
+val_ds = helpers.build_tf_dataset_by_indices(
+    delayed,
+    targets,
+    indices=val_idx,
     batch_size=int(cfg["training"]["batch_size"]),
     shuffle=False,
     seed=int(cfg["training"]["seed"]),
@@ -158,7 +159,8 @@ trainer.compile(
 )
 
 # Keep a deterministic baseline prediction from random INR initialization.
-sample_delayed = tf.convert_to_tensor(val_delayed[:1])
+sample_delayed = tf.convert_to_tensor(delayed[val_idx[:1]].astype(np.complex64, copy=False))
+sample_target = np.expand_dims(targets[val_idx[0]].astype(np.float32, copy=False), axis=0)
 predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_delayed, training=False)
 
 # Resolve sandbox output root and create a timestamped sandbox outputs folder.
@@ -227,7 +229,7 @@ helpers.save_debug_arrays(
         "predicted_image": predicted_after_image.numpy(),
         "predicted_before_image": predicted_before_image.numpy(),
         "weights_before_grid": weights_before_grid.numpy(),
-        "target_image": val_targets[:1],
+        "target_image": sample_target,
         "uniform_image": uniform_image.numpy(),
         "hanning_image": hanning_image.numpy(),
         "hanning_weights": hanning_weights.numpy(),
@@ -243,7 +245,7 @@ helpers.plot_das_comparison_db(
     uniform_image=uniform_image.numpy()[0],
     inr_before_image=predicted_before_image.numpy()[0],
     inr_after_image=predicted_after_image.numpy()[0],
-    target_image=val_targets[0],
+    target_image=sample_target[0],
     output_path=str(Path(sandbox_dir) / "das_images_comparison_db.png"),
     extent=kp.get_imshow_extent(),
     cmap=str(plot_cfg.get("cmap", "gray")),
@@ -255,7 +257,7 @@ helpers.plot_das_comparison_db(
     uniform_image=hanning_image.numpy()[0],
     inr_before_image=predicted_before_image.numpy()[0],
     inr_after_image=predicted_after_image.numpy()[0],
-    target_image=val_targets[0],
+    target_image=sample_target[0],
     output_path=str(Path(sandbox_dir) / "das_images_comparison_db_hanning.png"),
     extent=kp.get_imshow_extent(),
     cmap=str(plot_cfg.get("cmap", "gray")),
