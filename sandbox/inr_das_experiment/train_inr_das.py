@@ -27,7 +27,8 @@ import numpy as np
 import tensorflow as tf
 
 import helpers
-from model_defs import DasInrTrainer, ssim_metric
+from inr_apodizations.modeling.trainer import DasInrTrainer
+from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 
 

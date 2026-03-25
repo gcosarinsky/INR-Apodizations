@@ -17,8 +17,8 @@ import tensorflow as tf
 
 import helpers
 from inr_apodizations import config
-from model_defs import DasInrTrainer, rmse
-from model_defs import ssim_metric
+from inr_apodizations.modeling.trainer import DasInrTrainer
+from inr_apodizations.modeling.metrics import rmse, ssim_metric
 
 
 # Load config and seeds.

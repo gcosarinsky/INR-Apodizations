@@ -44,6 +44,8 @@ def generate_das_modulated_target(das_image, scatterers, x_grid, z_grid, sigma_x
     das_image: ndarray (nz, nx), real or complex
     scatterers: (n_scatterers, >=2) - columns include x, z as first two values
     x_grid, z_grid: meshgrid arrays of shape (nz, nx)
+
+    TODO: target could be RF instead of abs
     """
     gaussian_mask = generate_unit_gaussian_mask(
         scatterers,
