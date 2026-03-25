@@ -29,6 +29,7 @@ import tensorflow as tf
 import helpers
 from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.modeling.metrics import ssim_metric
+from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 
 
@@ -103,25 +104,57 @@ trainer = DasInrTrainer(
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),
 )
+# Shared optional parameters for custom mae_db loss/metric.
+mae_db_ref_cfg = cfg["training"].get("mae_db_ref", None)
+mae_db_eps = float(cfg["training"].get("mae_db_eps", 1e-8))
+
+if mae_db_ref_cfg is None:
+    mae_db_ref = None
+else:
+    if not isinstance(mae_db_ref_cfg, (list, tuple)) or len(mae_db_ref_cfg) != 2:
+        raise ValueError("training.mae_db_ref must be a list/tuple with two values")
+    mae_db_ref = (float(mae_db_ref_cfg[0]), float(mae_db_ref_cfg[1]))
+
+
+def _resolve_custom_mae_db(item, *, name: str):
+    if isinstance(item, str) and item.lower() == "mae_db":
+        return mae_db_factory(ref=mae_db_ref, eps=mae_db_eps, name=name)
+    return item
+
+
 # Resolve loss from config and instantiate a Keras loss object.
 # The config can contain any valid identifier accepted by `tf.keras.losses.get`,
 # fallback to MAE if resolution fails.
 loss_name = cfg["training"].get("loss", "mae")
-try:
-    loss_obj = tf.keras.losses.get(loss_name)
-except Exception:
-    loss_str = str(loss_name).lower()
-    if loss_str in ("mae", "mean_absolute_error"):
-        loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
-    elif loss_str in ("mse", "mean_squared_error"):
-        loss_obj = tf.keras.losses.MeanSquaredError(name="mse")
-    else:
-        loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+if isinstance(loss_name, str) and loss_name.lower() == "mae_db":
+    loss_obj = mae_db_factory(ref=mae_db_ref, eps=mae_db_eps, name="mae_db")
+else:
+    try:
+        loss_obj = tf.keras.losses.get(loss_name)
+    except Exception:
+        loss_str = str(loss_name).lower()
+        if loss_str in ("mae", "mean_absolute_error"):
+            loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+        elif loss_str in ("mse", "mean_squared_error"):
+            loss_obj = tf.keras.losses.MeanSquaredError(name="mse")
+        else:
+            loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+
+# Resolve metrics from config with optional support for custom mae_db.
+metrics_cfg = cfg["training"].get("metric", "mae")
+def _resolve_metric(metric_item):
+    return _resolve_custom_mae_db(metric_item, name="mae_db")
+
+
+if isinstance(metrics_cfg, (list, tuple)):
+    metrics_list = [_resolve_metric(m) for m in metrics_cfg]
+else:
+    metrics_list = [_resolve_metric(metrics_cfg)]
 
 trainer.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])),
     loss=loss_obj,
-    metrics=['mae'],
+    metrics=metrics_list,
 )
 
 # Keep a deterministic baseline prediction from random INR initialization.

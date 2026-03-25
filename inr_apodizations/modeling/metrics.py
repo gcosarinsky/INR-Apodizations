@@ -85,6 +85,29 @@ def mae_db(
     return tf.reduce_mean(tf.abs(y_true_db - y_pred_db))
 
 
+def mae_db_factory(
+    ref: tuple[float, float] | None = None,
+    eps: float = 1e-8,
+    name: str = "mae_db",
+):
+    """Build a Keras-compatible callable metric for MAE in dB.
+
+    Args:
+        ref: Optional tuple ``(ref_image, ref_target)`` for dB conversion.
+        eps: Small positive constant to stabilize dB conversion.
+        name: Metric function name shown by Keras in logs/history.
+
+    Returns:
+        Callable metric ``metric(y_true, y_pred)`` that computes MAE in dB.
+    """
+
+    def metric(y_true, y_pred):
+        return mae_db(y_true, y_pred, ref=ref, eps=eps)
+
+    metric.__name__ = name
+    return metric
+
+
 def rmse(y_true, y_pred):
     """Compute RMSE between target and prediction images.
 

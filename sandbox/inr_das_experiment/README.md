@@ -30,3 +30,14 @@ Generated plots (saved in the sandbox output run directory):
 - `das_images_comparison_db.png`: DAS comparison panel with Uniform, INR before training,
   INR after training, and Target in shared dB scale.
 - `apodization_map_before_after.png`: apodization maps before and after training at fixed x.
+
+## MAE in dB is collapsing apodizations to zero!!!
+- Targets are sparse (many near-zero pixels), so dB-domain MAE tends to prioritize background matching.
+- This can push the optimizer to reduce global output amplitude, yielding very small learned weights.
+- Using a fixed dB reference (`mae_db_ref: [1, 1]`) can add scale mismatch if amplitudes are not naturally around 1.
+
+Quick recommendations:
+- Use linear MAE/MSE as loss and keep `mae_db` as a metric.
+- If dB optimization is required, use a mixed loss with small dB weight (e.g., `L = MAE + 0.05 * MAE_dB`).
+- Prefer dynamic reference first (`mae_db_ref: null`) before fixing constant refs.
+
