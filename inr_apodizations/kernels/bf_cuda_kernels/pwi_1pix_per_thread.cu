@@ -1,8 +1,8 @@
-__device__ void compute_sample_index(float *x_rx, float *xf, float *zf, float *c1, float *bfd,
+__device__ void compute_sample_index(float *x_rx, float *xf, float *zf, float *c1, float *f_number,
                                      float *fs, int *ns, float *t1, float *t2, float *t,
                                      unsigned int *k, float *ap_dyn) {
     *t2 = hypotf(*x_rx - *xf, *zf) / *c1;
-    *ap_dyn = *zf/(fabsf(*x_rx - *xf) + FLT_EPSILON) > *bfd ;  // dynamic apodization
+    *ap_dyn = *zf/(fabsf(*x_rx - *xf) + FLT_EPSILON) > (2.0 * *f_number) ;  // dynamic apodization (bfd = 2*f_number)
     *t = *t1 + *t2;
     *t = *t * (*t > 0 ? 1 : 0);  /* First sample must be 0 !!! */
     *k = min((unsigned int)floorf(*t * (*fs)), *ns - 2); /* minus 2 to avoid k+1 == ns */
@@ -41,7 +41,7 @@ extern "C" __global__ void pwi_1pix_per_thread(
     float z_step = float_params[Z_STEP];
     float t_start = float_params[T_START];
     float x0 = float_params[X_0];
-    float bfd = float_params[BFD];
+    float f_number = float_params[F_NUMBER];
 
     float xf = x0_roi + x_step * ix;
     float zf = z0_roi + z_step * iz;  // Z POSITIVE DOWNWARDS
@@ -60,7 +60,7 @@ extern "C" __global__ void pwi_1pix_per_thread(
         t1 = ((xf - wave_source) * sinf(theta) + zf * cosf(theta)) / c1 - t_start;
         x_rx = -x0;  // Initialize x_rx for the first element
         for (unsigned short e = 0; e < nel; e++) {
-            compute_sample_index(&x_rx, &xf, &zf, &c1, &bfd, &fs, &ns, &t1, &t2, &t, &k, &ap_dyn);
+            compute_sample_index(&x_rx, &xf, &zf, &c1, &f_number, &fs, &ns, &t1, &t2, &t, &k, &ap_dyn);
             dt = t * fs - k;
 
             temp = (float)matrix[k0 + k];
@@ -119,7 +119,7 @@ extern "C" __global__ void pwi_gather_delayed_samples(
     float z_step = float_params[Z_STEP];
     float t_start = float_params[T_START];
     float x0 = float_params[X_0];
-    float bfd = float_params[BFD];
+    float f_number = float_params[F_NUMBER];
 
     float xf = x0_roi + x_step * ix;
     float zf = z0_roi + z_step * iz;  // Z POSITIVE DOWNWARDS
@@ -139,7 +139,7 @@ extern "C" __global__ void pwi_gather_delayed_samples(
         x_rx = -x0;  // Initialize x_rx for the first element
 
         for (unsigned short e = 0; e < nel; e++) {
-            compute_sample_index(&x_rx, &xf, &zf, &c1, &bfd, &fs, &ns, &t1, &t2, &t, &k, &ap_dyn);
+            compute_sample_index(&x_rx, &xf, &zf, &c1, &f_number, &fs, &ns, &t1, &t2, &t, &k, &ap_dyn);
             dt = t * fs - k;
 
             temp = (float)matrix[k0 + k];
@@ -188,7 +188,7 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
     float pitch = float_params[PITCH];
     float t_start = float_params[T_START];
     float x0 = float_params[X_0];
-    float bfd = float_params[BFD];
+    float f_number = float_params[F_NUMBER];
 
     // Get coordinates of the current point
     float xf = points_x[point_idx];
@@ -210,7 +210,7 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
         k0 = i * nel * ns;  // Offset for this angle in matrix
 
         for (unsigned short e = 0; e < nel; e++) {
-            compute_sample_index(&x_rx, &xf, &zf, &c1, &bfd, &fs, &ns, 
+            compute_sample_index(&x_rx, &xf, &zf, &c1, &f_number, &fs, &ns, 
                                &t1, &t2, &t, &k, &ap_dyn);
             dt = t * fs - k;
 

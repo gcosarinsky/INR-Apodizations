@@ -4,7 +4,7 @@ enum FloatParams {
     PITCH,
     F1,
     F2,
-    BFD,
+    F_NUMBER,
     X_STEP,
     Z_STEP,
     X0_ROI,

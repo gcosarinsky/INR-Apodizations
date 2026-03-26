@@ -26,7 +26,6 @@ from inr_apodizations.apodizations import (
 from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
-from inr_apodizations.utils import find_latest_dataset_folder
 
 CONFIG_PATH = CONFIGS_DIR / "das_standard_apodizations.yml"
 
@@ -56,7 +55,15 @@ def load_yaml_config(config_path: Path) -> dict:
     if not isinstance(config, dict):
         raise ValueError("YAML config must be a dictionary.")
 
-    required = ["dataset_subdir", "example_idx", "methods", "save", "show", "output_dir"]
+    required = [
+        "delayed_samples_dataset",
+        "example_idx",
+        "methods",
+        "f_number",
+        "save",
+        "show",
+        "output_dir",
+    ]
     missing = [key for key in required if key not in config]
     if missing:
         raise ValueError(f"Missing YAML keys: {missing}")
@@ -97,12 +104,16 @@ import matplotlib.pyplot as plt
 print(f"Using YAML config: {CONFIG_PATH}")
 print(f"TensorFlow GPU devices: {tf.config.list_physical_devices('GPU')}")
 
-latest_folder = find_latest_dataset_folder(DATA_DIR, cfg_user["dataset_subdir"])
-print(f"Using delayed-samples dataset: {latest_folder}")
+dataset_subdir = str(cfg_user["delayed_samples_dataset"]).strip()
+dataset_folder = DATA_DIR / "delayed_samples_dataset" / dataset_subdir
+if not dataset_folder.exists():
+    raise FileNotFoundError(f"Configured dataset folder does not exist: {dataset_folder}")
 
-cfg_path = latest_folder / "cfg_delayed_samples.npy"
-delayed_path = latest_folder / "delayed_samples_dataset.npy"
-targets_path = latest_folder / "targets_dataset.npy"
+print(f"Using delayed-samples dataset: {dataset_folder}")
+
+cfg_path = dataset_folder / "cfg_delayed_samples.npy"
+delayed_path = dataset_folder / "delayed_samples_dataset.npy"
+targets_path = dataset_folder / "targets_dataset.npy"
 
 if not cfg_path.exists():
     raise FileNotFoundError(f"Configuration file not found: {cfg_path}")
@@ -110,6 +121,13 @@ if not delayed_path.exists():
     raise FileNotFoundError(f"Delayed samples file not found: {delayed_path}")
 
 cfg = np.load(cfg_path, allow_pickle=True).item()
+if "f_number" not in cfg and "bfd" in cfg:
+    cfg["f_number"] = cfg["bfd"]/2.0
+    print(
+        "Legacy dataset cfg detected: using cfg['bfd'] to populate cfg['f_number'] "
+        "before KernelParameters2D initialization."
+    )
+
 use_mmap = bool(cfg_user.get("use_mmap", True))
 if use_mmap:
     delayed_samples_all = np.load(delayed_path, mmap_mode="r")
@@ -137,9 +155,15 @@ cm = CoordinateManager(kp)
 
 methods = [str(method).strip().lower() for method in cfg_user["methods"]]
 scaled = bool(cfg_user.get("scaled", False))
-bfd = kp.bfd
+f_number = float(cfg_user["f_number"])
+if f_number <= 0.0:
+    raise ValueError(f"`f_number` must be > 0, got {f_number}")
+print(
+    "Using f_number from YAML: "
+    f"{f_number} (kp.f_number={kp.f_number} from dataset config is ignored in this script)."
+)
 
-apods = compute_dynamic_apodizations_tf(cm=cm, bfd=bfd, methods=methods, scaled=scaled)
+apods = compute_dynamic_apodizations_tf(cm=cm, f_number=f_number, methods=methods, scaled=scaled)
 if len(apods) == 0:
     raise ValueError(f"No valid apodization methods computed from methods={methods}")
 

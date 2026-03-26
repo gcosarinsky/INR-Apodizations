@@ -12,7 +12,7 @@ import tensorflow as tf
 
 def compute_dynamic_apodizations_tf(
     cm,
-    bfd,
+    f_number,
     methods=("boxcar", "hanning"),
     scaled=False,
     eps=1e-8,
@@ -21,7 +21,7 @@ def compute_dynamic_apodizations_tf(
 
     Args:
         cm: CoordinateManager instance.
-        bfd: Twice f-number used for dynamic aperture, where ap_radius = z / bfd.
+        f_number: F-number used for dynamic aperture, where ap_radius = z / (2 * f_number).
         methods: Iterable containing any of "boxcar" and "hanning".
         scaled: Whether to use scaled coordinates/features from CoordinateManager.
         eps: Small epsilon used to avoid division by zero.
@@ -31,13 +31,13 @@ def compute_dynamic_apodizations_tf(
         and dtype tf.float32.
 
     Raises:
-        ZeroDivisionError: If bfd is zero.
+        ZeroDivisionError: If f_number is zero.
     """
     features = cm.get_features_grid(scaled=scaled)
     dist = tf.cast(features[..., 0], tf.float32)
     depth = tf.cast(features[..., 1], tf.float32)
 
-    ap_radius = depth / float(bfd)
+    ap_radius = depth / (2.0 * float(f_number))
 
     out = {}
     pi = tf.constant(math.pi, dtype=tf.float32)

@@ -1,8 +1,9 @@
 # Copy this file to configs/das_apodizations.yml and edit values as needed.
 
-dataset_subdir: delayed_samples_dataset
+delayed_samples_dataset: "20260326_102630"   # name of the delayed samples dataset to use as input
 example_idx: 0
 methods: [boxcar, hanning]
+f_number: 1.0
 scaled: false
 
 # Apodization plotting slices

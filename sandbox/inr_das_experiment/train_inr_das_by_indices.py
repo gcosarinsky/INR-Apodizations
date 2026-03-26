@@ -232,19 +232,19 @@ history = trainer.fit(
 predicted_after_image, weights_after_grid = trainer.reconstruct_image(sample_delayed, training=False)
 uniform_image = tf.abs(tf.reduce_sum(sample_delayed, axis=1))
 
-# Determine baseline bfd: allow override from config `training.baseline_bfd`.
-_cfg_bfd = cfg["training"].get("baseline_bfd", None)
-if _cfg_bfd is None:
-    baseline_bfd = kp.bfd
+# Determine baseline f_number: allow override from config `training.baseline_f_number`.
+_cfg_f_number = cfg["training"].get("baseline_f_number", None)
+if _cfg_f_number is None:
+    baseline_f_number = kp.f_number
 else:
     try:
-        baseline_bfd = float(_cfg_bfd)
+        baseline_f_number = float(_cfg_f_number)
     except Exception:
-        baseline_bfd = kp.bfd
+        baseline_f_number = kp.f_number
 
 # Compute Hanning baseline DAS image using library apodizations (single example batch)
 apods_h = compute_dynamic_apodizations_tf(
-    cm=cm, bfd=baseline_bfd, methods=("hanning",), scaled=bool(cfg["model"]["scaled_features"]))
+    cm=cm, f_number=baseline_f_number, methods=("hanning",), scaled=bool(cfg["model"]["scaled_features"]))
 
 hanning_weights = apods_h["hanning"]  # shape: (E, Z, X)
 hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)  # add batch dim -> (1, E, Z, X)
@@ -261,7 +261,7 @@ effective_cfg = {
         "nz": kp.nz,
         "nx": kp.nx,
         "roi_effective": list(kp.roi_effective),
-        "baseline_bfd_used": float(baseline_bfd),
+        "baseline_f_number_used": float(baseline_f_number),
     },
     "experiment": cfg,
 }

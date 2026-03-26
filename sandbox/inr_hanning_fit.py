@@ -242,7 +242,7 @@ np.random.seed(RANDOM_SEED)
 
 kp, cm, cfg_path = load_coordinate_manager()
 print(f"Loaded configuration from: {cfg_path}")
-print(f"Kernel params: n_elements={kp.n_elements}, nx={kp.nx}, nz={kp.nz}, bfd={kp.bfd}")
+print(f"Kernel params: n_elements={kp.n_elements}, nx={kp.nx}, nz={kp.nz}, f_number={kp.f_number}")
 print(f"CoordinateManager shape (n_elem, nz, nx): {cm.shape}")
 
 coords = cm.get_coordinates_1d(scaled=False)
@@ -254,7 +254,7 @@ z_idx = cm.nz // 2
 
 target_hanning = compute_dynamic_apodizations_tf(
     cm,
-    kp.bfd,
+    kp.f_number,
     methods=("hanning",),
     scaled=False,
 )["hanning"]

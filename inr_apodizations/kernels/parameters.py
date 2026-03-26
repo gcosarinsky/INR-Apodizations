@@ -123,7 +123,7 @@ class KernelParameters2D(KernelParametersBase):
         "pitch",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "z_step",
         "t_start",  # floats
@@ -144,7 +144,7 @@ class KernelParameters2D(KernelParametersBase):
         "pitch",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "z_step",
         "x0_roi",
@@ -174,7 +174,7 @@ class KernelParameters2D(KernelParametersBase):
         "pitch": 0.5,  # mm
         "f1": 1,  # MHz
         "f2": 10,  # MHz
-        "bfd": 1,  # twice f#
+        "f_number": 0.5,  # f-number for dynamic focusing
         "x_step": 0.2,  # mm
         "z_step": 0.2,  # mm
         "t_start": 0.0,  # us
@@ -260,7 +260,7 @@ class KernelParameters3D(KernelParametersBase):
         "pitch_y",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "y_step",
         "z_step",
@@ -288,7 +288,7 @@ class KernelParameters3D(KernelParametersBase):
         "pitch_y",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "y_step",
         "z_step",
@@ -330,7 +330,7 @@ class KernelParameters3D(KernelParametersBase):
         "pitch_y": 0.5,  # mm
         "f1": 1,  # MHz
         "f2": 10,  # MHz
-        "bfd": 1,  # twice f#
+        "f_number": 0.5,  # f-number for dynamic focusing
         "x_step": 0.2,  # mm
         "y_step": 0.2,  # mm
         "z_step": 0.2,  # mm
