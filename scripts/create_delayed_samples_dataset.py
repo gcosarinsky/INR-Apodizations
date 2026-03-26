@@ -7,7 +7,7 @@ from datetime import datetime
 from scipy import signal
 import inr_apodizations.hilbert_coef as hilb
 from inr_apodizations.kernels import KernelParameters2D
-from inr_apodizations.dataset import generate_das_modulated_target
+from inr_apodizations.dataset import generate_das_modulated_target, generate_unit_gaussian_mask
 from inr_apodizations.config import CONFIGS_DIR, DATA_DIR, CUDA_DIR
 import yaml
 
@@ -35,10 +35,11 @@ kp = KernelParameters2D(cfg)
 n_examples, n_angles, n_elements, n_samples = RF.shape
 nz, nx = kp.nz, kp.nx
 
-# Pre-allocate arrays for delayed samples and targets
+# Pre-allocate arrays for delayed samples, targets and gaussian masks
 delayed_samples_all = np.zeros((n_examples, n_elements, nz, nx), dtype=np.complex64)
 print(f'Pre-allocated delayed_samples_all with size in MB: {delayed_samples_all.nbytes / (1024*1024)} MB')
 targets_all = np.zeros((n_examples, nz, nx), dtype=np.float32)
+gaussian_masks_all = np.zeros((n_examples, nz, nx), dtype=np.float32)
 
 # Prepare grids for target generation
 x = np.linspace(kp.roi_effective[0], kp.roi_effective[1], kp.nx)
@@ -102,15 +103,15 @@ for idx in range(n_examples):
 
     # Uniform DAS image (sum over receive elements) modulated by unit-amplitude Gaussian mask
     das_uniform = delayed_samples.sum(axis=0)
-    target_img = generate_das_modulated_target(
-        das_uniform,
+    gaussian_mask = generate_unit_gaussian_mask(
         1000 * scat,
         x_grid,
         z_grid,
         sigma_x=cfg['target']['sigma_x'],
         sigma_z=cfg['target']['sigma_z'],
     )
-    targets_all[idx] = target_img
+    targets_all[idx] = np.abs(das_uniform).astype(np.float32) * gaussian_mask
+    gaussian_masks_all[idx] = gaussian_mask
 
 cp.cuda.Device().synchronize()  # Ensure all operations are complete
 
@@ -119,6 +120,7 @@ output_folder = DATA_DIR / "delayed_samples_dataset" / datetime.now().strftime("
 output_folder.mkdir(parents=True, exist_ok=True)    
 np.save(output_folder / 'delayed_samples_dataset.npy', delayed_samples_all)
 np.save(output_folder / 'targets_dataset.npy', targets_all)
+np.save(output_folder / 'gaussian_masks_dataset.npy', gaussian_masks_all)
 np.save(output_folder / 'cfg_delayed_samples.npy', cfg)
 
 # Guardar la configuración de beamforming y metadatos en YAML
@@ -126,6 +128,7 @@ info_yaml_path = output_folder / 'delayed_samples_info.yaml'
 info = {
     'generated': datetime.now().strftime("%Y%m%d_%H%M%S"),
     'delayed_samples_shape': list(delayed_samples_all.shape),
+    'gaussian_masks_shape': list(gaussian_masks_all.shape),
     'roi_effective': list(kp.roi_effective),
     'rf_dataset': dataset_path.name,
     'config': cfg,    

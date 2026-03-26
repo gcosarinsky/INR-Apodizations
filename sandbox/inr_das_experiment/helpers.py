@@ -23,34 +23,45 @@ from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 
 
-def load_delayed_samples_dataset(folder: str) -> Tuple[np.ndarray, np.ndarray, dict]:
+def load_delayed_samples_dataset(folder: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
-    Load delayed samples dataset and targets from a dataset folder.
+    Load delayed samples dataset, targets, gaussian masks and metadata from a dataset folder.
 
     Expects files inside `folder`: `delayed_samples_dataset.npy`,
-    `targets_dataset.npy` and `delayed_samples_info.yaml` (optional).
+    `targets_dataset.npy`, `gaussian_masks_dataset.npy` and
+    `delayed_samples_info.yaml` (optional).
 
     Returns:
         delayed: np.ndarray, shape (N, E, Z, X), dtype complex64
         targets: np.ndarray, shape (N, Z, X), dtype float32
+        gaussian_masks: np.ndarray, shape (N, Z, X), dtype float32, values in [0, 1]
         info: dict with parsed YAML metadata (empty dict if not present)
+
+    Raises:
+        FileNotFoundError: If delayed samples, targets or gaussian masks files are missing.
     """
     delayed_path = os.path.join(folder, "delayed_samples_dataset.npy")
     targets_path = os.path.join(folder, "targets_dataset.npy")
+    masks_path = os.path.join(folder, "gaussian_masks_dataset.npy")
     info_path = os.path.join(folder, "delayed_samples_info.yaml")
 
     if not os.path.exists(delayed_path) or not os.path.exists(targets_path):
         raise FileNotFoundError("Delayed samples or targets .npy not found in %s" % folder)
+    if not os.path.exists(masks_path):
+        raise FileNotFoundError(
+            "gaussian_masks_dataset.npy not found in %s. Regenerate the dataset." % folder
+        )
 
     delayed = np.load(delayed_path, allow_pickle=False)
     targets = np.load(targets_path, allow_pickle=False)
+    gaussian_masks = np.load(masks_path, allow_pickle=False)
 
     info = {}
     if os.path.exists(info_path):
         with open(info_path, "r", encoding="utf-8") as f:
             info = yaml.safe_load(f) or {}
 
-    return delayed, targets, info
+    return delayed, targets, gaussian_masks, info
 
 
 def load_saved_beamforming_config(folder: str) -> dict:
@@ -79,17 +90,29 @@ def build_coordinate_manager(dataset_folder: str) -> tuple[KernelParameters2D, C
     return kp, cm
 
 
-def validate_dataset_shapes(delayed: np.ndarray, targets: np.ndarray) -> None:
+def validate_dataset_shapes(
+    delayed: np.ndarray, targets: np.ndarray, gaussian_masks: np.ndarray
+) -> None:
     """
     Basic assertions ensuring the dataset contract we rely on.
 
-    Raises AssertionError if mismatch or types unexpected.
+    Args:
+        delayed: Delayed samples array, expected shape (N, E, Z, X), complex64.
+        targets: Target images array, expected shape (N, Z, X), float32/64.
+        gaussian_masks: Gaussian mask array, expected shape (N, Z, X), float32/64.
+
+    Raises:
+        AssertionError: If shapes, dtypes or batch sizes are inconsistent.
     """
     assert delayed.ndim == 4, "delayed must be (N, E, Z, X)"
     assert targets.ndim == 3, "targets must be (N, Z, X)"
+    assert gaussian_masks.ndim == 3, "gaussian_masks must be (N, Z, X)"
     assert delayed.shape[0] == targets.shape[0], "N mismatch between delayed and targets"
+    assert delayed.shape[0] == gaussian_masks.shape[0], "N mismatch between delayed and gaussian_masks"
+    assert targets.shape == gaussian_masks.shape, "Shape mismatch between targets and gaussian_masks"
     assert np.iscomplexobj(delayed), "delayed_samples must be complex-valued"
     assert targets.dtype == np.float32 or targets.dtype == np.float64, "targets must be float"
+    assert gaussian_masks.dtype == np.float32 or gaussian_masks.dtype == np.float64, "gaussian_masks must be float"
 
 
 def split_train_validation_examples(
@@ -362,43 +385,37 @@ def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config
         yaml.safe_dump(config, file, sort_keys=False)
 
 
-def build_proxy_loss_weights(targets_array: np.ndarray, weighting_cfg: dict) -> np.ndarray | None:
-    """Build per-pixel loss weights from normalized targets as a reflector proxy.
+def build_gaussian_loss_weights(
+    gaussian_masks_array: np.ndarray, weighting_cfg: dict
+) -> np.ndarray | None:
+    """Build per-pixel loss weights directly from gaussian masks using ``1 + lambda * mask``.
+
+    The gaussian mask is expected to be in [0, 1], so the resulting weights are
+    in [1, 1 + lambda]. No normalization or clipping is applied.
 
     Args:
-        targets_array: Target tensor with shape ``(N, Z, X)``.
+        gaussian_masks_array: Gaussian mask tensor with shape ``(N, Z, X)``,
+            values in ``[0, 1]``.
         weighting_cfg: Configuration mapping under ``training.mask_weighting``.
+            Expected key: ``lambda`` (float, default 3.0).
 
     Returns:
         Optional weight tensor with shape ``(N, Z, X)`` and dtype float32.
         Returns ``None`` when weighting is disabled.
 
     Raises:
-        ValueError: If configuration values are invalid.
+        ValueError: If ``lambda`` is negative.
     """
     enabled = bool(weighting_cfg.get("enabled", False))
     if not enabled:
         return None
 
-    eps = float(weighting_cfg.get("eps", 1e-6))
-    if eps <= 0.0:
-        raise ValueError("training.mask_weighting.eps must be > 0")
-
     weight_lambda = float(weighting_cfg.get("lambda", 3.0))
-    min_weight = float(weighting_cfg.get("min_weight", 0.25))
-    max_weight = float(weighting_cfg.get("max_weight", 4.0))
-    if min_weight <= 0.0 or max_weight <= 0.0 or min_weight > max_weight:
-        raise ValueError(
-            "training.mask_weighting min/max must be positive and satisfy min_weight <= max_weight"
-        )
+    if weight_lambda < 0.0:
+        raise ValueError("training.mask_weighting.lambda must be >= 0")
 
-    targets_float = targets_array.astype(np.float32, copy=False)
-    per_example_max = np.max(targets_float, axis=(1, 2), keepdims=True)
-    proxy_mask = targets_float / (per_example_max + eps)
-
-    weights = 1.0 + weight_lambda * proxy_mask
-    weights = weights / (np.mean(weights, axis=(1, 2), keepdims=True) + eps)
-    weights = np.clip(weights, min_weight, max_weight)
+    masks_float = gaussian_masks_array.astype(np.float32, copy=False)
+    weights = 1.0 + weight_lambda * masks_float
     return weights.astype(np.float32, copy=False)
 
 

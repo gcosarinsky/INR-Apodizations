@@ -47,8 +47,8 @@ if not dataset_folder.is_absolute():
     dataset_folder = config.PROJ_ROOT / dataset_folder
 dataset_folder = str(dataset_folder)
 print("Loading dataset from:", dataset_folder)
-delayed, targets, info = helpers.load_delayed_samples_dataset(dataset_folder)
-helpers.validate_dataset_shapes(delayed, targets)
+delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(dataset_folder)
+helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
 kp, cm = helpers.build_coordinate_manager(dataset_folder)
 
 max_examples = cfg["training"].get("max_examples")
@@ -57,7 +57,7 @@ if max_examples is not None:
     targets = targets[: int(max_examples)]
 
 mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
-train_loss_weights = helpers.build_proxy_loss_weights(targets, mask_weighting_cfg)
+train_loss_weights = helpers.build_gaussian_loss_weights(gaussian_masks, mask_weighting_cfg)
 use_pixelwise_weights = train_loss_weights is not None
 
 train_idx, val_idx = helpers.split_train_validation_indices(
