@@ -11,7 +11,7 @@ enum FloatParams {
     Z0_ROI,
     T_START,
     X_0,
-    FLOAT_PARAMS_COUNT // Número total de parámetros float
+    FLOAT_PARAMS_COUNT // Total number of float parameters
 };
 
 enum IntParams {
@@ -23,5 +23,5 @@ enum IntParams {
     NX,
     NZ,
     N_SAMPLES,
-    INT_PARAMS_COUNT // Número total de parámetros int
+    INT_PARAMS_COUNT // Total number of int parameters
 };

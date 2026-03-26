@@ -2,10 +2,10 @@ __device__ void compute_sample_index(float *x_rx, float *xf, float *zf, float *c
                                      float *fs, int *ns, float *t1, float *t2, float *t,
                                      unsigned int *k, float *ap_dyn) {
     *t2 = hypotf(*x_rx - *xf, *zf) / *c1;
-    *ap_dyn = *zf/(fabsf(*x_rx - *xf) + FLT_EPSILON) > *bfd ;  // Apodización dinámica
+    *ap_dyn = *zf/(fabsf(*x_rx - *xf) + FLT_EPSILON) > *bfd ;  // dynamic apodization
     *t = *t1 + *t2;
     *t = *t * (*t > 0 ? 1 : 0);  /* First sample must be 0 !!! */
-    *k = min((unsigned int)floorf(*t * (*fs)), *ns - 2); /* resto 2 para evitar que k+1 = ns */
+    *k = min((unsigned int)floorf(*t * (*fs)), *ns - 2); /* minus 2 to avoid k+1 == ns */
 }
 
 
@@ -22,14 +22,14 @@ extern "C" __global__ void pwi_1pix_per_thread(
     unsigned short iz = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned short ix = blockIdx.y * blockDim.y + threadIdx.y;
 
-    // Obtener los parámetros enteros y flotantes
+    // Get integer and float parameters
     // int_params
     int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
     int nx = int_params[NX];
     int nz = int_params[NZ];
-    if (iz >= nz || ix >= nx) return;  // Verificar límites de los índices
+    if (iz >= nz || ix >= nx) return;  // Check index bounds
 
     // float params
     float fs = float_params[FS];
@@ -58,7 +58,7 @@ extern "C" __global__ void pwi_1pix_per_thread(
         theta = angles[i];
         wave_source = x0 * (theta < 0 ? 1 : -1);
         t1 = ((xf - wave_source) * sinf(theta) + zf * cosf(theta)) / c1 - t_start;
-        x_rx = -x0;  // Inicializar x_rx para el primer elemento
+        x_rx = -x0;  // Initialize x_rx for the first element
         for (unsigned short e = 0; e < nel; e++) {
             compute_sample_index(&x_rx, &xf, &zf, &c1, &bfd, &fs, &ns, &t1, &t2, &t, &k, &ap_dyn);
             dt = t * fs - k;
@@ -71,13 +71,13 @@ extern "C" __global__ void pwi_1pix_per_thread(
             b = ((float)matrix_imag[k0 + k + 1] - temp) * dt + temp;
             q_imag += b * ap_dyn;
 
-            temp = hypotf(a, b) + FLT_EPSILON;  /* módulo del "fasor" */
-            /* se suman las componentes de los fasores para cada A-scan */
+            temp = hypotf(a, b) + FLT_EPSILON;  /* magnitude of the phasor */
+            /* sum phasor components for each A-scan */
             w += a / temp;
             w_imag += b / temp;
 
             k0 += ns;
-            x_rx += pitch;  // Incrementar x_rx para cada elemento
+            x_rx += pitch;  // Increment x_rx for each element
         }
 
     }
@@ -100,14 +100,14 @@ extern "C" __global__ void pwi_gather_delayed_samples(
     unsigned short iz = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned short ix = blockIdx.y * blockDim.y + threadIdx.y;
 
-    // Obtener los parámetros enteros y flotantes
+    // Get integer and float parameters
     // int_params
     int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
     int nx = int_params[NX];
     int nz = int_params[NZ];
-    if (iz >= nz || ix >= nx) return;  // Verificar límites de los índices
+    if (iz >= nz || ix >= nx) return;  // Check index bounds
 
     // float params
     float fs = float_params[FS];
@@ -136,7 +136,7 @@ extern "C" __global__ void pwi_gather_delayed_samples(
         theta = angles[i];
         wave_source = x0 * (theta < 0 ? 1 : -1);
         t1 = ((xf - wave_source) * sinf(theta) + zf * cosf(theta)) / c1 - t_start;
-        x_rx = -x0;  // Inicializar x_rx para el primer elemento
+        x_rx = -x0;  // Initialize x_rx for the first element
 
         for (unsigned short e = 0; e < nel; e++) {
             compute_sample_index(&x_rx, &xf, &zf, &c1, &bfd, &fs, &ns, &t1, &t2, &t, &k, &ap_dyn);
@@ -154,7 +154,7 @@ extern "C" __global__ void pwi_gather_delayed_samples(
 
             idx += n_pix ;
             k0 += ns;
-            x_rx += pitch;  // Incrementar x_rx para cada elemento
+            x_rx += pitch;  // Increment x_rx for each element
         }
     }
 }
@@ -167,12 +167,12 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
                                const float *angles,
                                const short *matrix,
                                const short *matrix_imag,
-                               const float *points_x,    // Lista de coordenadas x
-                               const float *points_z,    // Lista de coordenadas z
-                               const int n_points,       // Número total de puntos
+                               const float *points_x,    // List of x coordinates
+                               const float *points_z,    // List of z coordinates
+                               const int n_points,       // Total number of points
                                float2 *delayed_samples)  // Output: [n_angles, n_elements, n_points]
 {
-    // Cada thread procesa un punto
+    // Each thread processes one point
     int point_idx = blockIdx.x * blockDim.x + threadIdx.x;
     
     if (point_idx >= n_points) return;
@@ -190,7 +190,7 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
     float x0 = float_params[X_0];
     float bfd = float_params[BFD];
 
-    // Obtener coordenadas del punto actual
+    // Get coordinates of the current point
     float xf = points_x[point_idx];
     float zf = points_z[point_idx];
 
@@ -207,25 +207,25 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
         t1 = ((xf - wave_source) * sinf(theta) + zf * cosf(theta)) / c1 - t_start;
         
         x_rx = -x0;
-        k0 = i * nel * ns;  // Offset para este ángulo en matrix
+        k0 = i * nel * ns;  // Offset for this angle in matrix
 
         for (unsigned short e = 0; e < nel; e++) {
             compute_sample_index(&x_rx, &xf, &zf, &c1, &bfd, &fs, &ns, 
                                &t1, &t2, &t, &k, &ap_dyn);
             dt = t * fs - k;
 
-            // Interpolación lineal
+            // Linear interpolation
             temp = (float)matrix[k0 + k];
             a = ((float)matrix[k0 + k + 1] - temp) * dt + temp;
 
             temp = (float)matrix_imag[k0 + k];
             b = ((float)matrix_imag[k0 + k + 1] - temp) * dt + temp;
 
-            // Aplicar apodización dinámica
+            // Apply dynamic apodization
             a *= ap_dyn;
             b *= ap_dyn;
 
-            // Guardar en output: [angle, element, point]
+            // Store in output: [angle, element, point]
             delayed_samples[output_idx].x = a;
             delayed_samples[output_idx].y = b;
 
