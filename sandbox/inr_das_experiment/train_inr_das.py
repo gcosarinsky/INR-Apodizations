@@ -56,6 +56,48 @@ if max_examples is not None:
     delayed = delayed[: int(max_examples)]
     targets = targets[: int(max_examples)]
 
+
+def _build_proxy_loss_weights(targets_array: np.ndarray, weighting_cfg: dict) -> np.ndarray | None:
+    """Build per-pixel loss weights from normalized targets as a reflector proxy.
+
+    Args:
+        targets_array: Target tensor with shape ``(N, Z, X)``.
+        weighting_cfg: Configuration mapping under ``training.mask_weighting``.
+
+    Returns:
+        Optional weight tensor with shape ``(N, Z, X)`` and dtype float32.
+        Returns ``None`` when weighting is disabled.
+    """
+    enabled = bool(weighting_cfg.get("enabled", False))
+    if not enabled:
+        return None
+
+    eps = float(weighting_cfg.get("eps", 1e-6))
+    if eps <= 0.0:
+        raise ValueError("training.mask_weighting.eps must be > 0")
+
+    weight_lambda = float(weighting_cfg.get("lambda", 3.0))
+    min_weight = float(weighting_cfg.get("min_weight", 0.25))
+    max_weight = float(weighting_cfg.get("max_weight", 4.0))
+    if min_weight <= 0.0 or max_weight <= 0.0 or min_weight > max_weight:
+        raise ValueError(
+            "training.mask_weighting min/max must be positive and satisfy min_weight <= max_weight"
+        )
+
+    targets_float = targets_array.astype(np.float32, copy=False)
+    per_example_max = np.max(targets_float, axis=(1, 2), keepdims=True)
+    proxy_mask = targets_float / (per_example_max + eps)
+
+    weights = 1.0 + weight_lambda * proxy_mask
+    weights = weights / (np.mean(weights, axis=(1, 2), keepdims=True) + eps)
+    weights = np.clip(weights, min_weight, max_weight)
+    return weights.astype(np.float32, copy=False)
+
+
+mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
+train_loss_weights = _build_proxy_loss_weights(targets, mask_weighting_cfg)
+use_pixelwise_weights = train_loss_weights is not None
+
 train_idx, val_idx = helpers.split_train_validation_indices(
     n_examples=delayed.shape[0],
     train_fraction=float(cfg["training"]["train_fraction"]),
@@ -79,6 +121,7 @@ train_ds = helpers.build_tf_dataset_by_indices(
     delayed,
     targets,
     indices=train_idx,
+    sample_weights=train_loss_weights,
     batch_size=int(cfg["training"]["batch_size"]),
     shuffle=True,
     seed=int(cfg["training"]["seed"]),
@@ -123,6 +166,21 @@ def _resolve_custom_mae_db(item, *, name: str):
     return item
 
 
+def _pixelwise_mae(y_true, y_pred):
+    """Return element-wise absolute error for per-pixel sample weighting."""
+    return tf.abs(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
+
+
+def _pixelwise_mse(y_true, y_pred):
+    """Return element-wise squared error for per-pixel sample weighting."""
+    diff = tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32)
+    return tf.square(diff)
+
+
+_pixelwise_mae.__name__ = "mae"
+_pixelwise_mse.__name__ = "mse"
+
+
 # Resolve loss from config and instantiate a Keras loss object.
 # The config can contain any valid identifier accepted by `tf.keras.losses.get`,
 # fallback to MAE if resolution fails.
@@ -141,9 +199,22 @@ else:
         else:
             loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
 
+if use_pixelwise_weights and isinstance(loss_name, str):
+    loss_str = loss_name.lower()
+    if loss_str in ("mae", "mean_absolute_error"):
+        loss_obj = _pixelwise_mae
+    elif loss_str in ("mse", "mean_squared_error"):
+        loss_obj = _pixelwise_mse
+
 # Resolve metrics from config with optional support for custom mae_db.
 metrics_cfg = cfg["training"].get("metric", "mae")
 def _resolve_metric(metric_item):
+    if use_pixelwise_weights and isinstance(metric_item, str):
+        metric_str = metric_item.lower()
+        if metric_str in ("mae", "mean_absolute_error"):
+            return _pixelwise_mae
+        if metric_str in ("mse", "mean_squared_error"):
+            return _pixelwise_mse
     return _resolve_custom_mae_db(metric_item, name="mae_db")
 
 

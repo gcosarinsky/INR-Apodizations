@@ -184,6 +184,7 @@ def build_tf_dataset_by_indices(
     delayed: np.ndarray,
     targets: np.ndarray,
     indices: np.ndarray,
+    sample_weights: np.ndarray | None = None,
     batch_size: int = 1,
     shuffle: bool = True,
     seed: Optional[int] = 42,
@@ -192,10 +193,34 @@ def build_tf_dataset_by_indices(
 
     This avoids materializing full delayed/target arrays as TensorFlow constants,
     which can trigger large GPU allocations during pipeline creation.
+
+    Args:
+        delayed: Delayed samples array with shape ``(N, E, Z, X)``.
+        targets: Target images array with shape ``(N, Z, X)``.
+        indices: Example indices selected for the split.
+        sample_weights: Optional per-pixel loss weights with shape ``(N, Z, X)``.
+            When provided, dataset elements follow the Keras tuple contract
+            ``(inputs, targets, sample_weights)``.
+        batch_size: Number of examples per batch.
+        shuffle: Whether to shuffle the selected indices.
+        seed: Random seed used for shuffling.
+
+    Returns:
+        A ``tf.data.Dataset`` yielding either ``(delayed, target)`` or
+        ``(delayed, target, sample_weight)`` batches.
     """
     idx = np.asarray(indices, dtype=np.int64)
     if idx.ndim != 1:
         raise ValueError("indices must be a 1D array")
+
+    if sample_weights is not None:
+        weights = np.asarray(sample_weights)
+        if weights.ndim != 3:
+            raise ValueError("sample_weights must be (N, Z, X)")
+        if weights.shape[0] != delayed.shape[0]:
+            raise ValueError("sample_weights N dimension must match delayed/targets")
+        if weights.shape[1:] != targets.shape[1:]:
+            raise ValueError("sample_weights (Z, X) must match targets")
 
     ds = tf.data.Dataset.from_tensor_slices(idx)
     if shuffle:
@@ -203,22 +228,37 @@ def build_tf_dataset_by_indices(
 
     delayed_shape = tuple(delayed.shape[1:])
     targets_shape = tuple(targets.shape[1:])
+    weights_shape = tuple(targets.shape[1:])
 
     def _load_np(example_idx):
         i = int(example_idx)
         delayed_example = delayed[i].astype(np.complex64, copy=False)
         target_example = targets[i].astype(np.float32, copy=False)
-        return delayed_example, target_example
+        if sample_weights is None:
+            return delayed_example, target_example
+        weight_example = sample_weights[i].astype(np.float32, copy=False)
+        return delayed_example, target_example, weight_example
 
     def _load_tf(example_idx):
-        delayed_example, target_example = tf.numpy_function(
+        if sample_weights is None:
+            delayed_example, target_example = tf.numpy_function(
+                _load_np,
+                [example_idx],
+                [tf.complex64, tf.float32],
+            )
+            delayed_example.set_shape(delayed_shape)
+            target_example.set_shape(targets_shape)
+            return delayed_example, target_example
+
+        delayed_example, target_example, weight_example = tf.numpy_function(
             _load_np,
             [example_idx],
-            [tf.complex64, tf.float32],
+            [tf.complex64, tf.float32, tf.float32],
         )
         delayed_example.set_shape(delayed_shape)
         target_example.set_shape(targets_shape)
-        return delayed_example, target_example
+        weight_example.set_shape(weights_shape)
+        return delayed_example, target_example, weight_example
 
     ds = ds.map(_load_tf, num_parallel_calls=1)
     ds = ds.batch(batch_size, drop_remainder=False)
