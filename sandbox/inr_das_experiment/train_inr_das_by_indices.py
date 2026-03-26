@@ -56,46 +56,8 @@ if max_examples is not None:
     delayed = delayed[: int(max_examples)]
     targets = targets[: int(max_examples)]
 
-
-def _build_proxy_loss_weights(targets_array: np.ndarray, weighting_cfg: dict) -> np.ndarray | None:
-    """Build per-pixel loss weights from normalized targets as a reflector proxy.
-
-    Args:
-        targets_array: Target tensor with shape ``(N, Z, X)``.
-        weighting_cfg: Configuration mapping under ``training.mask_weighting``.
-
-    Returns:
-        Optional weight tensor with shape ``(N, Z, X)`` and dtype float32.
-        Returns ``None`` when weighting is disabled.
-    """
-    enabled = bool(weighting_cfg.get("enabled", False))
-    if not enabled:
-        return None
-
-    eps = float(weighting_cfg.get("eps", 1e-6))
-    if eps <= 0.0:
-        raise ValueError("training.mask_weighting.eps must be > 0")
-
-    weight_lambda = float(weighting_cfg.get("lambda", 3.0))
-    min_weight = float(weighting_cfg.get("min_weight", 0.25))
-    max_weight = float(weighting_cfg.get("max_weight", 4.0))
-    if min_weight <= 0.0 or max_weight <= 0.0 or min_weight > max_weight:
-        raise ValueError(
-            "training.mask_weighting min/max must be positive and satisfy min_weight <= max_weight"
-        )
-
-    targets_float = targets_array.astype(np.float32, copy=False)
-    per_example_max = np.max(targets_float, axis=(1, 2), keepdims=True)
-    proxy_mask = targets_float / (per_example_max + eps)
-
-    weights = 1.0 + weight_lambda * proxy_mask
-    weights = weights / (np.mean(weights, axis=(1, 2), keepdims=True) + eps)
-    weights = np.clip(weights, min_weight, max_weight)
-    return weights.astype(np.float32, copy=False)
-
-
 mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
-train_loss_weights = _build_proxy_loss_weights(targets, mask_weighting_cfg)
+train_loss_weights = helpers.build_proxy_loss_weights(targets, mask_weighting_cfg)
 use_pixelwise_weights = train_loss_weights is not None
 
 train_idx, val_idx = helpers.split_train_validation_indices(

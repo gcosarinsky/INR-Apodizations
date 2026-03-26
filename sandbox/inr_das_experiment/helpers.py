@@ -156,23 +156,37 @@ def split_train_validation_indices(
     return train_idx, val_idx
 
 
-def build_tf_dataset_by_examples(delayed: np.ndarray,
-                                 targets: np.ndarray,
-                                 batch_size: int = 1,
-                                 shuffle: bool = True,
-                                 seed: Optional[int] = 42) -> tf.data.Dataset:
+def build_tf_dataset_by_examples(
+    delayed: np.ndarray,
+    targets: np.ndarray,
+    sample_weights: np.ndarray | None = None,
+    batch_size: int = 1,
+    shuffle: bool = True,
+    seed: Optional[int] = 42,
+) -> tf.data.Dataset:
     """
-    Build a tf.data.Dataset that yields (delayed_example, target_example).
+    Build a tf.data.Dataset that yields (delayed_example, target_example) or
+    (delayed_example, target_example, weight_example) when sample_weights are provided.
 
-    delayed_example: complex64 array (E, Z, X)
-    target_example: float32 array (Z, X)
+    Args:
+        delayed: Complex delayed samples with shape ``(N, E, Z, X)``.
+        targets: Target images with shape ``(N, Z, X)``.
+        sample_weights: Optional per-pixel loss weights with shape ``(N, Z, X)``.
+            When provided, dataset elements follow the Keras tuple contract
+            ``(inputs, targets, sample_weights)``.
+        batch_size: Number of examples per batch.
+        shuffle: Whether to shuffle the dataset.
+        seed: Random seed for shuffling.
 
-    The dataset yields numpy arrays and lets the training logic convert
-    into tensors / compute features. This is simple and robust for
-    an initial baseline that batches by examples (axis=0).
+    Returns:
+        A ``tf.data.Dataset`` yielding batches of ``(delayed, target)`` or
+        ``(delayed, target, weight)`` tuples.
     """
     N = delayed.shape[0]
-    ds = tf.data.Dataset.from_tensor_slices((delayed, targets))
+    if sample_weights is not None:
+        ds = tf.data.Dataset.from_tensor_slices((delayed, targets, sample_weights))
+    else:
+        ds = tf.data.Dataset.from_tensor_slices((delayed, targets))
     if shuffle:
         ds = ds.shuffle(buffer_size=N, seed=seed, reshuffle_each_iteration=True)
     ds = ds.batch(batch_size)
@@ -346,6 +360,46 @@ def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config
 
     with open(os.path.join(output_dir, "config.yml"), "w", encoding="utf-8") as file:
         yaml.safe_dump(config, file, sort_keys=False)
+
+
+def build_proxy_loss_weights(targets_array: np.ndarray, weighting_cfg: dict) -> np.ndarray | None:
+    """Build per-pixel loss weights from normalized targets as a reflector proxy.
+
+    Args:
+        targets_array: Target tensor with shape ``(N, Z, X)``.
+        weighting_cfg: Configuration mapping under ``training.mask_weighting``.
+
+    Returns:
+        Optional weight tensor with shape ``(N, Z, X)`` and dtype float32.
+        Returns ``None`` when weighting is disabled.
+
+    Raises:
+        ValueError: If configuration values are invalid.
+    """
+    enabled = bool(weighting_cfg.get("enabled", False))
+    if not enabled:
+        return None
+
+    eps = float(weighting_cfg.get("eps", 1e-6))
+    if eps <= 0.0:
+        raise ValueError("training.mask_weighting.eps must be > 0")
+
+    weight_lambda = float(weighting_cfg.get("lambda", 3.0))
+    min_weight = float(weighting_cfg.get("min_weight", 0.25))
+    max_weight = float(weighting_cfg.get("max_weight", 4.0))
+    if min_weight <= 0.0 or max_weight <= 0.0 or min_weight > max_weight:
+        raise ValueError(
+            "training.mask_weighting min/max must be positive and satisfy min_weight <= max_weight"
+        )
+
+    targets_float = targets_array.astype(np.float32, copy=False)
+    per_example_max = np.max(targets_float, axis=(1, 2), keepdims=True)
+    proxy_mask = targets_float / (per_example_max + eps)
+
+    weights = 1.0 + weight_lambda * proxy_mask
+    weights = weights / (np.mean(weights, axis=(1, 2), keepdims=True) + eps)
+    weights = np.clip(weights, min_weight, max_weight)
+    return weights.astype(np.float32, copy=False)
 
 
 def save_debug_arrays(output_dir: str, arrays: dict[str, np.ndarray]) -> None:
