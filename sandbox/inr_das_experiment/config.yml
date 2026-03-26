@@ -19,6 +19,7 @@ training:
   metric: mae
   mae_db_ref: null
   mae_db_eps: 1.0e-8
+  baseline_bfd: 1.5
   mask_weighting:
     enabled: true
     lambda: 3.0
