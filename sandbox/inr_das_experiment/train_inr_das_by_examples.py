@@ -262,6 +262,15 @@ hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)  # add batch dim -> 
 hanning_image_complex = tf.reduce_sum(sample_delayed * tf.cast(hanning_weights_b, sample_delayed.dtype), axis=1)
 hanning_image = tf.abs(hanning_image_complex)
 
+# Compute Boxcar baseline DAS image using library apodizations (single example batch)
+apods_b = compute_dynamic_apodizations_tf(
+    cm=cm, f_number=baseline_f_number, methods=("boxcar",), scaled=bool(cfg["model"]["scaled_features"]))
+
+boxcar_weights = apods_b["boxcar"]  # shape: (E, Z, X)
+boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)  # add batch dim -> (1, E, Z, X)
+boxcar_image_complex = tf.reduce_sum(sample_delayed * tf.cast(boxcar_weights_b, sample_delayed.dtype), axis=1)
+boxcar_image = tf.abs(boxcar_image_complex)
+
 
 effective_cfg = {
     "config_path": str(CONFIG_PATH),
@@ -286,8 +295,10 @@ helpers.save_debug_arrays(
         "weights_before_grid": weights_before_grid.numpy(),
         "target_image": val_targets[:1],
         "uniform_image": uniform_image.numpy(),
+        "boxcar_image": boxcar_image.numpy(),
         "hanning_image": hanning_image.numpy(),
         "hanning_weights": hanning_weights.numpy(),
+        "boxcar_weights": boxcar_weights.numpy(),
     },
 )
 
@@ -314,6 +325,19 @@ helpers.plot_das_comparison_db(
     inr_after_image=predicted_after_image.numpy()[0],
     target_image=val_targets[0],
     output_path=str(Path(sandbox_dir) / "das_images_comparison_db_hanning.png"),
+    extent=kp.get_imshow_extent(),
+    cmap=str(plot_cfg.get("cmap", "gray")),
+    vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
+    vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+)
+
+# Also save a comparison figure using Boxcar as the baseline
+helpers.plot_das_comparison_db(
+    uniform_image=boxcar_image.numpy()[0],
+    inr_before_image=predicted_before_image.numpy()[0],
+    inr_after_image=predicted_after_image.numpy()[0],
+    target_image=val_targets[0],
+    output_path=str(Path(sandbox_dir) / "das_images_comparison_db_boxcar.png"),
     extent=kp.get_imshow_extent(),
     cmap=str(plot_cfg.get("cmap", "gray")),
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
