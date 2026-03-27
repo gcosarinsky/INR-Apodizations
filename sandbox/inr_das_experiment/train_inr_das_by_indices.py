@@ -98,12 +98,13 @@ val_ds = helpers.build_tf_dataset_by_indices(
 )
 
 features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]))
+output_activation = cfg["model"].get("output_activation", "sigmoid")
 apodization_model = helpers.build_mlp_inr(
     input_dim=3,
     hidden_units=int(cfg["model"]["hidden_units"]),
     n_hidden=int(cfg["model"]["n_hidden_layers"]),
     activation=cfg["model"]["activation"],
-    output_activation=cfg["model"]["output_activation"],
+    output_activation=output_activation,
 )
 trainer = DasInrTrainer(
     apodization_model=apodization_model,
