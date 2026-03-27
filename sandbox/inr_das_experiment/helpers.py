@@ -342,8 +342,12 @@ def create_run_directories(processed_root: str, sandbox_root: str) -> tuple[str,
 def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config: dict) -> None:
     """Save model and minimal artifacts into ``output_dir``."""
     os.makedirs(output_dir, exist_ok=True)
+    # Save the Keras SavedModel folder (default) and an HDF5 copy (.h5)
     model_path = os.path.join(output_dir, "model.keras")
     model.save(model_path)
+    # SavedModel folder is created above (model.keras). We intentionally
+    # avoid exporting HDF5 (.h5) here to prevent failures with custom
+    # objects; prefer SavedModel or the single-file .keras format.
 
     def _to_serializable(obj):
         """Recursively convert numpy/TF types into Python built-ins for JSON."""
@@ -424,6 +428,136 @@ def save_debug_arrays(output_dir: str, arrays: dict[str, np.ndarray]) -> None:
     os.makedirs(output_dir, exist_ok=True)
     for name, array in arrays.items():
         np.save(os.path.join(output_dir, f"{name}.npy"), array)
+
+
+def compute_scatterer_metrics(
+    image: np.ndarray,
+    scatterers: np.ndarray,
+    cm: CoordinateManager,
+    radius_mm: float = 1.0,
+    return_masks: bool = False,
+    return_background_hist: bool = False,
+    hist_bins: int = 50,
+) -> dict:
+    """Compute peak amplitude per scatterer and background RMS from an abs-DAS image.
+
+    A quasi-circular disk (built once via ``np.ogrid``, morphological-style) is
+    stamped around each scatterer's nearest pixel.  The union of all disks defines
+    the scatterer region; its complement is used as background.
+
+    Args:
+        image: Real-valued abs-DAS image with shape ``(nz, nx)``.
+        scatterers: Array with shape ``(N, 2)`` where columns are ``[x, z]`` in mm.
+        cm: CoordinateManager used to retrieve the image pixel grid in mm.
+        radius_mm: Radius of the circular mask in mm.
+        return_masks: If ``True``, include ``individual_masks`` (N, nz, nx) and
+            ``background_mask`` (nz, nx) in the output dict.
+        return_background_hist: If ``True``, include amplitude histogram of
+            background pixels in the output dict.
+        hist_bins: Number of bins for the background histogram.
+
+    Returns:
+        dict with keys:
+
+        - ``peak_amplitudes``: ``(N,)`` float array, max amplitude within each disk.
+        - ``background_rms``: scalar float, RMS of image pixels outside all disks.
+        - ``background_hist_counts`` / ``background_hist_edges``: only when
+          ``return_background_hist=True``.
+        - ``individual_masks``: only when ``return_masks=True``.
+        - ``background_mask``: only when ``return_masks=True``.
+
+    Raises:
+        ValueError: If ``image`` is not 2-D, ``scatterers`` is not ``(N, 2)``, or
+            ``radius_mm`` is non-positive.
+    """
+    if image.ndim != 2:
+        raise ValueError("image must be 2D (nz, nx)")
+    scatterers = np.asarray(scatterers, dtype=np.float64)
+    if scatterers.ndim != 2 or scatterers.shape[1] != 2:
+        raise ValueError("scatterers must be (N, 2) with columns [x, z] in mm")
+    if radius_mm <= 0.0:
+        raise ValueError("radius_mm must be > 0")
+
+    nz, nx = image.shape
+    coords = cm.get_coordinates_1d(scaled=False)
+    x_coords = np.asarray(coords["x"])   # (nx,)
+    z_coords = np.asarray(coords["z"])   # (nz,)
+
+    dx = float(np.abs(x_coords[1] - x_coords[0])) if nx > 1 else 1.0
+    dz = float(np.abs(z_coords[1] - z_coords[0])) if nz > 1 else 1.0
+
+    # Build the disk kernel once (morphological disk using ogrid).
+    # Pixel spacing may differ along x and z; use an elliptical footprint so
+    # the physical radius is honoured on both axes.
+    rx = max(1, round(radius_mm / dx))
+    rz = max(1, round(radius_mm / dz))
+    r = max(rx, rz)
+    gy, gx = np.ogrid[-r: r + 1, -r: r + 1]
+    # Ellipse equation: (gx/rx)^2 + (gy/rz)^2 <= 1
+    disk = (gx / rx) ** 2 + (gy / rz) ** 2 <= 1.0  # shape (2r+1, 2r+1)
+
+    n_scatterers = scatterers.shape[0]
+    union_mask = np.zeros((nz, nx), dtype=bool)
+
+    if return_masks:
+        individual_masks = np.zeros((n_scatterers, nz, nx), dtype=bool)
+
+    peak_amplitudes = np.empty(n_scatterers, dtype=np.float64)
+
+    for i, (x0, z0) in enumerate(scatterers):
+        # Nearest pixel indices
+        ix = int(np.argmin(np.abs(x_coords - x0)))
+        iz = int(np.argmin(np.abs(z_coords - z0)))
+
+        # Clipped image region covered by the disk
+        iz0 = iz - r
+        iz1 = iz + r + 1
+        ix0 = ix - r
+        ix1 = ix + r + 1
+
+        # Corresponding slice into the disk kernel (handles border cases)
+        disk_z0 = max(0, -iz0)
+        disk_z1 = disk.shape[0] - max(0, iz1 - nz)
+        disk_x0 = max(0, -ix0)
+        disk_x1 = disk.shape[1] - max(0, ix1 - nx)
+
+        img_z0 = max(0, iz0)
+        img_z1 = min(nz, iz1)
+        img_x0 = max(0, ix0)
+        img_x1 = min(nx, ix1)
+
+        disk_patch = disk[disk_z0:disk_z1, disk_x0:disk_x1]
+
+        local_mask = np.zeros((nz, nx), dtype=bool)
+        local_mask[img_z0:img_z1, img_x0:img_x1] = disk_patch
+
+        union_mask |= local_mask
+
+        masked_pixels = image[local_mask]
+        peak_amplitudes[i] = float(masked_pixels.max()) if masked_pixels.size > 0 else 0.0
+
+        if return_masks:
+            individual_masks[i] = local_mask
+
+    background_mask = ~union_mask
+    background_pixels = image[background_mask]
+    background_rms = float(np.sqrt(np.mean(background_pixels ** 2))) if background_pixels.size > 0 else 0.0
+
+    result = {
+        "peak_amplitudes": peak_amplitudes,
+        "background_rms": background_rms,
+    }
+
+    if return_background_hist:
+        counts, bin_edges = np.histogram(background_pixels, bins=hist_bins)
+        result["background_hist_counts"] = counts
+        result["background_hist_edges"] = bin_edges
+
+    if return_masks:
+        result["individual_masks"] = individual_masks
+        result["background_mask"] = background_mask
+
+    return result
 
 
 def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:

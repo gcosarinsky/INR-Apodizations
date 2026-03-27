@@ -14,6 +14,7 @@ Workflow:
 from pathlib import Path
 
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import yaml
@@ -26,7 +27,16 @@ from inr_apodizations.apodizations import (
 from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
+import sys
+import json
 
+# Import compute_scatterer_metrics from sandbox helpers
+sys.path.insert(0, str(PROJ_ROOT / "sandbox"))
+try:
+    from inr_das_experiment.helpers import compute_scatterer_metrics
+except ImportError:
+    compute_scatterer_metrics = None
+plt.ion()  # Enable interactive mode for better display control (can be turned off if not desired)
 CONFIG_PATH = CONFIGS_DIR / "das_standard_apodizations.yml"
 
 
@@ -95,11 +105,9 @@ def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
 cfg_user = load_yaml_config(CONFIG_PATH)
 
 save_outputs = bool(cfg_user["save"])
-show_outputs = bool(cfg_user["show"])
-if save_outputs and not show_outputs:
-    matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
+# show_outputs = bool(cfg_user["show"])
+# if save_outputs and not show_outputs:
+#     matplotlib.use("Agg")
 
 print(f"Using YAML config: {CONFIG_PATH}")
 print(f"TensorFlow GPU devices: {tf.config.list_physical_devices('GPU')}")
@@ -218,9 +226,6 @@ for method_name, apod_tensor in apods.items():
         fig_map.savefig(out_map, dpi=dpi, bbox_inches="tight")
         print(f"Saved {out_map}")
 
-    if not show_outputs:
-        plt.close(fig_map)
-
 delayed_samples_np = np.asarray(delayed_samples_all[example_idx])
 delayed_samples_tf = tf.convert_to_tensor(delayed_samples_np, dtype=tf.complex64)
 
@@ -252,6 +257,72 @@ if bool(cfg_user.get("save_npy", False)):
     )
     print(f"Saved {arrays_path}")
 
+# --- Scatterer evaluation (if enabled) ---
+scatterer_eval_cfg = cfg_user.get("scatterer_eval", {})
+scatterer_eval_enabled = bool(scatterer_eval_cfg.get("enabled", False))
+scatterer_metrics = None
+
+if scatterer_eval_enabled:
+    if compute_scatterer_metrics is None:
+        print("Warning: compute_scatterer_metrics could not be imported, skipping scatterer evaluation.")
+    else:
+        try:
+            # Require explicit RF dataset reference in config
+            if "rf_dataset_name" not in cfg:
+                raise ValueError(
+                    "scatterer_eval.enabled=true requires 'rf_dataset_name' in dataset config. "
+                    "This should be set in cfg_delayed_samples.npy from the generate process."
+                )
+            
+            rf_dataset_name = cfg["rf_dataset_name"]
+            scatterers_path = DATA_DIR / "rf_dataset_simus" / rf_dataset_name / "scatterers.npy"
+            
+            if not scatterers_path.exists():
+                raise FileNotFoundError(
+                    f"scatterers.npy not found at: {scatterers_path}\n"
+                    f"Expected RF dataset: {rf_dataset_name}\n"
+                    f"Ensure the RF dataset was generated and 'rf_dataset_name' in config is correct."
+                )
+            
+            print(f"Loading scatterers from: {scatterers_path}")
+            scatterers_list = np.load(scatterers_path, allow_pickle=True)
+            scatterers_example = scatterers_list[example_idx]  # shape (n_scatt, 3), columns [x, z, reflectivity]
+            scatterers_xy = scatterers_example[:, :2] * 1000.0  # Convert to mm
+            
+            radius_mm = float(scatterer_eval_cfg.get("radius_mm", 1.5))
+            hist_bins = int(scatterer_eval_cfg.get("hist_bins", 50))
+            
+            # Evaluate each apodization method
+            scatterer_metrics = {}
+            methods_to_eval = ["uniform"] + [m for m in methods if m in das_images_linear]
+            
+            print(f"\n=== Scatterer Metrics (radius={radius_mm:.2f} mm, {len(scatterers_xy)} scatterers) ===")
+            
+            for method_name in methods_to_eval:
+                das_image = np.abs(das_images_linear[method_name])
+                metrics = compute_scatterer_metrics(
+                    das_image,
+                    scatterers_xy,
+                    cm,
+                    radius_mm=radius_mm,
+                    return_masks=False,
+                    return_background_hist=True,
+                    hist_bins=hist_bins,
+                )
+                scatterer_metrics[method_name] = metrics
+                
+                peak_amps = metrics["peak_amplitudes"]
+                bg_rms = metrics["background_rms"]
+                print(f"  {method_name:12s}: peak_mean={peak_amps.mean():.4f} "
+                      f"peak_std={peak_amps.std():.4f} peak_max={peak_amps.max():.4f} "
+                      f"bg_rms={bg_rms:.4f}")
+            
+            print()
+        except Exception as e:
+            print(f"Error during scatterer evaluation: {e}")
+            import traceback
+            traceback.print_exc()
+
 # --- Combined profiles plot (single axis with labels/legend) ---
 if "_collected_profiles" in locals() and len(_collected_profiles) > 0:
     fig_profile, ax_profile = plt.subplots(1, 1, figsize=(8, 4))
@@ -268,11 +339,6 @@ if "_collected_profiles" in locals() and len(_collected_profiles) > 0:
         out_profiles = output_dir / f"profiles_combined_z{z_fixed:.2f}_x{x_fixed:.2f}_example{example_idx}.png"
         fig_profile.savefig(out_profiles, dpi=dpi, bbox_inches="tight")
         print(f"Saved {out_profiles}")
-
-    if show_outputs:
-        plt.show()
-    else:
-        plt.close(fig_profile)
 
 extent = kp.get_imshow_extent()
 vmin_db = float(cfg_user.get("vmin_db", -60.0))
@@ -335,7 +401,50 @@ if save_outputs:
     fig_das.savefig(out_das, dpi=dpi, bbox_inches="tight")
     print(f"Saved {out_das}")
 
-if show_outputs:
-    plt.show()
-else:
-    plt.close(fig_das)
+# --- Scatterer background noise histograms ---
+if scatterer_metrics is not None and len(scatterer_metrics) > 0:
+    fig_hist, axes_hist = plt.subplots(1, 1, figsize=(10, 5))
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    
+    for idx, method_name in enumerate(sorted(scatterer_metrics.keys())):
+        metrics = scatterer_metrics[method_name]
+        hist_counts = metrics.get("background_hist_counts")
+        hist_edges = metrics.get("background_hist_edges")
+        
+        if hist_counts is not None and hist_edges is not None:
+            bin_centers = (hist_edges[:-1] + hist_edges[1:]) / 2.0
+            color = colors[idx % len(colors)]
+            axes_hist.plot(bin_centers, hist_counts, marker="o", label=method_name, 
+                          color=color, linewidth=2, markersize=4, alpha=0.7)
+            axes_hist.fill_between(bin_centers, hist_counts, alpha=0.2, color=color)
+    
+    axes_hist.set_xlabel("Amplitude (linear)")
+    axes_hist.set_ylabel("Frequency")
+    axes_hist.set_title(f"Background noise histograms (example {example_idx})")
+    axes_hist.grid(True, alpha=0.3)
+    axes_hist.legend()
+    fig_hist.tight_layout()
+    
+    if save_outputs:
+        out_hist = output_dir / f"background_noise_hist_example{example_idx}.png"
+        fig_hist.savefig(out_hist, dpi=dpi, bbox_inches="tight")
+        print(f"Saved {out_hist}")
+    
+    # Save metrics summary as JSON
+    metrics_summary = {}
+    for method_name, metrics in scatterer_metrics.items():
+        metrics_summary[method_name] = {
+            "peak_amplitudes_mean": float(metrics["peak_amplitudes"].mean()),
+            "peak_amplitudes_std": float(metrics["peak_amplitudes"].std()),
+            "peak_amplitudes_max": float(metrics["peak_amplitudes"].max()),
+            "peak_amplitudes_min": float(metrics["peak_amplitudes"].min()),
+            "background_rms": float(metrics["background_rms"]),
+        }
+    
+    if save_outputs:
+        metrics_path = output_dir / f"scatterer_metrics_example{example_idx}.json"
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics_summary, f, indent=2)
+        print(f"Saved {metrics_path}")
+
+

@@ -21,6 +21,12 @@ show: true
 save_npy: false
 output_dir: sandbox/figures
 
+# Scatterer evaluation (requires scatterers from RF dataset)
+scatterer_eval:
+  enabled: true
+  radius_mm: 1.5
+  hist_bins: 50
+
 # Optional runtime controls
 use_mmap: true
 dpi: 150
