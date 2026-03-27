@@ -24,7 +24,7 @@ output_dir: sandbox/figures
 # Scatterer evaluation (requires scatterers from RF dataset)
 scatterer_eval:
   enabled: true
-  radius_mm: 1.5
+  radius_mm: 0.5
   hist_bins: 50
 
 # Optional runtime controls

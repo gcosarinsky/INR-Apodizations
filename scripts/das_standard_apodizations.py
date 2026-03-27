@@ -28,7 +28,6 @@ from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 import sys
-import json
 
 # Import compute_scatterer_metrics from sandbox helpers
 sys.path.insert(0, str(PROJ_ROOT / "sandbox"))
@@ -261,6 +260,7 @@ if bool(cfg_user.get("save_npy", False)):
 scatterer_eval_cfg = cfg_user.get("scatterer_eval", {})
 scatterer_eval_enabled = bool(scatterer_eval_cfg.get("enabled", False))
 scatterer_metrics = None
+scatterer_union_mask = None
 
 if scatterer_eval_enabled:
     if compute_scatterer_metrics is None:
@@ -305,11 +305,14 @@ if scatterer_eval_enabled:
                     scatterers_xy,
                     cm,
                     radius_mm=radius_mm,
-                    return_masks=False,
+                    return_masks=(method_name == "uniform"),
                     return_background_hist=True,
                     hist_bins=hist_bins,
                 )
                 scatterer_metrics[method_name] = metrics
+
+                if method_name == "uniform" and "background_mask" in metrics:
+                    scatterer_union_mask = ~metrics["background_mask"]
                 
                 peak_amps = metrics["peak_amplitudes"]
                 bg_rms = metrics["background_rms"]
@@ -403,6 +406,78 @@ if save_outputs:
 
 # --- Scatterer background noise histograms ---
 if scatterer_metrics is not None and len(scatterer_metrics) > 0:
+    if scatterer_union_mask is not None:
+        fig_uniform_mask, axes_uniform_mask = plt.subplots(
+            1,
+            3,
+            figsize=(18, 5),
+            sharex=True,
+            sharey=True,
+        )
+        im_uniform = axes_uniform_mask[0].imshow(
+            das_images_db["uniform"],
+            cmap=cmap,
+            vmin=vmin_db,
+            vmax=vmax_db,
+            extent=extent,
+            aspect="auto",
+        )
+        axes_uniform_mask[0].set_title("DAS Uniform (dB)")
+        axes_uniform_mask[0].set_xlabel("x (mm)")
+        axes_uniform_mask[0].set_ylabel("z (mm)")
+
+        axes_uniform_mask[1].imshow(
+            scatterer_union_mask.astype(np.float32),
+            cmap="gray",
+            vmin=0.0,
+            vmax=1.0,
+            extent=extent,
+            aspect="auto",
+        )
+        axes_uniform_mask[1].set_title("Total Scatterer Mask")
+        axes_uniform_mask[1].set_xlabel("x (mm)")
+
+        axes_uniform_mask[2].imshow(
+            das_images_db["uniform"],
+            cmap=cmap,
+            vmin=vmin_db,
+            vmax=vmax_db,
+            extent=extent,
+            aspect="auto",
+        )
+        overlay_mask = np.ma.masked_where(
+            ~scatterer_union_mask,
+            scatterer_union_mask.astype(np.float32),
+        )
+        axes_uniform_mask[2].imshow(
+            overlay_mask,
+            cmap="autumn",
+            vmin=0.0,
+            vmax=1.0,
+            extent=extent,
+            aspect="auto",
+            alpha=0.35,
+        )
+        axes_uniform_mask[2].set_title("Uniform DAS + Scatterer Mask Overlay")
+        axes_uniform_mask[2].set_xlabel("x (mm)")
+
+        fig_uniform_mask.suptitle(
+            f"Uniform DAS, scatterer mask, and overlay (example {example_idx})"
+        )
+        fig_uniform_mask.tight_layout()
+        cbar_uniform = fig_uniform_mask.colorbar(
+            im_uniform,
+            ax=axes_uniform_mask[0],
+            fraction=0.046,
+            pad=0.04,
+        )
+        cbar_uniform.set_label("dB")
+
+        if save_outputs:
+            out_uniform_mask = output_dir / f"uniform_and_scatterer_mask_example{example_idx}.png"
+            fig_uniform_mask.savefig(out_uniform_mask, dpi=dpi, bbox_inches="tight")
+            print(f"Saved {out_uniform_mask}")
+
     fig_hist, axes_hist = plt.subplots(1, 1, figsize=(10, 5))
     colors = ["tab:blue", "tab:orange", "tab:green"]
     
@@ -429,22 +504,95 @@ if scatterer_metrics is not None and len(scatterer_metrics) > 0:
         out_hist = output_dir / f"background_noise_hist_example{example_idx}.png"
         fig_hist.savefig(out_hist, dpi=dpi, bbox_inches="tight")
         print(f"Saved {out_hist}")
-    
-    # Save metrics summary as JSON
-    metrics_summary = {}
-    for method_name, metrics in scatterer_metrics.items():
-        metrics_summary[method_name] = {
-            "peak_amplitudes_mean": float(metrics["peak_amplitudes"].mean()),
-            "peak_amplitudes_std": float(metrics["peak_amplitudes"].std()),
-            "peak_amplitudes_max": float(metrics["peak_amplitudes"].max()),
-            "peak_amplitudes_min": float(metrics["peak_amplitudes"].min()),
-            "background_rms": float(metrics["background_rms"]),
-        }
-    
-    if save_outputs:
-        metrics_path = output_dir / f"scatterer_metrics_example{example_idx}.json"
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics_summary, f, indent=2)
-        print(f"Saved {metrics_path}")
+
+    # --- Scatterer-wise peak amplitude scatter plot (each method vs uniform) ---
+    methods_to_compare = [m for m in scatterer_metrics if m != "uniform"]
+    n_scatter_cols = len(methods_to_compare)
+    if n_scatter_cols > 0 and "uniform" in scatterer_metrics:
+        uniform_peaks = scatterer_metrics["uniform"]["peak_amplitudes"]
+        uniform_bg_rms = float(scatterer_metrics["uniform"]["background_rms"])
+        uniform_image_max = max(float(np.max(np.abs(das_images_linear["uniform"]))), 1e-12)
+        fig_scatter, axes_scatter = plt.subplots(
+            1, n_scatter_cols, figsize=(5 * n_scatter_cols, 5), squeeze=False
+        )
+        for col_idx, method_name in enumerate(methods_to_compare):
+            ax = axes_scatter[0, col_idx]
+            method_peaks = scatterer_metrics[method_name]["peak_amplitudes"]
+            method_bg_rms = float(scatterer_metrics[method_name]["background_rms"])
+            ax.scatter(uniform_peaks, method_peaks, s=30, alpha=0.7)
+            ax_max = max(float(uniform_peaks.max()), float(method_peaks.max()))
+            ax_max = max(ax_max, uniform_bg_rms, method_bg_rms)
+            ax.plot([0, ax_max], [0, ax_max], color="red", linewidth=1, linestyle="--", label="y = x")
+            ax.scatter(
+                [uniform_bg_rms],
+                [method_bg_rms],
+                s=110,
+                marker="D",
+                facecolors="none",
+                edgecolors="black",
+                linewidths=1.5,
+                label="bg_rms",
+                zorder=5,
+            )
+            ax.set_xlabel("Uniform peak amplitude")
+            ax.set_ylabel(f"{method_name} peak amplitude")
+            ax.set_title(
+                f"{method_name} vs uniform ({len(uniform_peaks)} scatterers)"
+            )
+            ax.set_aspect("equal")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        fig_scatter.suptitle(f"Peak amplitude comparison (example {example_idx})")
+        fig_scatter.tight_layout()
+
+        if save_outputs:
+            out_scatter = output_dir / f"scatter_peak_amp_example{example_idx}.png"
+            fig_scatter.savefig(out_scatter, dpi=dpi, bbox_inches="tight")
+            print(f"Saved {out_scatter}")
+
+        fig_scatter_norm, axes_scatter_norm = plt.subplots(
+            1, n_scatter_cols, figsize=(5 * n_scatter_cols, 5), squeeze=False
+        )
+        uniform_peaks_norm = uniform_peaks / uniform_image_max
+        uniform_bg_rms_norm = uniform_bg_rms / uniform_image_max
+        for col_idx, method_name in enumerate(methods_to_compare):
+            ax = axes_scatter_norm[0, col_idx]
+            method_peaks = scatterer_metrics[method_name]["peak_amplitudes"]
+            method_bg_rms = float(scatterer_metrics[method_name]["background_rms"])
+            method_image_max = max(float(np.max(np.abs(das_images_linear[method_name]))), 1e-12)
+            method_peaks_norm = method_peaks / method_image_max
+            method_bg_rms_norm = method_bg_rms / method_image_max
+            ax.scatter(uniform_peaks_norm, method_peaks_norm, s=30, alpha=0.7)
+            ax.plot([0, 1], [0, 1], color="red", linewidth=1, linestyle="--", label="y = x")
+            ax.scatter(
+                [uniform_bg_rms_norm],
+                [method_bg_rms_norm],
+                s=110,
+                marker="D",
+                facecolors="none",
+                edgecolors="black",
+                linewidths=1.5,
+                label="bg_rms",
+                zorder=5,
+            )
+            ax.set_xlabel("Uniform peak amplitude / image max")
+            ax.set_ylabel(f"{method_name} peak amplitude / image max")
+            ax.set_title(
+                f"{method_name} vs uniform normalized ({len(uniform_peaks_norm)} scatterers)"
+            )
+            ax.set_xlim(0.0, 1.0)
+            ax.set_ylim(0.0, 1.0)
+            ax.set_aspect("equal")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        fig_scatter_norm.suptitle(
+            f"Normalized peak amplitude comparison (example {example_idx})"
+        )
+        fig_scatter_norm.tight_layout()
+
+        if save_outputs:
+            out_scatter_norm = output_dir / f"scatter_peak_amp_normalized_example{example_idx}.png"
+            fig_scatter_norm.savefig(out_scatter_norm, dpi=dpi, bbox_inches="tight")
+            print(f"Saved {out_scatter_norm}")
 
 
