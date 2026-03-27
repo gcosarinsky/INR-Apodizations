@@ -33,8 +33,13 @@ if not dataset_folder.is_absolute():
     dataset_folder = config.PROJ_ROOT / dataset_folder
 
 # Load and validate dataset.
-delayed, targets, _ = helpers.load_delayed_samples_dataset(str(dataset_folder))
-helpers.validate_dataset_shapes(delayed, targets)
+sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
+delayed, targets, gaussian_masks, _ = helpers.load_delayed_samples_dataset(
+    str(dataset_folder),
+    sigma_x=sigma_x_override,
+    sigma_z=sigma_z_override,
+)
+helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
 _, cm = helpers.build_coordinate_manager(str(dataset_folder))
 
 max_examples = cfg["training"].get("max_examples")

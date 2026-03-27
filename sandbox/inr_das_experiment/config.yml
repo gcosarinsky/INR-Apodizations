@@ -1,13 +1,18 @@
 io:
-  dataset_folder: data/delayed_samples_dataset/20260326_114519
+  dataset_folder: data/delayed_samples_dataset/20260327_141700
   processed_root: sandbox/inr_das_experiment/outputs/processed
   sandbox_output_root: sandbox/inr_das_experiment/outputs
+
+target_regeneration:
+  enabled: true
+  sigma_x: 0.2
+  sigma_z: 0.2
 
 model:
   hidden_units: 8
   n_hidden_layers: 3
   activation: relu
-  output_activation: tanh
+  output_activation: sigmoid
   scaled_features: true
   feature_chunk_size: 262144
 
@@ -22,7 +27,7 @@ training:
   baseline_f_number: 0.75
   mask_weighting:
     enabled: true
-    lambda: 4
+    lambda: 1.0
   train_fraction: 0.7
   seed: 42
   max_examples: null

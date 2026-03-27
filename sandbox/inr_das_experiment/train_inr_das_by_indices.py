@@ -46,10 +46,18 @@ dataset_folder = Path(cfg["io"]["dataset_folder"])
 if not dataset_folder.is_absolute():
     dataset_folder = config.PROJ_ROOT / dataset_folder
 dataset_folder = str(dataset_folder)
+sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
 print("Loading dataset from:", dataset_folder)
-delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(dataset_folder)
+delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
+    dataset_folder,
+    sigma_x=sigma_x_override,
+    sigma_z=sigma_z_override,
+)
 helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
 kp, cm = helpers.build_coordinate_manager(dataset_folder)
+
+delayed_dataset_bytes = int(delayed.nbytes)
+delayed_example_bytes = int(np.prod(delayed.shape[1:], dtype=np.int64) * delayed.dtype.itemsize)
 
 max_examples = cfg["training"].get("max_examples")
 if max_examples is not None:
@@ -66,6 +74,27 @@ train_idx, val_idx = helpers.split_train_validation_indices(
     seed=int(cfg["training"]["seed"]),
 )
 
+configured_batch_size = int(cfg["training"]["batch_size"])
+effective_batch_examples = min(configured_batch_size, int(train_idx.shape[0]))
+configured_batch_bytes = delayed_example_bytes * configured_batch_size
+effective_batch_bytes = delayed_example_bytes * effective_batch_examples
+
+gpu_mem_info = helpers.gpu_mem()
+if isinstance(gpu_mem_info, list) and gpu_mem_info:
+    gpu_vram_source = "nvidia-smi"
+    gpu_total_vram_bytes = int(gpu_mem_info[0]["total"] * 1024 * 1024)
+    gpu_free_vram_bytes = int(gpu_mem_info[0]["free"] * 1024 * 1024)
+    gpu_used_vram_bytes = gpu_total_vram_bytes - gpu_free_vram_bytes
+    half_free_vram_bytes = int(0.5 * gpu_free_vram_bytes)
+    batch_exceeds_half_free_vram = configured_batch_bytes > half_free_vram_bytes
+else:
+    gpu_vram_source = "unavailable"
+    gpu_total_vram_bytes = None
+    gpu_free_vram_bytes = None
+    gpu_used_vram_bytes = None
+    half_free_vram_bytes = None
+    batch_exceeds_half_free_vram = None
+
 print("Dataset loaded. Shapes:")
 pprint.pprint(
     {
@@ -78,6 +107,34 @@ pprint.pprint(
         "nx": kp.nx,
     }
 )
+print("Memory diagnostics:")
+print(f"  delayed_samples_dataset (full): {helpers.bytes_to_gb(delayed_dataset_bytes):.3f} GiB")
+print(
+    "  delayed_samples_dataset (one configured batch): "
+    f"{helpers.bytes_to_gb(configured_batch_bytes):.3f} GiB "
+    f"(batch_size={configured_batch_size})"
+)
+print(
+    "  delayed_samples_dataset (one effective train batch): "
+    f"{helpers.bytes_to_gb(effective_batch_bytes):.3f} GiB "
+    f"(examples={effective_batch_examples})"
+)
+if gpu_free_vram_bytes is None:
+    print("  GPU VRAM check: unavailable (could not query nvidia-smi free VRAM).")
+else:
+    print(
+        "  GPU VRAM (GPU:0): "
+        f"total={helpers.bytes_to_gb(gpu_total_vram_bytes):.3f} GiB; "
+        f"free={helpers.bytes_to_gb(gpu_free_vram_bytes):.3f} GiB; "
+        f"used={helpers.bytes_to_gb(gpu_used_vram_bytes):.3f} GiB; "
+        f"source: {gpu_vram_source}"
+    )
+    print(
+        "  Batch > 50% free VRAM: "
+        f"{'YES' if batch_exceeds_half_free_vram else 'NO'} "
+        f"(50% free threshold={helpers.bytes_to_gb(half_free_vram_bytes):.3f} GiB; "
+        f"configured batch uses {helpers.bytes_to_gb(configured_batch_bytes):.3f} GiB)"
+    )
 
 train_ds = helpers.build_tf_dataset_by_indices(
     delayed,
@@ -276,21 +333,6 @@ effective_cfg = {
     "experiment": cfg,
 }
 helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
-helpers.save_debug_arrays(
-    sandbox_dir,
-    {
-        "weights_grid": weights_after_grid.numpy(),
-        "predicted_image": predicted_after_image.numpy(),
-        "predicted_before_image": predicted_before_image.numpy(),
-        "weights_before_grid": weights_before_grid.numpy(),
-        "target_image": sample_target,
-        "uniform_image": uniform_image.numpy(),
-        "boxcar_image": boxcar_image.numpy(),
-        "hanning_image": hanning_image.numpy(),
-        "hanning_weights": hanning_weights.numpy(),
-        "boxcar_weights": boxcar_weights.numpy(),
-    },
-)
 
 plot_cfg = cfg.get("plots", {})
 helpers.plot_training_curves(
