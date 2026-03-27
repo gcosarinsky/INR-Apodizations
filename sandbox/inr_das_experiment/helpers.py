@@ -7,23 +7,155 @@ persist minimal artifacts.
 """
 from __future__ import annotations
 
+import copy
 import json
+import math
 import os
+import subprocess
 from datetime import datetime
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
-import numpy as np
 import tensorflow as tf
-import math
+import numpy as np
 import yaml
 
 from inr_apodizations.apodizations import extract_map_for_x
 from inr_apodizations.coordinate_manager import CoordinateManager
+from inr_apodizations.dataset import generate_unit_gaussian_mask
 from inr_apodizations.kernels import KernelParameters2D
 
 
-def load_delayed_samples_dataset(folder: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+BYTES_PER_GB = float(1024**3)
+
+
+def bytes_to_gb(n_bytes: int) -> float:
+    """Convert bytes to gibibytes (GiB)."""
+    return float(n_bytes) / BYTES_PER_GB
+
+
+def gpu_mem() -> list[dict[str, int]] | str:
+    """Query GPU memory info (total and free) via ``nvidia-smi``.
+
+    Returns:
+        List of dicts with ``total`` and ``free`` keys in MiB, one per GPU.
+        Returns the string ``"nvidia-smi no disponible"`` if the query fails.
+    """
+    try:
+        out = subprocess.check_output(
+            "nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits".split()
+        ).decode().strip()
+        return [dict(zip(["total", "free"], map(int, line.split(",")))) for line in out.split("\n")]
+    except Exception:
+        return "nvidia-smi no disponible"
+
+
+def get_tf_available_vram_info() -> tuple[int | None, str]:
+    """Return currently free VRAM bytes on GPU:0 and source label.
+
+    Uses ``gpu_mem()`` (nvidia-smi) to get the free memory at call time.
+
+    Returns:
+        Tuple ``(free_vram_bytes, source)``. If unavailable, returns
+        ``(None, "unavailable")``.
+    """
+    result = gpu_mem()
+    if isinstance(result, list) and result:
+        free_mib = result[0]["free"]
+        return int(free_mib * 1024 * 1024), "nvidia-smi"
+    return None, "unavailable"
+
+
+def load_saved_scatterers(folder: str) -> np.ndarray:
+    """Load scatterer coordinates saved next to a delayed-samples dataset.
+
+    Args:
+        folder: Dataset folder containing ``scatterers.npy``.
+
+    Returns:
+        NumPy object array with one scatterer array per example.
+
+    Raises:
+        FileNotFoundError: If the scatterers file is missing.
+    """
+    scatterers_path = os.path.join(folder, "scatterers.npy")
+    if not os.path.exists(scatterers_path):
+        raise FileNotFoundError(
+            "Scatterers file not found in %s. "
+            "This dataset cannot regenerate targets with new sigma values." % folder
+        )
+    return np.load(scatterers_path, allow_pickle=True)
+
+
+def _build_target_grids(folder: str) -> tuple[np.ndarray, np.ndarray]:
+    """Build the target meshgrids used during dataset generation.
+
+    Args:
+        folder: Dataset folder containing ``cfg_delayed_samples.npy``.
+
+    Returns:
+        Tuple ``(x_grid, z_grid)`` with shape ``(nz, nx)``.
+    """
+    cfg = load_saved_beamforming_config(folder)
+    kp = KernelParameters2D(cfg)
+    x = np.linspace(kp.roi_effective[0], kp.roi_effective[1], kp.nx)
+    z = np.linspace(kp.roi_effective[2], kp.roi_effective[3], kp.nz)
+    return np.meshgrid(x, z)
+
+
+def _regenerate_targets_and_masks(
+    delayed: np.ndarray,
+    scatterers: np.ndarray,
+    x_grid: np.ndarray,
+    z_grid: np.ndarray,
+    sigma_x: float,
+    sigma_z: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Recompute targets and gaussian masks from delayed samples and scatterers.
+
+    Args:
+        delayed: Delayed samples array with shape ``(N, E, Z, X)``.
+        scatterers: Scatterer coordinates per example.
+        x_grid: Target x meshgrid.
+        z_grid: Target z meshgrid.
+        sigma_x: Lateral gaussian sigma in mm.
+        sigma_z: Axial gaussian sigma in mm.
+
+    Returns:
+        Tuple ``(targets, gaussian_masks)`` with shape ``(N, Z, X)``.
+
+    Raises:
+        ValueError: If the scatterer count does not match the dataset size.
+    """
+    if len(scatterers) != delayed.shape[0]:
+        raise ValueError(
+            "scatterers.npy example count does not match delayed_samples_dataset.npy"
+        )
+
+    targets = np.zeros((delayed.shape[0], delayed.shape[2], delayed.shape[3]), dtype=np.float32)
+    gaussian_masks = np.zeros_like(targets)
+
+    for idx in range(delayed.shape[0]):
+        das_uniform = delayed[idx].sum(axis=0)
+        scatterers_mm = 1000.0 * np.asarray(scatterers[idx], dtype=np.float32)
+        gaussian_mask = generate_unit_gaussian_mask(
+            scatterers_mm,
+            x_grid,
+            z_grid,
+            sigma_x=sigma_x,
+            sigma_z=sigma_z,
+        )
+        gaussian_masks[idx] = gaussian_mask.astype(np.float32, copy=False)
+        targets[idx] = np.abs(das_uniform).astype(np.float32, copy=False) * gaussian_mask
+
+    return targets, gaussian_masks
+
+
+def load_delayed_samples_dataset(
+    folder: str,
+    sigma_x: float | None = None,
+    sigma_z: float | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
     Load delayed samples dataset, targets, gaussian masks and metadata from a dataset folder.
 
@@ -37,13 +169,25 @@ def load_delayed_samples_dataset(folder: str) -> Tuple[np.ndarray, np.ndarray, n
         gaussian_masks: np.ndarray, shape (N, Z, X), dtype float32, values in [0, 1]
         info: dict with parsed YAML metadata (empty dict if not present)
 
+    Args:
+        folder: Dataset folder containing delayed samples artifacts.
+        sigma_x: Optional lateral sigma override in mm. Must be provided with ``sigma_z``.
+        sigma_z: Optional axial sigma override in mm. Must be provided with ``sigma_x``.
+
     Raises:
         FileNotFoundError: If delayed samples, targets or gaussian masks files are missing.
+        ValueError: If only one sigma override is provided or if sigma values are non-positive.
     """
     delayed_path = os.path.join(folder, "delayed_samples_dataset.npy")
     targets_path = os.path.join(folder, "targets_dataset.npy")
     masks_path = os.path.join(folder, "gaussian_masks_dataset.npy")
     info_path = os.path.join(folder, "delayed_samples_info.yaml")
+
+    regenerate = sigma_x is not None or sigma_z is not None
+    if regenerate and (sigma_x is None or sigma_z is None):
+        raise ValueError("sigma_x and sigma_z must be provided together")
+    if regenerate and (float(sigma_x) <= 0.0 or float(sigma_z) <= 0.0):
+        raise ValueError("sigma_x and sigma_z must be > 0")
 
     if not os.path.exists(delayed_path) or not os.path.exists(targets_path):
         raise FileNotFoundError("Delayed samples or targets .npy not found in %s" % folder)
@@ -61,7 +205,52 @@ def load_delayed_samples_dataset(folder: str) -> Tuple[np.ndarray, np.ndarray, n
         with open(info_path, "r", encoding="utf-8") as f:
             info = yaml.safe_load(f) or {}
 
+    if regenerate:
+        scatterers = load_saved_scatterers(folder)
+        x_grid, z_grid = _build_target_grids(folder)
+        targets, gaussian_masks = _regenerate_targets_and_masks(
+            delayed,
+            scatterers,
+            x_grid,
+            z_grid,
+            sigma_x=float(sigma_x),
+            sigma_z=float(sigma_z),
+        )
+        info = copy.deepcopy(info)
+        info["runtime_target_override"] = {
+            "enabled": True,
+            "sigma_x": float(sigma_x),
+            "sigma_z": float(sigma_z),
+        }
+
     return delayed, targets, gaussian_masks, info
+
+
+def get_target_sigma_override(config: dict) -> tuple[float | None, float | None]:
+    """Extract optional target sigma overrides from sandbox configuration.
+
+    Args:
+        config: Sandbox experiment configuration mapping.
+
+    Returns:
+        Tuple ``(sigma_x, sigma_z)`` or ``(None, None)`` when disabled.
+
+    Raises:
+        ValueError: If the override section is enabled but incomplete.
+    """
+    override_cfg = dict(config.get("target_regeneration", {}))
+    if not bool(override_cfg.get("enabled", False)):
+        return None, None
+
+    sigma_x = override_cfg.get("sigma_x")
+    sigma_z = override_cfg.get("sigma_z")
+    if sigma_x is None or sigma_z is None:
+        raise ValueError(
+            "target_regeneration.sigma_x and target_regeneration.sigma_z must be set "
+            "when regeneration is enabled"
+        )
+
+    return float(sigma_x), float(sigma_z)
 
 
 def load_saved_beamforming_config(folder: str) -> dict:
