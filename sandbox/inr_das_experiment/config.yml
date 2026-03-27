@@ -27,7 +27,7 @@ training:
   baseline_f_number: 0.75
   mask_weighting:
     enabled: true
-    lambda: 1.0
+    lambda: 0.5
   train_fraction: 0.7
   seed: 42
   max_examples: null
