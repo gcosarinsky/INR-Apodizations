@@ -29,5 +29,5 @@ scatterer_eval:
 
 # Optional runtime controls
 use_mmap: true
-dpi: 150
+dpi: 150 
 cmap: gray

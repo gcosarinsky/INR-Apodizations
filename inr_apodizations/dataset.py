@@ -6,35 +6,51 @@ import numpy as np
 
 
 def generate_unit_gaussian_mask(scatterers, x_grid, z_grid, sigma_x=0.001, sigma_z=0.001, background_points=None):
-    """
-    Generate a unit-amplitude Gaussian mask centered at scatterer positions.
+    """Generate a unit-amplitude Gaussian mask centered at scatterer positions.
 
-    scatterers: (n_scatterers, >=2) - columns include x, z as first two values
-    x_grid, z_grid: meshgrid arrays of shape (nz, nx) OR None if using background_points
-    background_points: if specified, x_grid and z_grid are ignored and this should be shape (N, 2)
+    Args:
+        scatterers: Array-like with shape ``(n_scatterers, >=2)`` where the first
+            two columns contain ``x`` and ``z`` coordinates.
+        x_grid: Meshgrid x coordinates with shape ``(nz, nx)``. Ignored when
+            ``background_points`` is provided.
+        z_grid: Meshgrid z coordinates with shape ``(nz, nx)``. Ignored when
+            ``background_points`` is provided.
+        sigma_x: Lateral Gaussian standard deviation.
+        sigma_z: Axial Gaussian standard deviation.
+        background_points: Optional array with shape ``(n_points, 2)`` containing
+            ``(x, z)`` coordinates where the mask should be evaluated.
 
     Returns:
-    - If background_points is None: mask array of shape (nz, nx)
-    - If background_points is specified: mask array of shape (N,)
+        A ``float32`` mask with shape ``(nz, nx)`` when evaluated on a grid, or
+        shape ``(n_points,)`` when evaluated on ``background_points``.
     """
-    if background_points is not None:
-        mask = np.zeros(len(background_points), dtype=np.float32)
-        for scat in scatterers:
-            x0, z0 = scat[:2]
-            dx = background_points[:, 0] - x0
-            dz = background_points[:, 1] - z0
-            gaussian = np.exp(-(dx**2 / (2 * sigma_x**2) + dz**2 / (2 * sigma_z**2)))
-            mask += gaussian
-    else:
-        mask = np.zeros_like(x_grid, dtype=np.float32)
-        for scat in scatterers:
-            x0, z0 = scat[:2]
-            gaussian = np.exp(
-                -((x_grid - x0) ** 2 / (2 * sigma_x ** 2) + (z_grid - z0) ** 2 / (2 * sigma_z ** 2))
-            )
-            mask += gaussian
+    scatterers_array = np.asarray(scatterers, dtype=np.float32)
+    sigma_x = np.float32(sigma_x)
+    sigma_z = np.float32(sigma_z)
+    inv_two_sigma_x2 = np.float32(1.0) / (np.float32(2.0) * sigma_x * sigma_x)
+    inv_two_sigma_z2 = np.float32(1.0) / (np.float32(2.0) * sigma_z * sigma_z)
 
-    return mask.astype(np.float32)
+    if scatterers_array.size == 0:
+        if background_points is not None:
+            return np.zeros(len(background_points), dtype=np.float32)
+        return np.zeros_like(x_grid, dtype=np.float32)
+
+    scatterers_x = scatterers_array[:, 0][:, None]
+    scatterers_z = scatterers_array[:, 1][:, None]
+
+    if background_points is not None:
+        points = np.asarray(background_points, dtype=np.float32)
+        dx = points[:, 0][None, :] - scatterers_x
+        dz = points[:, 1][None, :] - scatterers_z
+        exponent = -(dx * dx * inv_two_sigma_x2 + dz * dz * inv_two_sigma_z2)
+        return np.exp(exponent, dtype=np.float32).sum(axis=0, dtype=np.float32)
+
+    x_grid_array = np.asarray(x_grid, dtype=np.float32)
+    z_grid_array = np.asarray(z_grid, dtype=np.float32)
+    dx = x_grid_array[None, :, :] - scatterers_x[:, None, :]
+    dz = z_grid_array[None, :, :] - scatterers_z[:, None, :]
+    exponent = -(dx * dx * inv_two_sigma_x2 + dz * dz * inv_two_sigma_z2)
+    return np.exp(exponent, dtype=np.float32).sum(axis=0, dtype=np.float32)
 
 
 def generate_das_modulated_target(das_image, scatterers, x_grid, z_grid, sigma_x=0.001, sigma_z=0.001):
