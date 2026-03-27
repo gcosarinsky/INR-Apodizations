@@ -121,6 +121,7 @@ output_folder.mkdir(parents=True, exist_ok=True)
 np.save(output_folder / 'delayed_samples_dataset.npy', delayed_samples_all)
 np.save(output_folder / 'targets_dataset.npy', targets_all)
 np.save(output_folder / 'gaussian_masks_dataset.npy', gaussian_masks_all)
+np.save(output_folder / 'scatterers.npy', scatterers)
 np.save(output_folder / 'cfg_delayed_samples.npy', cfg)
 
 # Guardar la configuración de beamforming y metadatos en YAML
@@ -129,6 +130,8 @@ info = {
     'generated': datetime.now().strftime("%Y%m%d_%H%M%S"),
     'delayed_samples_shape': list(delayed_samples_all.shape),
     'gaussian_masks_shape': list(gaussian_masks_all.shape),
+    'scatterers_saved': True,
+    'target_sigma': dict(cfg['target']),
     'roi_effective': list(kp.roi_effective),
     'rf_dataset': dataset_path.name,
     'config': cfg,    
