@@ -18,10 +18,17 @@ model:
 
 training:
   batch_size: 4
-  epochs: 50
+  epochs: 20
   learning_rate: 0.01
   loss: mae
   metric: mae
+  weight_regularization:
+    enabled: true
+    type: hinge_low_norm
+    lambda: 20000
+    tau: 0.50
+    epsilon: 1.0e-8
+    normalize_norm: true
   mae_db_ref: null
   mae_db_eps: 1.0e-8
   baseline_f_number: 0.75

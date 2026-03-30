@@ -163,10 +163,48 @@ apodization_model = helpers.build_mlp_inr(
     activation=cfg["model"]["activation"],
     output_activation=output_activation,
 )
+weight_reg_cfg = dict(cfg["training"].get("weight_regularization", {}))
+weight_reg_enabled = bool(weight_reg_cfg.get("enabled", False))
+weight_reg_type = str(weight_reg_cfg.get("type", "hinge_low_norm")).strip().lower()
+if weight_reg_enabled and weight_reg_type not in ("hinge_low_norm", "hinge"):
+    raise ValueError(
+        "training.weight_regularization.type must be 'hinge_low_norm' or 'hinge'"
+    )
+
+weight_reg_lambda = float(weight_reg_cfg.get("lambda", 1e-3))
+weight_reg_tau = float(weight_reg_cfg.get("tau", 0.30))
+weight_reg_epsilon = float(weight_reg_cfg.get("epsilon", 1e-8))
+weight_reg_normalize = bool(weight_reg_cfg.get("normalize_norm", True))
+
+if weight_reg_lambda < 0.0:
+    raise ValueError("training.weight_regularization.lambda must be >= 0")
+if weight_reg_tau < 0.0:
+    raise ValueError("training.weight_regularization.tau must be >= 0")
+if weight_reg_epsilon <= 0.0:
+    raise ValueError("training.weight_regularization.epsilon must be > 0")
+
+resolved_weight_reg_type = "hinge_low_norm" if weight_reg_type == "hinge" else weight_reg_type
+
 trainer = DasInrTrainer(
     apodization_model=apodization_model,
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),
+    weight_regularization_enabled=weight_reg_enabled,
+    weight_regularization_lambda=weight_reg_lambda,
+    weight_regularization_tau=weight_reg_tau,
+    weight_regularization_epsilon=weight_reg_epsilon,
+    weight_regularization_normalize=weight_reg_normalize,
+)
+print("Weight regularization configuration:")
+print(
+    {
+        "enabled": weight_reg_enabled,
+        "type": resolved_weight_reg_type,
+        "lambda": weight_reg_lambda,
+        "tau": weight_reg_tau,
+        "epsilon": weight_reg_epsilon,
+        "normalize_norm": weight_reg_normalize,
+    }
 )
 # Shared optional parameters for custom mae_db loss/metric.
 mae_db_ref_cfg = cfg["training"].get("mae_db_ref", None)
@@ -331,6 +369,14 @@ effective_cfg = {
         "baseline_f_number_used": float(baseline_f_number),
     },
     "experiment": cfg,
+    "resolved_weight_regularization": {
+        "enabled": weight_reg_enabled,
+        "type": resolved_weight_reg_type,
+        "lambda": weight_reg_lambda,
+        "tau": weight_reg_tau,
+        "epsilon": weight_reg_epsilon,
+        "normalize_norm": weight_reg_normalize,
+    },
 }
 helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
 

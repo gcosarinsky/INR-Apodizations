@@ -18,19 +18,95 @@ class DasInrTrainer(tf.keras.Model):
     trained with `model.fit`.
     """
 
-    def __init__(self, apodization_model: tf.keras.Model, features_grid: tf.Tensor, feature_chunk_size: int):
+    def __init__(
+        self,
+        apodization_model: tf.keras.Model,
+        features_grid: tf.Tensor,
+        feature_chunk_size: int,
+        weight_regularization_enabled: bool = False,
+        weight_regularization_lambda: float = 1e-3,
+        weight_regularization_tau: float = 0.30,
+        weight_regularization_epsilon: float = 1e-8,
+        weight_regularization_normalize: bool = True,
+    ):
         """Initialize trainer with INR model and feature grid.
 
         Args:
             apodization_model: INR model mapping geometry features to weights.
             features_grid: Feature tensor with shape (E, Z, X, 3).
             feature_chunk_size: Number of feature rows processed per forward chunk.
+            weight_regularization_enabled: Whether to enable low-norm hinge regularization.
+            weight_regularization_lambda: Multiplicative factor for regularization loss.
+            weight_regularization_tau: Minimum target norm before hinge becomes active.
+            weight_regularization_epsilon: Numerical epsilon used in norm normalization.
+            weight_regularization_normalize: Whether to normalize norm by ``sqrt(E*Z*X)``.
+
+        Raises:
+            ValueError: If regularization hyperparameters are invalid.
         """
         super().__init__(name="das_inr_trainer")
         self.apodization_model = apodization_model
         self.features_flat = tf.reshape(tf.cast(features_grid, tf.float32), (-1, 3))
         self.n_elem, self.nz, self.nx = [int(dim) for dim in features_grid.shape[:3]]
         self.feature_chunk_size = int(feature_chunk_size)
+
+        self.weight_regularization_enabled = bool(weight_regularization_enabled)
+        self.weight_regularization_lambda = float(weight_regularization_lambda)
+        self.weight_regularization_tau = float(weight_regularization_tau)
+        self.weight_regularization_epsilon = float(weight_regularization_epsilon)
+        self.weight_regularization_normalize = bool(weight_regularization_normalize)
+        if self.weight_regularization_lambda < 0.0:
+            raise ValueError("weight_regularization_lambda must be >= 0")
+        if self.weight_regularization_tau < 0.0:
+            raise ValueError("weight_regularization_tau must be >= 0")
+        if self.weight_regularization_epsilon <= 0.0:
+            raise ValueError("weight_regularization_epsilon must be > 0")
+
+        self._norm_denominator = float((self.n_elem * self.nz * self.nx) ** 0.5)
+        self.reg_loss_tracker = tf.keras.metrics.Mean(name="reg_loss")
+        norm_metric_name = "w_norm_normalized" if self.weight_regularization_normalize else "w_norm"
+        self.w_norm_tracker = tf.keras.metrics.Mean(name=norm_metric_name)
+        self.reg_active_rate_tracker = tf.keras.metrics.Mean(name="reg_active_rate")
+
+    @property
+    def metrics(self):
+        """Return Keras metrics including custom regularization trackers."""
+        base_metrics = super().metrics
+        base_names = {metric.name for metric in base_metrics}
+        extra_metrics = [self.reg_loss_tracker, self.w_norm_tracker, self.reg_active_rate_tracker]
+        for metric in extra_metrics:
+            if metric.name not in base_names:
+                base_metrics.append(metric)
+        return base_metrics
+
+    def compute_weight_regularization(self, weights_grid: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Compute hinge regularization that penalizes very low apodization norms.
+
+        Args:
+            weights_grid: INR apodizations with shape ``(E, Z, X)``.
+
+        Returns:
+            Tuple ``(reg_loss, norm_value, reg_active)`` where:
+            - ``reg_loss`` is ``lambda * max(0, tau - norm)^2``.
+            - ``norm_value`` is either normalized or raw norm depending on config.
+            - ``reg_active`` is 1.0 when the hinge is active, else 0.0.
+        """
+        weights_grid = tf.cast(weights_grid, tf.float32)
+        global_norm = tf.norm(weights_grid, ord="euclidean")
+        if self.weight_regularization_normalize:
+            norm_value = global_norm / tf.maximum(
+                tf.cast(self._norm_denominator, tf.float32),
+                tf.cast(self.weight_regularization_epsilon, tf.float32),
+            )
+        else:
+            norm_value = global_norm
+
+        tau = tf.cast(self.weight_regularization_tau, tf.float32)
+        reg_lambda = tf.cast(self.weight_regularization_lambda, tf.float32)
+        violation = tf.nn.relu(tau - norm_value)
+        reg_loss = reg_lambda * tf.square(violation)
+        reg_active = tf.cast(violation > 0.0, tf.float32)
+        return reg_loss, norm_value, reg_active
 
     def predict_weights_grid(self, training: bool = False) -> tf.Tensor:
         """Run the INR on geometry features and reshape to ``(E, Z, X)``."""
@@ -63,5 +139,12 @@ class DasInrTrainer(tf.keras.Model):
         Returns:
             Predicted magnitude image with shape ``(B, Z, X)``.
         """
-        predicted_image, _ = self.reconstruct_image(delayed_batch, training=training)
+        predicted_image, weights_grid = self.reconstruct_image(delayed_batch, training=training)
+        if self.weight_regularization_enabled:
+            reg_loss, norm_value, reg_active = self.compute_weight_regularization(weights_grid)
+            if training:
+                self.add_loss(reg_loss)
+            self.reg_loss_tracker.update_state(reg_loss)
+            self.w_norm_tracker.update_state(norm_value)
+            self.reg_active_rate_tracker.update_state(reg_active)
         return predicted_image
