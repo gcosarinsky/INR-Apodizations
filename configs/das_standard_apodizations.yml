@@ -15,6 +15,18 @@ vmin_db: -60.0
 vmax_db: 0.0
 normalize_per_image: true
 
+# Optional lateral reflector profile plot
+reflector_lateral_profile:
+  enabled: true
+  line_length_mm: 5.0
+  scatterer_selection: strongest
+  scatterer_idx: 0
+  overlay_profiles: true
+  use_db: true
+  vmin_db: -60.0
+  include_target: true
+  images: [uniform, boxcar, hanning, target]
+
 # Output controls
 save: true
 show: true

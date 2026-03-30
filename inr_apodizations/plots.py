@@ -123,7 +123,6 @@ def plot_training_curves(history: dict, output_path: str) -> None:
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=150)
-    plt.close(fig)
 
 
 def plot_das_comparison_db(
@@ -225,7 +224,172 @@ def plot_das_comparison_db(
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+
+
+def plot_lateral_reflector_profiles(
+    images: dict[str, np.ndarray] | list[np.ndarray] | tuple[np.ndarray, ...],
+    output_path: str,
+    extent: tuple[float, float, float, float],
+    x_center: float,
+    z_center: float,
+    line_length: float,
+    overlay_profiles: bool = True,
+    labels: list[str] | tuple[str, ...] | None = None,
+    cm: CoordinateManager | None = None,
+    vmin_db: float | None = None,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Plot horizontal reflector profiles centered at a physical coordinate.
+
+    Args:
+        images: Collection of 2D images to sample. It can be a dictionary with
+            display names as keys or a list/tuple of arrays.
+        output_path: Path to the output PNG file.
+        extent: Matplotlib ``imshow`` extent as ``(xmin, xmax, zmax, zmin)`` in mm.
+        x_center: Lateral center of the sampled line in mm.
+        z_center: Depth center of the sampled line in mm.
+        line_length: Total horizontal profile length in mm.
+        overlay_profiles: If True, all profiles are drawn on the same axes.
+            If False, one subplot is created per image.
+        labels: Optional labels used when ``images`` is a list or tuple.
+        cm: Optional coordinate manager used to recover the physical image axes.
+            When provided, its ``x`` and ``z`` coordinates are used to locate
+            the nearest sampling indices. Otherwise, axes are reconstructed from
+            ``extent``.
+        vmin_db: Optional lower dB display bound for the profile plots. If None, 
+        the minimum value is determined from the data.
+
+    Returns:
+        Tuple with the sampled lateral coordinates in mm and a dictionary mapping
+        image names to extracted profile arrays.
+
+    Raises:
+        ValueError: If inputs are empty, inconsistent, non-2D, or if the sampled
+            window falls outside the image domain.
+    """
+    if line_length <= 0.0:
+        raise ValueError(f"`line_length` must be > 0, got {line_length}.")
+
+    if isinstance(images, dict):
+        image_items = [(str(name), np.asarray(image)) for name, image in images.items()]
+    else:
+        image_list = [np.asarray(image) for image in images]
+        if len(image_list) == 0:
+            raise ValueError("`images` must contain at least one image.")
+
+        if labels is None:
+            inferred_labels = [f"Image {idx + 1}" for idx in range(len(image_list))]
+        else:
+            if len(labels) != len(image_list):
+                raise ValueError(
+                    "`labels` length must match the number of images when `images` "
+                    "is a list or tuple."
+                )
+            inferred_labels = [str(label) for label in labels]
+        image_items = list(zip(inferred_labels, image_list))
+
+    if len(image_items) == 0:
+        raise ValueError("`images` must contain at least one image.")
+
+    reference_shape = image_items[0][1].shape
+    if len(reference_shape) != 2:
+        raise ValueError(
+            f"Expected 2D images, got shape {reference_shape} for '{image_items[0][0]}'."
+        )
+
+    for image_name, image in image_items:
+        if image.ndim != 2:
+            raise ValueError(f"Expected 2D image for '{image_name}', got shape {image.shape}.")
+        if image.shape != reference_shape:
+            raise ValueError(
+                "All images must share the same shape. "
+                f"Expected {reference_shape}, got {image.shape} for '{image_name}'."
+            )
+
+    nz, nx = reference_shape
+    if cm is not None:
+        coords_phys = cm.get_coordinates_1d(scaled=False)
+        x_axis = np.asarray(coords_phys["x"])
+        z_axis = np.asarray(coords_phys["z"])
+        if x_axis.shape[0] != nx or z_axis.shape[0] != nz:
+            raise ValueError(
+                "CoordinateManager axes are inconsistent with image shape. "
+                f"Expected (nz={nz}, nx={nx}), got (nz={z_axis.shape[0]}, nx={x_axis.shape[0]})."
+            )
+    else:
+        x_min, x_max, z_max, z_min = [float(value) for value in extent]
+        x_axis = np.linspace(x_min, x_max, nx)
+        z_axis = np.linspace(z_min, z_max, nz)
+
+    half_length = line_length / 2.0
+    x_start = x_center - half_length
+    x_end = x_center + half_length
+    if x_start < x_axis.min() or x_end > x_axis.max():
+        raise ValueError(
+            "Requested horizontal line falls outside the image lateral extent. "
+            f"Requested [{x_start:.3f}, {x_end:.3f}] mm, available "
+            f"[{x_axis.min():.3f}, {x_axis.max():.3f}] mm."
+        )
+    if z_center < z_axis.min() or z_center > z_axis.max():
+        raise ValueError(
+            "Requested z_center falls outside the image depth extent. "
+            f"Requested {z_center:.3f} mm, available "
+            f"[{z_axis.min():.3f}, {z_axis.max():.3f}] mm."
+        )
+
+    z_idx = int(np.argmin(np.abs(z_axis - z_center)))
+    x_start_idx = int(np.searchsorted(x_axis, x_start, side="left"))
+    x_end_idx = int(np.searchsorted(x_axis, x_end, side="right"))
+    if x_end_idx - x_start_idx < 2:
+        raise ValueError(
+            "The requested line_length is too short for the image sampling resolution."
+        )
+
+    sampled_x = x_axis[x_start_idx:x_end_idx]
+    profiles = {
+        image_name: np.asarray(image[z_idx, x_start_idx:x_end_idx])
+        for image_name, image in image_items
+    }
+
+    if overlay_profiles:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
+        for image_name, profile in profiles.items():
+            ax.plot(sampled_x, profile, linewidth=2, label=image_name)
+            if vmin_db is not None:
+                ax.set_ylim(vmin_db, 0.0)
+        ax.set_title(
+            "Lateral reflector profiles "
+            f"at z={z_axis[z_idx]:.2f} mm centered on x={x_center:.2f} mm"
+        )
+        ax.set_xlabel("x (mm)")
+        ax.set_ylabel("Amplitude")
+        ax.grid(True, alpha=0.3)
+        ax.axvline(x_center, color="black", linestyle=":", linewidth=1.2)
+        ax.legend()
+    else:
+        fig, axes = plt.subplots(
+            len(profiles),
+            1,
+            figsize=(10, max(4, 3.2 * len(profiles))),
+            sharex=True,
+            constrained_layout=True,
+        )
+        axes_array = np.atleast_1d(axes)
+        for ax, (image_name, profile) in zip(axes_array, profiles.items()):
+            ax.plot(sampled_x, profile, linewidth=2)
+            if vmin_db is not None:
+                ax.set_ylim(vmin_db, 0.0)
+            ax.set_title(
+                f"{image_name} at z={z_axis[z_idx]:.2f} mm centered on x={x_center:.2f} mm"
+            )
+            ax.set_ylabel("Amplitude")
+            ax.grid(True, alpha=0.3)
+            ax.axvline(x_center, color="black", linestyle=":", linewidth=1.2)
+        axes_array[-1].set_xlabel("x (mm)")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+
+    return sampled_x, profiles
 
 
 def plot_apodization_before_after(
@@ -407,7 +571,6 @@ def plot_apodization_before_after(
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=150)
-    plt.close(fig)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from inr_apodizations.apodizations import (
 from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
+from inr_apodizations.plots import plot_lateral_reflector_profiles
 import sys
 
 # Import compute_scatterer_metrics from sandbox helpers
@@ -37,6 +38,88 @@ except ImportError:
     compute_scatterer_metrics = None
 plt.ion()  # Enable interactive mode for better display control (can be turned off if not desired)
 CONFIG_PATH = CONFIGS_DIR / "das_standard_apodizations.yml"
+
+
+def load_scatterers_for_example(cfg_dataset: dict, example_idx: int) -> np.ndarray:
+    """Load scatterers for a single example and return coordinates in mm.
+
+    Args:
+        cfg_dataset: Delayed-samples dataset configuration dictionary.
+        example_idx: Example index to extract.
+
+    Returns:
+        Array with shape ``(n_scatterers, 3)`` containing ``[x_mm, z_mm, reflectivity]``.
+
+    Raises:
+        ValueError: If the RF dataset reference is missing or scatterers are malformed.
+        FileNotFoundError: If the scatterers file does not exist.
+    """
+    if "rf_dataset_name" not in cfg_dataset:
+        raise ValueError(
+            "A scatterer-based workflow requires 'rf_dataset_name' in dataset config."
+        )
+
+    rf_dataset_name = cfg_dataset["rf_dataset_name"]
+    scatterers_path = DATA_DIR / "rf_dataset_simus" / rf_dataset_name / "scatterers.npy"
+    if not scatterers_path.exists():
+        raise FileNotFoundError(
+            f"scatterers.npy not found at: {scatterers_path}\n"
+            f"Expected RF dataset: {rf_dataset_name}\n"
+            "Ensure the RF dataset was generated and 'rf_dataset_name' in config is correct."
+        )
+
+    print(f"Loading scatterers from: {scatterers_path}")
+    scatterers_list = np.load(scatterers_path, allow_pickle=True)
+    scatterers_example = np.asarray(scatterers_list[example_idx], dtype=np.float32)
+    if scatterers_example.ndim != 2 or scatterers_example.shape[1] < 3:
+        raise ValueError(
+            "Expected scatterers with shape (n_scatterers, 3) containing [x, z, reflectivity]."
+        )
+
+    scatterers_mm = scatterers_example.copy()
+    scatterers_mm[:, :2] *= 1000.0
+    return scatterers_mm
+
+
+def select_reflector_scatterer(
+    scatterers_mm: np.ndarray,
+    selection: str = "strongest",
+    scatterer_idx: int | None = None,
+) -> np.ndarray:
+    """Select one scatterer to center the reflector lateral profile.
+
+    Args:
+        scatterers_mm: Array with columns ``[x_mm, z_mm, reflectivity]``.
+        selection: Selection mode. Supported values are ``strongest`` and ``first``.
+        scatterer_idx: Optional explicit scatterer index. When provided, it has priority.
+
+    Returns:
+        Selected scatterer row as ``[x_mm, z_mm, reflectivity]``.
+
+    Raises:
+        ValueError: If the array is empty, the selection mode is unsupported,
+            or the explicit index is out of bounds.
+    """
+    if scatterers_mm.shape[0] == 0:
+        raise ValueError("No scatterers available for reflector profile selection.")
+
+    if scatterer_idx is not None:
+        if scatterer_idx < 0 or scatterer_idx >= scatterers_mm.shape[0]:
+            raise ValueError(
+                f"scatterer_idx={scatterer_idx} is out of range [0, {scatterers_mm.shape[0] - 1}]."
+            )
+        return scatterers_mm[scatterer_idx]
+
+    selection_normalized = selection.strip().lower()
+    if selection_normalized == "strongest":
+        selected_idx = int(np.argmax(np.abs(scatterers_mm[:, 2])))
+    elif selection_normalized == "first":
+        selected_idx = 0
+    else:
+        raise ValueError(
+            "`reflector_lateral_profile.scatterer_selection` must be 'strongest' or 'first'."
+        )
+    return scatterers_mm[selected_idx]
 
 
 def load_yaml_config(config_path: Path) -> dict:
@@ -146,6 +229,12 @@ else:
 if targets_all is None:
     print("Warning: targets_dataset.npy not found, target panel will be skipped.")
 
+reflector_profile_cfg = cfg_user.get("reflector_lateral_profile", {})
+reflector_profile_enabled = bool(reflector_profile_cfg.get("enabled", False))
+scatterer_eval_cfg = cfg_user.get("scatterer_eval", {})
+scatterer_eval_enabled = bool(scatterer_eval_cfg.get("enabled", False))
+scatterers_mm = None
+
 if delayed_samples_all.ndim != 4:
     raise ValueError(
         "Expected delayed_samples_dataset.npy shape (n_examples, n_elem, nz, nx), "
@@ -156,6 +245,9 @@ example_idx = int(cfg_user["example_idx"])
 n_examples = delayed_samples_all.shape[0]
 if example_idx < 0 or example_idx >= n_examples:
     raise ValueError(f"example_idx={example_idx} is out of range [0, {n_examples - 1}]")
+
+if reflector_profile_enabled or scatterer_eval_enabled:
+    scatterers_mm = load_scatterers_for_example(cfg, example_idx)
 
 kp = KernelParameters2D(cfg)
 cm = CoordinateManager(kp)
@@ -256,9 +348,94 @@ if bool(cfg_user.get("save_npy", False)):
     )
     print(f"Saved {arrays_path}")
 
+if reflector_profile_enabled:
+    line_length_mm = float(reflector_profile_cfg.get("line_length_mm", 5.0))
+    overlay_profiles = bool(reflector_profile_cfg.get("overlay_profiles", True))
+    use_db_profiles = bool(reflector_profile_cfg.get("use_db", True))
+    include_target_profile = bool(reflector_profile_cfg.get("include_target", True))
+    requested_profile_images = reflector_profile_cfg.get("images")
+    scatterer_selection = str(reflector_profile_cfg.get("scatterer_selection", "strongest"))
+    scatterer_idx_raw = reflector_profile_cfg.get("scatterer_idx")
+    scatterer_idx = None if scatterer_idx_raw is None else int(scatterer_idx_raw)
+
+    if scatterers_mm is None:
+        raise ValueError("Reflector profile plotting requires scatterers for the selected example.")
+
+    selected_scatterer = select_reflector_scatterer(
+        scatterers_mm,
+        selection=scatterer_selection,
+        scatterer_idx=scatterer_idx,
+    )
+    x_center_mm = float(selected_scatterer[0])
+    z_center_mm = float(selected_scatterer[1])
+    print(
+        "Using scatterer for reflector profile: "
+        f"x={x_center_mm:.3f} mm, z={z_center_mm:.3f} mm, reflectivity={selected_scatterer[2]:.3f}"
+    )
+
+    if requested_profile_images is not None and not isinstance(requested_profile_images, list):
+        raise ValueError("`reflector_lateral_profile.images` must be a YAML list when provided.")
+
+    if use_db_profiles:
+        profile_image_source = dict(das_images_db)
+    else:
+        profile_image_source = {
+            name: np.abs(image) for name, image in das_images_linear.items()
+        }
+
+    if include_target_profile and target_np is not None:
+        profile_image_source["target"] = target_db if use_db_profiles else np.abs(target_np)
+
+    if requested_profile_images is None or len(requested_profile_images) == 0:
+        profile_image_names = list(profile_image_source.keys())
+    else:
+        profile_image_names = [str(name).strip().lower() for name in requested_profile_images]
+
+    missing_profile_images = [
+        image_name for image_name in profile_image_names if image_name not in profile_image_source
+    ]
+    if missing_profile_images:
+        raise ValueError(
+            "Unknown images requested in `reflector_lateral_profile.images`: "
+            f"{missing_profile_images}. Available images: {list(profile_image_source.keys())}"
+        )
+
+    selected_profile_images = {
+        image_name: profile_image_source[image_name] for image_name in profile_image_names
+    }
+    if len(selected_profile_images) == 0:
+        raise ValueError("No images available for `reflector_lateral_profile` plotting.")
+
+    if save_outputs:
+        profile_scale_suffix = "db" if use_db_profiles else "linear"
+        out_reflector_profile = (
+            output_dir
+            / (
+                "reflector_lateral_profile_"
+                f"z{z_center_mm:.2f}_x{x_center_mm:.2f}_"
+                f"len{line_length_mm:.2f}_{profile_scale_suffix}_"
+                f"example{example_idx}.png"
+            )
+        )
+        plot_lateral_reflector_profiles(
+            images=selected_profile_images,
+            output_path=str(out_reflector_profile),
+            extent=kp.get_imshow_extent(),
+            x_center=x_center_mm,
+            z_center=z_center_mm,
+            line_length=line_length_mm,
+            overlay_profiles=overlay_profiles,
+            cm=cm,
+            vmin_db=float(cfg_user.get("vmin_db", -60.0)),
+        )
+        print(f"Saved {out_reflector_profile}")
+    else:
+        print(
+            "Skipping reflector_lateral_profile figure because save=false and this helper "
+            "currently writes figures directly to disk."
+        )
+
 # --- Scatterer evaluation (if enabled) ---
-scatterer_eval_cfg = cfg_user.get("scatterer_eval", {})
-scatterer_eval_enabled = bool(scatterer_eval_cfg.get("enabled", False))
 scatterer_metrics = None
 scatterer_union_mask = None
 
@@ -267,28 +444,10 @@ if scatterer_eval_enabled:
         print("Warning: compute_scatterer_metrics could not be imported, skipping scatterer evaluation.")
     else:
         try:
-            # Require explicit RF dataset reference in config
-            if "rf_dataset_name" not in cfg:
-                raise ValueError(
-                    "scatterer_eval.enabled=true requires 'rf_dataset_name' in dataset config. "
-                    "This should be set in cfg_delayed_samples.npy from the generate process."
-                )
-            
-            rf_dataset_name = cfg["rf_dataset_name"]
-            scatterers_path = DATA_DIR / "rf_dataset_simus" / rf_dataset_name / "scatterers.npy"
-            
-            if not scatterers_path.exists():
-                raise FileNotFoundError(
-                    f"scatterers.npy not found at: {scatterers_path}\n"
-                    f"Expected RF dataset: {rf_dataset_name}\n"
-                    f"Ensure the RF dataset was generated and 'rf_dataset_name' in config is correct."
-                )
-            
-            print(f"Loading scatterers from: {scatterers_path}")
-            scatterers_list = np.load(scatterers_path, allow_pickle=True)
-            scatterers_example = scatterers_list[example_idx]  # shape (n_scatt, 3), columns [x, z, reflectivity]
-            scatterers_xy = scatterers_example[:, :2] * 1000.0  # Convert to mm
-            
+            if scatterers_mm is None:
+                raise ValueError("Scatterer evaluation requires scatterers for the selected example.")
+            scatterers_xy = scatterers_mm[:, :2]
+
             radius_mm = float(scatterer_eval_cfg.get("radius_mm", 1.5))
             hist_bins = int(scatterer_eval_cfg.get("hist_bins", 50))
             
