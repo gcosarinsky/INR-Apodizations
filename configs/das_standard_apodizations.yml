@@ -1,10 +1,15 @@
 # Copy this file to configs/das_apodizations.yml and edit values as needed.
 
 delayed_samples_dataset: "20260326_102630"   # name of the delayed samples dataset to use as input
-example_idx: 0
+example_idx: 0                               # single example to process (legacy, used if interactive_mode=false)
 methods: [boxcar, hanning]
 f_number: 1.0
 scaled: false
+
+# Interactive mode: navigate through multiple examples with keyboard controls
+# When true, ignores example_idx and processes all available examples or a specified subset
+interactive_mode: true
+example_indices: null  # null = all examples; or list [0, 1, 5, 10] for subset
 
 # Apodization plotting slices
 x_fixed: 0.0
