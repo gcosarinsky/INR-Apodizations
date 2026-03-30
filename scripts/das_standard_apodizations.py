@@ -512,6 +512,8 @@ if scatterer_metrics is not None and len(scatterer_metrics) > 0:
         uniform_peaks = scatterer_metrics["uniform"]["peak_amplitudes"]
         uniform_bg_rms = float(scatterer_metrics["uniform"]["background_rms"])
         uniform_image_max = max(float(np.max(np.abs(das_images_linear["uniform"]))), 1e-12)
+        uniform_bg_rms_safe = max(uniform_bg_rms, 1e-12)
+        uniform_peaks_snr = uniform_peaks / uniform_bg_rms_safe
         fig_scatter, axes_scatter = plt.subplots(
             1, n_scatter_cols, figsize=(5 * n_scatter_cols, 5), squeeze=False
         )
@@ -519,30 +521,31 @@ if scatterer_metrics is not None and len(scatterer_metrics) > 0:
             ax = axes_scatter[0, col_idx]
             method_peaks = scatterer_metrics[method_name]["peak_amplitudes"]
             method_bg_rms = float(scatterer_metrics[method_name]["background_rms"])
-            ax.scatter(uniform_peaks, method_peaks, s=30, alpha=0.7)
-            ax_max = max(float(uniform_peaks.max()), float(method_peaks.max()))
-            ax_max = max(ax_max, uniform_bg_rms, method_bg_rms)
+            method_bg_rms_safe = max(method_bg_rms, 1e-12)
+            method_peaks_snr = method_peaks / method_bg_rms_safe
+            ax.scatter(uniform_peaks_snr, method_peaks_snr, s=30, alpha=0.7)
+            ax_max = max(float(uniform_peaks_snr.max()), float(method_peaks_snr.max()))
             ax.plot([0, ax_max], [0, ax_max], color="red", linewidth=1, linestyle="--", label="y = x")
             ax.scatter(
-                [uniform_bg_rms],
-                [method_bg_rms],
+                [1.0],
+                [1.0],
                 s=110,
                 marker="D",
                 facecolors="none",
                 edgecolors="black",
                 linewidths=1.5,
-                label="bg_rms",
+                label="bg_rms reference",
                 zorder=5,
             )
-            ax.set_xlabel("Uniform peak amplitude")
-            ax.set_ylabel(f"{method_name} peak amplitude")
+            ax.set_xlabel("Uniform SNR (peak amplitude / bg_rms)")
+            ax.set_ylabel(f"{method_name} SNR (peak amplitude / bg_rms)")
             ax.set_title(
-                f"{method_name} vs uniform ({len(uniform_peaks)} scatterers)"
+                f"{method_name} vs uniform SNR ({len(uniform_peaks)} scatterers)"
             )
             ax.set_aspect("equal")
             ax.legend()
             ax.grid(True, alpha=0.3)
-        fig_scatter.suptitle(f"Peak amplitude comparison (example {example_idx})")
+        fig_scatter.suptitle(f"SNR comparison (example {example_idx})")
         fig_scatter.tight_layout()
 
         if save_outputs:
