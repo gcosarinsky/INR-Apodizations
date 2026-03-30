@@ -9,7 +9,7 @@ experiment:
 4. Compare ``abs(image)`` against the provided target with RMSE.
 
 The script keeps logic direct and sandbox-oriented. Configuration lives in
-``sandbox/inr_das_experiment/config.yml``.
+``configs/train_config.yml``.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 
 
-CONFIG_PATH = Path("sandbox/inr_das_experiment/config.yml")
+CONFIG_PATH = Path("configs/train_config.yml")
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
 seed = int(cfg["training"]["seed"])
 tf.keras.utils.set_random_seed(seed)
@@ -394,7 +394,7 @@ helpers.plot_das_comparison_db(
 # Save one apodization figure per selected x, with multiple z profiles overlaid.
 x_values_cfg = plot_cfg.get("x_values_apod", None)
 if x_values_cfg is None:
-    raise ValueError("plots.x_values_apod must be provided in config.yml")
+    raise ValueError("plots.x_values_apod must be provided in configs/train_config.yml")
 if isinstance(x_values_cfg, (int, float)):
     x_values_apod = [float(x_values_cfg)]
 else:

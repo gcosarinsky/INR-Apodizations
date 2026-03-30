@@ -395,7 +395,7 @@ def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config
     with open(os.path.join(output_dir, "history.json"), "w", encoding="utf-8") as file:
         json.dump(serializable_history, file, indent=2)
 
-    with open(os.path.join(output_dir, "config.yml"), "w", encoding="utf-8") as file:
+    with open(os.path.join(output_dir, "train_config_info.yml"), "w", encoding="utf-8") as file:
         yaml.safe_dump(config, file, sort_keys=False)
 
 

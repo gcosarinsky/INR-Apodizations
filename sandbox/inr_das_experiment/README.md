@@ -9,7 +9,7 @@ apodization weights from geometry features and applies the physical forward:
 4. Compare `abs(image)` against the stored target.
 
 Structure:
-- `config.yml`: sandbox configuration for paths, model hyperparameters and training settings.
+- `../../configs/train_config.yml`: experiment configuration for paths, model hyperparameters and training settings.
 - `helpers.py`: utilities to load datasets, build the coordinate manager, split examples and save artifacts.
 - `train_inr_das.py`: training script with the real forward `weights × delayed -> image`.
 - `outputs/`: sandbox copy of run artifacts.

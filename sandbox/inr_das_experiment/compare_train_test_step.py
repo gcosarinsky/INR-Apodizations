@@ -22,7 +22,7 @@ from inr_apodizations.modeling.metrics import rmse, ssim_metric
 
 
 # Load config and seeds.
-CONFIG_PATH = Path("sandbox/inr_das_experiment/config.yml")
+CONFIG_PATH = Path("configs/train_config.yml")
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
 tf.random.set_seed(int(cfg["training"]["seed"]))
 np.random.seed(int(cfg["training"]["seed"]))
