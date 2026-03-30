@@ -380,6 +380,14 @@ helpers.plot_das_comparison_db(
     normalize_each_image=normalize_each_image,
 )
 
+helpers.plot_apodization_energy_comparison(
+    hanning_apod=hanning_weights.numpy(),
+    inr_apod_after=weights_after_grid.numpy(),
+    output_path=str(Path(sandbox_dir) / "apodization_energy_comparison_hanning_vs_inr_after.png"),
+    extent=kp.get_imshow_extent(),
+    cmap=str(plot_cfg.get("apod_cmap", "viridis")),
+)
+
 # Save one apodization figure per selected x, with multiple z profiles overlaid.
 x_values_cfg = plot_cfg.get("x_values_apod", None)
 if x_values_cfg is None:

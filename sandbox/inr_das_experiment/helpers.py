@@ -14,6 +14,7 @@ import subprocess
 from datetime import datetime
 from typing import Tuple
 
+import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 import yaml
@@ -438,6 +439,96 @@ def save_debug_arrays(output_dir: str, arrays: dict[str, np.ndarray]) -> None:
     os.makedirs(output_dir, exist_ok=True)
     for name, array in arrays.items():
         np.save(os.path.join(output_dir, f"{name}.npy"), array)
+
+
+def plot_apodization_energy_comparison(
+    hanning_apod: np.ndarray,
+    inr_apod_after: np.ndarray,
+    output_path: str,
+    extent: tuple[float, float, float, float],
+    cmap: str = "viridis",
+) -> None:
+    """Plot pixel-wise apodization energy maps for Hanning and INR after training.
+
+    The energy proxy is computed as ``sum(abs(apodization), axis=0)``, where
+    axis 0 is the element dimension of the apodization map ``(E, Z, X)``.
+
+    Args:
+        hanning_apod: Hanning apodization with shape ``(E, Z, X)``.
+        inr_apod_after: INR learned apodization with shape ``(E, Z, X)``.
+        output_path: Output figure path.
+        extent: Matplotlib imshow extent ``(xmin, xmax, zmax, zmin)`` in mm.
+        cmap: Colormap for energy maps.
+
+    Raises:
+        ValueError: If input shapes are not 3D or not equal.
+    """
+    hanning = np.asarray(hanning_apod)
+    inr_after = np.asarray(inr_apod_after)
+
+    if hanning.ndim != 3 or inr_after.ndim != 3:
+        raise ValueError("hanning_apod and inr_apod_after must be 3D arrays with shape (E, Z, X)")
+    if hanning.shape != inr_after.shape:
+        raise ValueError("hanning_apod and inr_apod_after must have identical shapes")
+
+    hanning_energy = np.sum(np.abs(hanning), axis=0)
+    inr_energy = np.sum(np.abs(inr_after), axis=0)
+    delta_energy = inr_energy - hanning_energy
+
+    vmax = float(max(np.max(hanning_energy), np.max(inr_energy)))
+    if vmax <= 0.0:
+        vmax = 1.0
+
+    delta_abs = float(np.max(np.abs(delta_energy)))
+    if delta_abs <= 0.0:
+        delta_abs = 1.0
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8), sharex=True, sharey=True)
+
+    im0 = axes[0].imshow(
+        hanning_energy,
+        cmap=cmap,
+        vmin=0.0,
+        vmax=vmax,
+        extent=extent,
+        aspect="auto",
+    )
+    axes[0].set_title("Hanning |sum_e |w_e||")
+    axes[0].set_xlabel("x (mm)")
+    axes[0].set_ylabel("z (mm)")
+
+    im1 = axes[1].imshow(
+        inr_energy,
+        cmap=cmap,
+        vmin=0.0,
+        vmax=vmax,
+        extent=extent,
+        aspect="auto",
+    )
+    axes[1].set_title("INR after |sum_e |w_e||")
+    axes[1].set_xlabel("x (mm)")
+
+    im2 = axes[2].imshow(
+        delta_energy,
+        cmap="RdBu_r",
+        vmin=-delta_abs,
+        vmax=delta_abs,
+        extent=extent,
+        aspect="auto",
+    )
+    axes[2].set_title("INR - Hanning")
+    axes[2].set_xlabel("x (mm)")
+
+    fig.tight_layout(rect=[0, 0, 0.9, 1])
+    cbar_energy_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+    fig.colorbar(im1, cax=cbar_energy_ax, label="sum_e |w_e|")
+
+    cbar_delta_ax = fig.add_axes([0.955, 0.15, 0.015, 0.7])
+    fig.colorbar(im2, cax=cbar_delta_ax, label="delta energy")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
 
 
 def compute_scatterer_metrics(
