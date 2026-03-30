@@ -136,6 +136,7 @@ def plot_das_comparison_db(
     cmap: str = "gray",
     vmin_db: float = -60.0,
     vmax_db: float = 0.0,
+    normalize_each_image: bool = False,
 ) -> None:
     """Save a four-panel DAS comparison in decibels.
 
@@ -149,6 +150,9 @@ def plot_das_comparison_db(
         cmap: Colormap used for all panels.
         vmin_db: Lower dB display bound.
         vmax_db: Upper dB display bound.
+        normalize_each_image: If True, each panel uses its own maximum value as
+            the 0 dB reference. If False, all panels share a common maximum
+            reference across the full comparison.
     """
     images_linear = {
         "Uniform": np.asarray(uniform_image),
@@ -156,8 +160,16 @@ def plot_das_comparison_db(
         "INR after": np.asarray(inr_after_image),
         "Target": np.asarray(target_image),
     }
-    shared_ref = max(float(np.max(np.abs(image))) for image in images_linear.values())
-    images_db = {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
+    if normalize_each_image:
+        images_db = {
+            name: to_db(image, ref=float(np.max(np.abs(image))))
+            for name, image in images_linear.items()
+        }
+    else:
+        shared_ref = max(float(np.max(np.abs(image))) for image in images_linear.values())
+        images_db = {
+            name: to_db(image, ref=shared_ref) for name, image in images_linear.items()
+        }
 
     # Dynamic layout: prefer a compact grid (up to 2 columns) to avoid excessively
     # wide horizontal figures. Each panel kept near square by default.

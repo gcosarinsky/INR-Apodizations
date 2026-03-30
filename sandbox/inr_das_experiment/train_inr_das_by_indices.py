@@ -335,6 +335,7 @@ effective_cfg = {
 helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
 
 plot_cfg = cfg.get("plots", {})
+normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))
 helpers.plot_training_curves(
     history.history,
     output_path=str(Path(sandbox_dir) / "training_loss.png"),
@@ -349,6 +350,7 @@ helpers.plot_das_comparison_db(
     cmap=str(plot_cfg.get("cmap", "gray")),
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+    normalize_each_image=normalize_each_image,
 )
 # Also save a comparison figure using Hanning as the baseline instead of Uniform
 helpers.plot_das_comparison_db(
@@ -361,6 +363,7 @@ helpers.plot_das_comparison_db(
     cmap=str(plot_cfg.get("cmap", "gray")),
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+    normalize_each_image=normalize_each_image,
 )
 
 # Also save a comparison figure using Boxcar as the baseline
@@ -374,6 +377,7 @@ helpers.plot_das_comparison_db(
     cmap=str(plot_cfg.get("cmap", "gray")),
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+    normalize_each_image=normalize_each_image,
 )
 
 # Save one apodization figure per selected x, with multiple z profiles overlaid.
