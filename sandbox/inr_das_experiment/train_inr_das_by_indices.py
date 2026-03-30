@@ -464,5 +464,46 @@ for x_value in x_values_apod:
         hanning_apod=hanning_weights.numpy(),
     )
 
+# --- Scatterer metrics evaluation ---
+scatterer_eval_cfg = cfg.get("scatterer_eval", {})
+if bool(scatterer_eval_cfg.get("enabled", False)):
+    try:
+        scatterers_all = helpers.load_saved_scatterers(dataset_folder)
+        scatterers_example = np.asarray(scatterers_all[val_idx[0]], dtype=np.float32)
+        scatterers_mm_eval = scatterers_example.copy()
+        scatterers_mm_eval[:, :2] *= 1000.0  # m -> mm
+        scatterers_xy = scatterers_mm_eval[:, :2]
+
+        radius_mm_eval = float(scatterer_eval_cfg.get("radius_mm", 1.5))
+        hist_bins_eval = int(scatterer_eval_cfg.get("hist_bins", 50))
+
+        images_abs_eval = {
+            "uniform": uniform_image.numpy()[0],
+            "hanning": hanning_image.numpy()[0],
+            "inr_after": predicted_after_image.numpy()[0],
+        }
+
+        helpers.plot_scatterer_evaluation(
+            images_abs=images_abs_eval,
+            scatterers_xy=scatterers_xy,
+            cm=cm,
+            output_dir=sandbox_dir,
+            radius_mm=radius_mm_eval,
+            hist_bins=hist_bins_eval,
+            compare_pairs=[("uniform", "inr_after"), ("hanning", "inr_after")],
+            extent=kp.get_imshow_extent(),
+            vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
+            vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+            cmap=str(plot_cfg.get("cmap", "gray")),
+            example_suffix=f"val{val_idx[0]}",
+        )
+        print(f"Scatterer evaluation figures saved to: {sandbox_dir}")
+    except FileNotFoundError as e:
+        print(f"Warning: scatterer_eval skipped — {e}")
+    except Exception as e:
+        print(f"Warning: scatterer_eval failed — {e}")
+        import traceback
+        traceback.print_exc()
+
 print("Training finished.")
 print("Sandbox artifacts:", sandbox_dir)
