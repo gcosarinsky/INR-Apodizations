@@ -1,7 +1,7 @@
 io:
   dataset_folder: data/delayed_samples_dataset/20260327_141700
-  processed_root: sandbox/inr_das_experiment/outputs/processed
   sandbox_output_root: sandbox/inr_das_experiment/outputs
+  review_output_root: sandbox/inr_das_experiment/review_outputs
 
 target_regeneration:
   enabled: true
@@ -9,6 +9,7 @@ target_regeneration:
   sigma_z: 0.2
 
 model:
+  physical_feature_set: distance_depth
   hidden_units: 8
   n_hidden_layers: 3
   activation: relu
@@ -18,10 +19,17 @@ model:
 
 training:
   batch_size: 4
-  epochs: 50
+  epochs: 20
   learning_rate: 0.01
   loss: mae
   metric: mae
+  weight_regularization:
+    enabled: true
+    type: hinge_low_norm
+    lambda: 20000
+    tau: 0.50
+    epsilon: 1.0e-8
+    normalize_norm: true
   mae_db_ref: null
   mae_db_eps: 1.0e-8
   baseline_f_number: 0.75
@@ -42,3 +50,12 @@ plots:
   x_values_apod: [0.0, -10.0, 10.0]
   z_profiles_mm: [15.0, 25.0, 35.0]
   apod_cmap: viridis
+
+scatterer_eval:
+  enabled: true
+  radius_mm: 0.75
+  hist_bins: 50
+
+results_review:
+  run_timestamp: "20260330_154310"  # Folder under sandbox_output_root that contains model.keras + train_config_info.yml
+  max_validation_examples: null

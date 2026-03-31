@@ -2,7 +2,51 @@ from pathlib import Path
 
 import pymust
 import numpy as np
+import tensorflow as tf
 import yaml
+
+
+def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
+    """Convert an image magnitude from linear domain to decibels.
+
+    Args:
+        image: Real or complex image in linear domain.
+        ref: Positive reference magnitude used as 0 dB.
+        eps: Small value to avoid numerical instability.
+
+    Returns:
+        NumPy array with image values in dB.
+    """
+    magnitude = np.abs(image)
+    return 20.0 * np.log10((magnitude / (ref + eps)) + eps)
+
+
+def to_db_tensor(x, ref, eps: float = 1e-8):
+    """Convert a real/complex tensor magnitude to decibels.
+
+    Args:
+        x: Input tensor with linear amplitudes (real or complex).
+        ref: Reference amplitude for normalization (0 dB level).
+        eps: Small positive constant to avoid log/division issues.
+
+    Returns:
+        Tensor with values in dB.
+
+    Raises:
+        tf.errors.InvalidArgumentError: If ``eps`` is not strictly positive.
+    """
+    eps_tensor = tf.cast(eps, tf.float32)
+    tf.debugging.assert_positive(eps_tensor, message="eps must be > 0")
+
+    magnitude = tf.cast(tf.abs(x), tf.float32)
+    ref_tensor = tf.cast(ref, tf.float32)
+    ref_safe = tf.maximum(ref_tensor, eps_tensor)
+
+    normalized = magnitude / ref_safe
+    normalized_safe = tf.maximum(normalized, eps_tensor)
+    log10 = tf.math.log(normalized_safe) / tf.math.log(tf.constant(10.0, dtype=tf.float32))
+    return 20.0 * log10
+
 
 def cfg_to_must_param(cfg):
     """

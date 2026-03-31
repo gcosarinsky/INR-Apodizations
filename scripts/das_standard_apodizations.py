@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import yaml
+import math
 
 from inr_apodizations.apodizations import (
     compute_dynamic_apodizations_tf,
@@ -28,14 +29,21 @@ from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.plots import plot_lateral_reflector_profiles
+from inr_apodizations.utils import to_db
+from inr_apodizations.interactive_navigator import InteractiveImageNavigator
 import sys
 
 # Import compute_scatterer_metrics from sandbox helpers
 sys.path.insert(0, str(PROJ_ROOT / "sandbox"))
+sys.path.insert(0, str(PROJ_ROOT / "scripts"))
 try:
     from inr_das_experiment.helpers import compute_scatterer_metrics
 except ImportError:
     compute_scatterer_metrics = None
+try:
+    from das_standard_apodizations_helpers import generate_das_comparison_figure
+except ImportError:
+    generate_das_comparison_figure = None
 plt.ion()  # Enable interactive mode for better display control (can be turned off if not desired)
 CONFIG_PATH = CONFIGS_DIR / "das_standard_apodizations.yml"
 
@@ -167,21 +175,6 @@ def load_yaml_config(config_path: Path) -> dict:
         raise ValueError("At least one output mode must be enabled: save=true or show=true.")
 
     return config
-
-
-def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
-    """Convert linear magnitude image to dB.
-
-    Args:
-        image: Complex or real image in linear domain.
-        ref: Positive reference magnitude.
-        eps: Small epsilon to avoid numerical issues.
-
-    Returns:
-        Magnitude image in dB.
-    """
-    magnitude = np.abs(image)
-    return 20.0 * np.log10((magnitude / (ref + eps)) + eps)
 
 
 cfg_user = load_yaml_config(CONFIG_PATH)
@@ -756,5 +749,137 @@ if scatterer_metrics is not None and len(scatterer_metrics) > 0:
             out_scatter_norm = output_dir / f"scatter_peak_amp_normalized_example{example_idx}.png"
             fig_scatter_norm.savefig(out_scatter_norm, dpi=dpi, bbox_inches="tight")
             print(f"Saved {out_scatter_norm}")
+
+
+# ============================================================================
+# INTERACTIVE MODE: Navigate multiple examples with keyboard controls
+# ============================================================================
+interactive_mode = bool(cfg_user.get("interactive_mode", False))
+
+if interactive_mode:
+    if generate_das_comparison_figure is None:
+        print("Error: das_standard_apodizations_helpers could not be imported.")
+        print("Interactive mode requires the helper module.")
+        sys.exit(1)
+
+    # Determine which examples to process
+    example_indices_cfg = cfg_user.get("example_indices")
+    if example_indices_cfg is None:
+        # Use all available examples
+        example_indices_to_process = list(range(n_examples))
+    elif isinstance(example_indices_cfg, list):
+        example_indices_to_process = example_indices_cfg
+    else:
+        raise ValueError("`example_indices` must be a list or null")
+
+    if not example_indices_to_process:
+        raise ValueError("No examples to process in interactive mode.")
+
+    # Validate indices
+    invalid_indices = [idx for idx in example_indices_to_process if idx < 0 or idx >= n_examples]
+    if invalid_indices:
+        raise ValueError(
+            f"Invalid example indices: {invalid_indices}. "
+            f"Valid range: [0, {n_examples - 1}]"
+        )
+
+    print(f"\nEntering interactive mode with {len(example_indices_to_process)} examples...")
+
+    # Define a content generator function (closure capturing environment)
+    def generate_das_panel_content(fig: plt.Figure, ax: plt.Axes, example_idx: int) -> None:
+        """Generate DAS comparison panel for a single example.
+        
+        This is a closure that has access to the outer scope variables.
+        """
+        # Clear previous content
+        fig.clear()
+
+        # Recreate subplots
+        ordered_names = ["uniform"] + [name for name in das_images_db.keys()
+                                        if name != "uniform" and name != "target"]
+        if target_np is not None:
+            ordered_names.append("target")
+
+        n_panels = len(ordered_names)
+        ncols = 2 if n_panels > 1 else 1
+        nrows = math.ceil(n_panels / ncols)
+        width_per_panel = 5
+        height_per_panel = 5
+
+        axes_list = []
+        for idx, image_name in enumerate(ordered_names):
+            ax_panel = fig.add_subplot(nrows, ncols, idx + 1)
+            axes_list.append(ax_panel)
+
+        # Generate DAS images for this example
+        delayed_samples_np = np.asarray(delayed_samples_all[example_idx])
+        delayed_samples_tf = tf.convert_to_tensor(delayed_samples_np, dtype=tf.complex64)
+
+        das_images_linear_ex = {"uniform": tf.reduce_sum(delayed_samples_tf, axis=0).numpy()}
+        for method_name, apod_tensor in apods.items():
+            weighted = delayed_samples_tf * tf.cast(apod_tensor, tf.complex64)
+            das_images_linear_ex[method_name] = tf.reduce_sum(weighted, axis=0).numpy()
+
+        # Convert to dB
+        if normalize_per_image:
+            das_images_db_ex = {
+                name: to_db(image, ref=float(np.max(np.abs(image))))
+                for name, image in das_images_linear_ex.items()
+            }
+        else:
+            shared_ref = max(float(np.max(np.abs(image))) for image in das_images_linear_ex.values())
+            das_images_db_ex = {
+                name: to_db(image, ref=shared_ref) for name, image in das_images_linear_ex.items()
+            }
+
+        target_np_ex = np.asarray(targets_all[example_idx]) if targets_all is not None else None
+        if target_np_ex is not None:
+            target_db_ex = to_db(target_np_ex, ref=float(np.max(np.abs(target_np_ex))))
+            das_images_db_ex["target"] = target_db_ex
+
+        # Plot DAS images
+        extent = kp.get_imshow_extent()
+        first_im = None
+
+        for idx, image_name in enumerate(ordered_names):
+            ax_panel = axes_list[idx]
+            im = ax_panel.imshow(
+                das_images_db_ex[image_name],
+                cmap=cmap,
+                vmin=vmin_db,
+                vmax=vmax_db,
+                extent=extent,
+                aspect="auto",
+            )
+            if first_im is None:
+                first_im = im
+
+            title_name = "Uniform" if image_name == "uniform" else image_name.capitalize()
+            ax_panel.set_title(f"DAS {title_name} (dB)")
+            ax_panel.set_xlabel("x (mm)")
+            if idx % ncols == 0:
+                ax_panel.set_ylabel("z (mm)")
+
+        # Hide unused subplots
+        for idx in range(n_panels, len(axes_list)):
+            axes_list[idx].set_visible(False)
+
+        # Add colorbar
+        if first_im is not None:
+            cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+            fig.colorbar(first_im, cax=cbar_ax, label="dB")
+
+        fig.suptitle(f"DAS Comparison - Example {example_idx}", fontsize=12, y=0.98)
+        fig.tight_layout(rect=[0, 0, 0.91, 0.96])
+
+    # Launch interactive navigator
+    nav = InteractiveImageNavigator(
+        example_indices=example_indices_to_process,
+        generate_figure_content=generate_das_panel_content,
+        output_dir=output_dir,
+        prefix="das_interactive_example",
+        dpi=dpi,
+    )
+    nav.show()
 
 
