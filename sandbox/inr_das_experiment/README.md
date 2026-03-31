@@ -31,6 +31,11 @@ Generated plots (saved in the sandbox output run directory):
   INR after training, and Target in shared dB scale.
 - `apodization_map_before_after.png`: apodization maps before and after training at fixed x.
 
+Minimal batch example:
+- `minimal_batch_scatterer_eval_example.py`: synthetic, dataset-free example showing how to call
+    `compute_scatterer_metrics` and `plot_scatterer_evaluation` with a batch of images and a
+    variable number of scatterers per example.
+
 ## MAE in dB is collapsing apodizations to zero!!!
 - Targets are sparse (many near-zero pixels), so dB-domain MAE tends to prioritize background matching.
 - This can push the optimizer to reduce global output amplitude, yielding very small learned weights.

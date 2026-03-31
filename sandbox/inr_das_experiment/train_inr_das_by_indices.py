@@ -31,6 +31,7 @@ from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
+import matplotlib.pyplot as plt
 
 
 CONFIG_PATH = Path("configs/train_config.yml")
@@ -416,6 +417,7 @@ helpers.plot_das_comparison_db(
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
     normalize_each_image=normalize_each_image,
+    baseline_name="Hanning",
 )
 
 # Also save a comparison figure using Boxcar as the baseline
@@ -430,6 +432,7 @@ helpers.plot_das_comparison_db(
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
     normalize_each_image=normalize_each_image,
+    baseline_name="Boxcar",
 )
 
 helpers.plot_apodization_energy_comparison(
@@ -470,28 +473,76 @@ for x_value in x_values_apod:
         hanning_apod=hanning_weights.numpy(),
     )
 
-# --- Scatterer metrics evaluation ---
+# --- Scatterer metrics evaluation (full validation set) ---
 scatterer_eval_cfg = cfg.get("scatterer_eval", {})
 if bool(scatterer_eval_cfg.get("enabled", False)):
     try:
         scatterers_all = helpers.load_saved_scatterers(dataset_folder)
-        scatterers_example = np.asarray(scatterers_all[val_idx[0]], dtype=np.float32)
-        scatterers_mm_eval = scatterers_example.copy()
-        scatterers_mm_eval[:, :2] *= 1000.0  # m -> mm
-        scatterers_xy = scatterers_mm_eval[:, :2]
+
+        # Build per-example scatterer lists for the validation indices (convert m -> mm)
+        scatterers_batch: list[np.ndarray] = []
+        for idx in val_idx:
+            s = np.asarray(scatterers_all[int(idx)], dtype=np.float32).copy()
+            s[:, :2] *= 1000.0
+            scatterers_batch.append(s[:, :2])
 
         radius_mm_eval = float(scatterer_eval_cfg.get("radius_mm", 1.5))
         hist_bins_eval = int(scatterer_eval_cfg.get("hist_bins", 50))
 
+        # Reconstruct full validation set images in smaller chunks to avoid GPU OOM.
+        eval_batch_size = int(scatterer_eval_cfg.get("eval_batch_size", cfg["training"].get("batch_size", 1)))
+        n_val = int(len(val_idx))
+
+        # Prepare lists to accumulate per-chunk results
+        predicted_val_abs_list = []
+        uniform_val_abs_list = []
+        hanning_val_abs_list = []
+        boxcar_val_abs_list = []
+
+        # Precompute baseline apodization batches (will be cast per-chunk)
+        hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
+        boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)
+
+        for start in range(0, n_val, eval_batch_size):
+            end = min(start + eval_batch_size, n_val)
+            idx_chunk = val_idx[start:end]
+
+            # Build tensor for this chunk and run reconstruction
+            val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
+
+            predicted_chunk_complex, weights_chunk = trainer.reconstruct_image(
+                val_delayed_chunk, training=False
+            )
+            predicted_val_abs_list.append(tf.abs(predicted_chunk_complex).numpy())
+
+            uniform_val_abs_list.append(tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1)).numpy())
+
+            hanning_val_complex_chunk = tf.reduce_sum(
+                val_delayed_chunk * tf.cast(hanning_weights_b, val_delayed_chunk.dtype), axis=1
+            )
+            hanning_val_abs_list.append(tf.abs(hanning_val_complex_chunk).numpy())
+
+            boxcar_val_complex_chunk = tf.reduce_sum(
+                val_delayed_chunk * tf.cast(boxcar_weights_b, val_delayed_chunk.dtype), axis=1
+            )
+            boxcar_val_abs_list.append(tf.abs(boxcar_val_complex_chunk).numpy())
+
+        # Concatenate chunks back into full arrays
+        predicted_val_abs = np.concatenate(predicted_val_abs_list, axis=0)
+        uniform_val_abs = np.concatenate(uniform_val_abs_list, axis=0)
+        hanning_val_abs = np.concatenate(hanning_val_abs_list, axis=0)
+        boxcar_val_abs = np.concatenate(boxcar_val_abs_list, axis=0)
+
         images_abs_eval = {
-            "uniform": uniform_image.numpy()[0],
-            "hanning": hanning_image.numpy()[0],
-            "inr_after": predicted_after_image.numpy()[0],
+            "uniform": uniform_val_abs,
+            "hanning": hanning_val_abs,
+            "inr_after": predicted_val_abs,
+            "boxcar": boxcar_val_abs,
         }
 
         helpers.plot_scatterer_evaluation(
             images_abs=images_abs_eval,
-            scatterers_xy=scatterers_xy,
+            scatterers_xy=scatterers_batch,
             cm=cm,
             output_dir=sandbox_dir,
             radius_mm=radius_mm_eval,
@@ -501,8 +552,39 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
             vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
             cmap=str(plot_cfg.get("cmap", "gray")),
-            example_suffix=f"val{val_idx[0]}",
+            example_suffix=f"val_all_{len(val_idx)}",
         )
+
+        # Also produce SNR ratio scatter plots per-reflector for requested comparisons
+        compare_pairs_snr = [("uniform", "inr_after"), ("hanning", "inr_after")]
+        for ref_name, cmp_name in compare_pairs_snr:
+            try:
+                res = helpers.plot_scatterer_snr_ratio(
+                    images_abs=images_abs_eval,
+                    scatterers_xy=scatterers_batch,
+                    cm=cm,
+                    ref_method=ref_name,
+                    cmp_method=cmp_name,
+                    radius_mm=radius_mm_eval,
+                    extent=kp.get_imshow_extent(),
+                    cmap="RdBu_r",
+                    scale="linear",
+                    clip_percentiles=(1.0, 99.0),
+                    point_size=15,
+                    alpha=0.7,
+                    return_fig=True,
+                )
+                fig = res.get("fig")
+                label = res.get("ratio_label", f"{cmp_name}/{ref_name}")
+                label_fname = label.replace('/', '_')
+                if fig is not None:
+                    out_path = str(Path(sandbox_dir) / f"scatt_snr_ratio_{label_fname}_val_{len(val_idx)}.png")
+                    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+                    plt.close(fig)
+            except FileNotFoundError as e:
+                print(f"Warning: scatterer_snr_ratio skipped — {e}")
+            except Exception as e:
+                print(f"Warning: scatterer_snr_ratio failed — {e}")
         print(f"Scatterer evaluation figures saved to: {sandbox_dir}")
     except FileNotFoundError as e:
         print(f"Warning: scatterer_eval skipped — {e}")
