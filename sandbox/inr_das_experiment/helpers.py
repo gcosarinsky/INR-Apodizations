@@ -538,4 +538,5 @@ def plot_apodization_energy_comparison(
 from scatterer_metrics import (  # noqa: E402
     compute_scatterer_metrics,
     plot_scatterer_evaluation,
+    plot_scatterer_snr_ratio,
 )

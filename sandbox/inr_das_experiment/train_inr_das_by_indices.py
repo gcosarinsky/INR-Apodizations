@@ -31,6 +31,7 @@ from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
+import matplotlib.pyplot as plt
 
 
 CONFIG_PATH = Path("configs/train_config.yml")
@@ -551,6 +552,37 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             cmap=str(plot_cfg.get("cmap", "gray")),
             example_suffix=f"val_all_{len(val_idx)}",
         )
+
+        # Also produce SNR ratio scatter plots per-reflector for requested comparisons
+        compare_pairs_snr = [("uniform", "inr_after"), ("hanning", "inr_after")]
+        for ref_name, cmp_name in compare_pairs_snr:
+            try:
+                res = helpers.plot_scatterer_snr_ratio(
+                    images_abs=images_abs_eval,
+                    scatterers_xy=scatterers_batch,
+                    cm=cm,
+                    ref_method=ref_name,
+                    cmp_method=cmp_name,
+                    radius_mm=radius_mm_eval,
+                    extent=kp.get_imshow_extent(),
+                    cmap="RdBu_r",
+                    scale="linear",
+                    clip_percentiles=(1.0, 99.0),
+                    point_size=15,
+                    alpha=0.7,
+                    return_fig=True,
+                )
+                fig = res.get("fig")
+                label = res.get("ratio_label", f"{cmp_name}/{ref_name}")
+                label_fname = label.replace('/', '_')
+                if fig is not None:
+                    out_path = str(Path(sandbox_dir) / f"scatt_snr_ratio_{label_fname}_val_{len(val_idx)}.png")
+                    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+                    plt.close(fig)
+            except FileNotFoundError as e:
+                print(f"Warning: scatterer_snr_ratio skipped — {e}")
+            except Exception as e:
+                print(f"Warning: scatterer_snr_ratio failed — {e}")
         print(f"Scatterer evaluation figures saved to: {sandbox_dir}")
     except FileNotFoundError as e:
         print(f"Warning: scatterer_eval skipped — {e}")

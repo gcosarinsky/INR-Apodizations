@@ -11,6 +11,7 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import TwoSlopeNorm
 
 from inr_apodizations.coordinate_manager import CoordinateManager
 
@@ -589,3 +590,222 @@ def plot_scatterer_evaluation(
         plt.close(fig_norm)
 
     return all_metrics
+
+
+def plot_scatterer_snr_ratio(
+    images_abs: dict,
+    scatterers_xy: np.ndarray | Sequence[np.ndarray],
+    cm: CoordinateManager,
+    ref_method: str,
+    cmp_method: str,
+    radius_mm: float = 1.5,
+    extent: tuple | None = None,
+    cmap: str = "RdBu_r",
+    scale: str = "linear",
+    clip_percentiles: tuple[float, float] | None = (1.0, 99.0),
+    point_size: int = 15,
+    alpha: float = 0.7,
+    eps: float = 1e-8,
+    return_fig: bool = True,
+) -> dict:
+    """Plot per-reflector SNR ratio between two methods.
+
+    The function computes for each reflector in the provided scatterer set the
+    SNR = peak_amplitude / background_rms for both methods (reference and
+    comparison), forms the ratio SNR_ref / SNR_cmp and produces a scatter
+    plot in the (x, z) plane where each point color encodes that ratio.
+
+    Parameters
+    ----------
+    images_abs:
+        Mapping from method name to 2D or 3D (batch) absolute images.
+    scatterers_xy:
+        Per-example scatterer locations in mm. Accepted formats: (N,2),
+        (B,N,2), or sequence/object-array of (Ni,2) arrays.
+    cm:
+        CoordinateManager used to validate geometry.
+    ref_method, cmp_method:
+        Keys in `images_abs` identifying the two methods to compare. Ratio is
+        computed as SNR_ref / SNR_cmp.
+    radius_mm:
+        Radius used to compute local peak amplitude around each scatterer.
+    extent:
+        Optional imshow extent for axis labeling (passed through to plot).
+    cmap:
+        Matplotlib colormap name.
+    scale:
+        Either 'linear' or 'log' to control color mapping. If 'log', the
+        plotted values are log10(ratio).
+    clip_percentiles:
+        Tuple (pmin, pmax) used to clip the color scale by percentiles. If
+        None, no clipping is applied.
+    point_size, alpha, eps:
+        Scatter plotting parameters and numerical epsilon to avoid div-by-zero.
+    return_fig:
+        If True, returns the Matplotlib Figure object in the result dict.
+
+    Returns
+    -------
+    dict
+        Contains arrays used for plotting (`x`, `z`, `ratio`, `snr_ref`,
+        `snr_cmp`) and optionally the `fig` object when `return_fig` is True.
+    """
+    # Validate methods
+    if ref_method not in images_abs:
+        raise ValueError(f"Reference method '{ref_method}' not found in images_abs")
+    if cmp_method not in images_abs:
+        raise ValueError(f"Compared method '{cmp_method}' not found in images_abs")
+
+    # Determine batch usage and consistency (reuse logic from plot_scatterer_evaluation)
+    image_ndims = {method_name: np.asarray(image).ndim for method_name, image in images_abs.items()}
+    invalid_methods = [name for name, ndim in image_ndims.items() if ndim not in (2, 3)]
+    if invalid_methods:
+        raise ValueError(
+            "All images_abs entries must be 2D or 3D arrays. Invalid methods: "
+            + ", ".join(invalid_methods)
+        )
+
+    uses_batch = any(ndim == 3 for ndim in image_ndims.values())
+    if uses_batch and any(ndim != 3 for ndim in image_ndims.values()):
+        raise ValueError("All images_abs entries must be batch arrays when any method uses batch input")
+
+    batch_size = 1
+    if uses_batch:
+        batch_sizes = {method_name: int(np.asarray(image).shape[0]) for method_name, image in images_abs.items()}
+        unique_batch_sizes = set(batch_sizes.values())
+        if len(unique_batch_sizes) != 1:
+            raise ValueError("All batch inputs in images_abs must have the same batch size")
+        batch_size = unique_batch_sizes.pop()
+
+    # Normalize scatterers to per-example list
+    scatterer_batch, _ = _normalize_scatterer_batch(scatterers_xy, batch_size=batch_size)
+    # Compute metrics for both methods
+    ref_metrics = compute_scatterer_metrics(
+        images_abs[ref_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
+    )
+    cmp_metrics = compute_scatterer_metrics(
+        images_abs[cmp_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
+    )
+
+    # Ensure alignment of aggregated points
+    _validate_aligned_aggregated_points(ref_metrics, cmp_metrics)
+
+    ref_view = _get_plot_metric_view(ref_metrics)
+    cmp_view = _get_plot_metric_view(cmp_metrics)
+
+    peaks_ref = np.asarray(ref_view.get("peak_amplitudes", np.empty(0)), dtype=np.float64)
+    peaks_cmp = np.asarray(cmp_view.get("peak_amplitudes", np.empty(0)), dtype=np.float64)
+
+    if peaks_ref.shape != peaks_cmp.shape:
+        raise ValueError("Aggregated peak arrays have different shapes between reference and comparison methods")
+
+    # Prefer point-level background rms if available
+    bg_ref = np.asarray(ref_view.get("point_background_rms", None))
+    bg_cmp = np.asarray(cmp_view.get("point_background_rms", None))
+    if bg_ref is None or bg_ref.size == 0:
+        # Fallback to per-example background_rms_per_example expanded per point
+        bg_ref = np.empty_like(peaks_ref)
+        bg_ref_per_example = ref_view.get("background_rms_per_example")
+        if bg_ref_per_example is None:
+            bg_ref.fill(eps)
+        else:
+            # expand per-example into per-point using peak_example_indices
+            example_idx = np.asarray(ref_view.get("peak_example_indices", np.zeros(peaks_ref.shape, dtype=np.int32)))
+            bg_ref = np.asarray(bg_ref_per_example, dtype=np.float64)[example_idx]
+
+    if bg_cmp is None or bg_cmp.size == 0:
+        bg_cmp = np.empty_like(peaks_cmp)
+        bg_cmp_per_example = cmp_view.get("background_rms_per_example")
+        if bg_cmp_per_example is None:
+            bg_cmp.fill(eps)
+        else:
+            example_idx = np.asarray(cmp_view.get("peak_example_indices", np.zeros(peaks_cmp.shape, dtype=np.int32)))
+            bg_cmp = np.asarray(bg_cmp_per_example, dtype=np.float64)[example_idx]
+
+    # Compute SNRs and ratio (always comparison / reference)
+    snr_ref = peaks_ref / (bg_ref + eps)
+    snr_cmp = peaks_cmp / (bg_cmp + eps)
+    ratio = snr_cmp / (snr_ref + eps)
+
+    # Build positions aligned with aggregated ordering: concatenate scatterer_batch in example order
+    if not scatterer_batch:
+        pos = np.empty((0, 2), dtype=np.float64)
+    else:
+        pos = np.vstack([np.asarray(arr, dtype=np.float64) for arr in scatterer_batch])
+
+    if ratio.size != pos.shape[0]:
+        # It's possible that some examples have zero scatterers; build positions using peak indices
+        peak_example_indices = np.asarray(ref_view.get("peak_example_indices", np.zeros(ratio.shape, dtype=np.int32)))
+        peak_scatterer_indices = np.asarray(ref_view.get("peak_scatterer_indices", np.arange(ratio.size, dtype=np.int32)))
+        coords_list: list[np.ndarray] = []
+        for ex_idx, scat_idx in zip(peak_example_indices, peak_scatterer_indices):
+            coords_list.append(scatterer_batch[int(ex_idx)][int(scat_idx)])
+        pos = np.asarray(coords_list, dtype=np.float64)
+
+    x = pos[:, 0]
+    z = pos[:, 1]
+
+    # Prepare plotting values and apply scale if requested
+    plot_vals = ratio.copy()
+    if scale == "log":
+        with np.errstate(divide="ignore", invalid="ignore"):
+            plot_vals = np.log10(plot_vals)
+
+    # Clip by percentiles or compute vmin/vmax defaults
+    if clip_percentiles is not None:
+        pmin, pmax = float(clip_percentiles[0]), float(clip_percentiles[1])
+        vmin = float(np.nanpercentile(plot_vals, pmin))
+        vmax = float(np.nanpercentile(plot_vals, pmax))
+    else:
+        # fallback to data min/max
+        vmin = float(np.nanmin(plot_vals)) if plot_vals.size > 0 else 0.0
+        vmax = float(np.nanmax(plot_vals)) if plot_vals.size > 0 else 1.0
+
+    # Use a diverging normalization centered at 1 (or 0 for log scale)
+    center = 0.0 if scale == "log" else 1.0
+    norm = TwoSlopeNorm(vmin=vmin, vcenter=center, vmax=vmax)
+
+    fig, ax = plt.subplots(1, 1, figsize=(6, 8))
+    # Improve visibility: no transparency, add black edge to markers, and set
+    # a light gray background so central values (e.g. 1) don't blend with white.
+    ax.set_facecolor("#f2f2f2")
+    sc = ax.scatter(
+        x,
+        z,
+        c=plot_vals,
+        cmap=cmap,
+        norm=norm,
+        s=point_size,
+        alpha=1.0,
+        edgecolors="black",
+        linewidths=0.4,
+    )
+    cbar = fig.colorbar(sc, ax=ax)
+    if scale == "log":
+        cbar.set_label("log10(SNR_cmp / SNR_ref)")
+    else:
+        cbar.set_label("SNR_cmp / SNR_ref")
+
+    ax.set_xlabel("x (mm)")
+    ax.set_ylabel("z (mm)")
+    ax.set_title(f"Scatterer SNR ratio: {cmp_method} / {ref_method}")
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.25)
+
+    result = {
+        "x": x,
+        "z": z,
+        "ratio": ratio,
+        "snr_ref": snr_ref,
+        "snr_cmp": snr_cmp,
+        "peaks_ref": peaks_ref,
+        "peaks_cmp": peaks_cmp,
+        "bg_ref": bg_ref,
+        "bg_cmp": bg_cmp,
+    }
+    # Label indicating plotted ratio orientation (safe for filenames)
+    result["ratio_label"] = f"{cmp_method}/{ref_method}"
+    if return_fig:
+        result["fig"] = fig
+
+    return result
