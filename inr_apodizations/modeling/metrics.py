@@ -17,32 +17,7 @@ from __future__ import annotations
 
 import tensorflow as tf
 
-
-def to_db_tensor(x, ref, eps: float = 1e-8):
-    """Convert a real/complex tensor magnitude to decibels.
-
-    Args:
-        x: Input tensor with linear amplitudes (real or complex).
-        ref: Reference amplitude for normalization (0 dB level).
-        eps: Small positive constant to avoid log/division issues.
-
-    Returns:
-        Tensor with values in dB.
-
-    Raises:
-        tf.errors.InvalidArgumentError: If ``eps`` is not strictly positive.
-    """
-    eps_tensor = tf.cast(eps, tf.float32)
-    tf.debugging.assert_positive(eps_tensor, message="eps must be > 0")
-
-    magnitude = tf.cast(tf.abs(x), tf.float32)
-    ref_tensor = tf.cast(ref, tf.float32)
-    ref_safe = tf.maximum(ref_tensor, eps_tensor)
-
-    normalized = magnitude / ref_safe
-    normalized_safe = tf.maximum(normalized, eps_tensor)
-    log10 = tf.math.log(normalized_safe) / tf.math.log(tf.constant(10.0, dtype=tf.float32))
-    return 20.0 * log10
+from inr_apodizations.utils import to_db_tensor
 
 
 def mae_db(

@@ -29,6 +29,7 @@ from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.plots import plot_lateral_reflector_profiles
+from inr_apodizations.utils import to_db
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
 import sys
 
@@ -174,21 +175,6 @@ def load_yaml_config(config_path: Path) -> dict:
         raise ValueError("At least one output mode must be enabled: save=true or show=true.")
 
     return config
-
-
-def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
-    """Convert linear magnitude image to dB.
-
-    Args:
-        image: Complex or real image in linear domain.
-        ref: Positive reference magnitude.
-        eps: Small epsilon to avoid numerical issues.
-
-    Returns:
-        Magnitude image in dB.
-    """
-    magnitude = np.abs(image)
-    return 20.0 * np.log10((magnitude / (ref + eps)) + eps)
 
 
 cfg_user = load_yaml_config(CONFIG_PATH)

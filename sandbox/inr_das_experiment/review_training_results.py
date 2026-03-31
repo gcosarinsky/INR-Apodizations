@@ -26,8 +26,9 @@ from inr_apodizations import config
 from inr_apodizations.config import PROJ_ROOT
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from inr_apodizations.plots import to_db
+from inr_apodizations.utils import to_db
 from inr_apodizations.kernels import KernelParameters2D
+from inr_apodizations.plots import _prepare_comparison_images_db
 import matplotlib.pyplot as plt
 import math
 
@@ -78,14 +79,7 @@ def generate_inr_comparison_figure(
     }
 
     # Convert to dB
-    if normalize_each_image:
-        images_db = {
-            name: to_db(image, ref=float(np.max(image)))
-            for name, image in images_linear.items()
-        }
-    else:
-        shared_ref = max(float(np.max(image)) for image in images_linear.values())
-        images_db = {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
+    images_db = _prepare_comparison_images_db(images_linear, normalize_each=normalize_each_image)
 
     # Create figure with 4 panels (or dynamic layout)
     n_panels = len(images_db)

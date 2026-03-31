@@ -12,6 +12,7 @@ import typer
 from inr_apodizations.apodizations import extract_map_for_x
 from inr_apodizations.config import FIGURES_DIR, PROCESSED_DATA_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
+from inr_apodizations.utils import to_db
 
 app = typer.Typer()
 
@@ -32,19 +33,30 @@ def main(
     # -----------------------------------------
 
 
-def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
-    """Convert an image magnitude from linear domain to decibels.
+def _prepare_comparison_images_db(
+    images_linear: dict[str, np.ndarray],
+    normalize_each: bool = True,
+) -> dict[str, np.ndarray]:
+    """Convert a dictionary of linear-domain images to dB scale.
+
+    Helper function to reduce duplication in comparison figure generators.
 
     Args:
-        image: Real or complex image in linear domain.
-        ref: Positive reference magnitude used as 0 dB.
-        eps: Small value to avoid numerical instability.
+        images_linear: Dictionary mapping image names to linear-domain magnitude arrays.
+        normalize_each: If True, each image is normalized by its own maximum value.
+            If False, all images share a common reference (the global maximum).
 
     Returns:
-        NumPy array with image values in dB.
+        Dictionary mapping image names to dB-scale arrays.
     """
-    magnitude = np.abs(image)
-    return 20.0 * np.log10((magnitude / (ref + eps)) + eps)
+    if normalize_each:
+        return {
+            name: to_db(image, ref=float(np.max(np.abs(image))))
+            for name, image in images_linear.items()
+        }
+    else:
+        shared_ref = max(float(np.max(np.abs(image))) for image in images_linear.values())
+        return {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
 
 
 def plot_training_curves(history: dict, output_path: str) -> None:

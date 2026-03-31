@@ -14,21 +14,8 @@ import tensorflow as tf
 
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
-
-
-def to_db(image: np.ndarray, ref: float, eps: float = 1e-8) -> np.ndarray:
-    """Convert linear magnitude image to dB.
-
-    Args:
-        image: Complex or real image in linear domain.
-        ref: Positive reference magnitude.
-        eps: Small epsilon to avoid numerical issues.
-
-    Returns:
-        Magnitude image in dB.
-    """
-    magnitude = np.abs(image)
-    return 20.0 * np.log10((magnitude / (ref + eps)) + eps)
+from inr_apodizations.utils import to_db
+from inr_apodizations.plots import _prepare_comparison_images_db
 
 
 def generate_das_comparison_figure(
@@ -72,16 +59,7 @@ def generate_das_comparison_figure(
         das_images_linear[method_name] = tf.reduce_sum(weighted, axis=0).numpy()
 
     # Convert to dB
-    if normalize_per_image:
-        das_images_db = {
-            name: to_db(image, ref=float(np.max(np.abs(image))))
-            for name, image in das_images_linear.items()
-        }
-    else:
-        shared_ref = max(float(np.max(np.abs(image))) for image in das_images_linear.values())
-        das_images_db = {
-            name: to_db(image, ref=shared_ref) for name, image in das_images_linear.items()
-        }
+    das_images_db = _prepare_comparison_images_db(das_images_linear, normalize_each=normalize_per_image)
 
     # Load target if available
     target_np = np.asarray(targets_all[example_idx]) if targets_all is not None else None
