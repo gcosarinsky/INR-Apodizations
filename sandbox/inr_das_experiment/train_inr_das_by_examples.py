@@ -382,6 +382,7 @@ helpers.plot_das_comparison_db(
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
     normalize_each_image=normalize_each_image,
+    baseline_name="Hanning",
 )
 
 # Also save a comparison figure using Boxcar as the baseline
@@ -396,6 +397,7 @@ helpers.plot_das_comparison_db(
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
     vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
     normalize_each_image=normalize_each_image,
+    baseline_name="Boxcar",
 )
 
 helpers.plot_apodization_energy_comparison(

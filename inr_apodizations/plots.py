@@ -148,6 +148,7 @@ def plot_das_comparison_db(
     vmin_db: float = -60.0,
     vmax_db: float = 0.0,
     normalize_each_image: bool = False,
+    baseline_name: str = "Uniform",
 ) -> None:
     """Save a four-panel DAS comparison in decibels.
 
@@ -166,7 +167,7 @@ def plot_das_comparison_db(
             reference across the full comparison.
     """
     images_linear = {
-        "Uniform": np.asarray(uniform_image),
+        str(baseline_name): np.asarray(uniform_image),
         "INR before": np.asarray(inr_before_image),
         "INR after": np.asarray(inr_after_image),
         "Target": np.asarray(target_image),
