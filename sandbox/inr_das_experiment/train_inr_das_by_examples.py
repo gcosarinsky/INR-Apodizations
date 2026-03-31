@@ -435,5 +435,101 @@ for x_value in x_values_apod:
         hanning_apod=hanning_weights.numpy(),
     )
 
+# --- Scatterer metrics evaluation (full validation set) ---
+scatterer_eval_cfg = cfg.get("scatterer_eval", {})
+if bool(scatterer_eval_cfg.get("enabled", False)):
+    try:
+        scatterers_all = helpers.load_saved_scatterers(dataset_folder)
+
+        # Recover original val indices to map saved scatterers to validation examples
+        _train_idx, val_idx_full = helpers.split_train_validation_indices(
+            n_examples=delayed.shape[0],
+            train_fraction=float(cfg["training"]["train_fraction"]),
+            seed=int(cfg["training"]["seed"]),
+        )
+
+        # Build per-example scatterer lists for the validation set (convert m -> mm)
+        scatterers_batch: list[np.ndarray] = []
+        for idx in val_idx_full:
+            s = np.asarray(scatterers_all[int(idx)], dtype=np.float32).copy()
+            s[:, :2] *= 1000.0
+            scatterers_batch.append(s[:, :2])
+
+        radius_mm_eval = float(scatterer_eval_cfg.get("radius_mm", 1.5))
+        hist_bins_eval = int(scatterer_eval_cfg.get("hist_bins", 50))
+
+        # Reconstruct full validation set images in smaller chunks to avoid GPU OOM.
+        eval_batch_size = int(scatterer_eval_cfg.get("eval_batch_size", cfg["training"].get("batch_size", 1)))
+        n_val = int(len(val_idx_full))
+
+        # Prepare lists to accumulate per-chunk results
+        predicted_val_abs_list = []
+        uniform_val_abs_list = []
+        hanning_val_abs_list = []
+        boxcar_val_abs_list = []
+
+        # Precompute baseline apodization batches (will be cast per-chunk)
+        hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
+        boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)
+
+        for start in range(0, n_val, eval_batch_size):
+            end = min(start + eval_batch_size, n_val)
+            idx_chunk = val_idx_full[start:end]
+
+            # Build tensor for this chunk and run reconstruction
+            val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
+
+            predicted_chunk_complex, weights_chunk = trainer.reconstruct_image(
+                val_delayed_chunk, training=False
+            )
+            predicted_val_abs_list.append(tf.abs(predicted_chunk_complex).numpy())
+
+            uniform_val_abs_list.append(tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1)).numpy())
+
+            hanning_val_complex_chunk = tf.reduce_sum(
+                val_delayed_chunk * tf.cast(hanning_weights_b, val_delayed_chunk.dtype), axis=1
+            )
+            hanning_val_abs_list.append(tf.abs(hanning_val_complex_chunk).numpy())
+
+            boxcar_val_complex_chunk = tf.reduce_sum(
+                val_delayed_chunk * tf.cast(boxcar_weights_b, val_delayed_chunk.dtype), axis=1
+            )
+            boxcar_val_abs_list.append(tf.abs(boxcar_val_complex_chunk).numpy())
+
+        # Concatenate chunks back into full arrays
+        predicted_val_abs = np.concatenate(predicted_val_abs_list, axis=0)
+        uniform_val_abs = np.concatenate(uniform_val_abs_list, axis=0)
+        hanning_val_abs = np.concatenate(hanning_val_abs_list, axis=0)
+        boxcar_val_abs = np.concatenate(boxcar_val_abs_list, axis=0)
+
+        images_abs_eval = {
+            "uniform": uniform_val_abs,
+            "hanning": hanning_val_abs,
+            "inr_after": predicted_val_abs,
+            "boxcar": boxcar_val_abs,
+        }
+
+        helpers.plot_scatterer_evaluation(
+            images_abs=images_abs_eval,
+            scatterers_xy=scatterers_batch,
+            cm=cm,
+            output_dir=sandbox_dir,
+            radius_mm=radius_mm_eval,
+            hist_bins=hist_bins_eval,
+            compare_pairs=[("uniform", "inr_after"), ("hanning", "inr_after")],
+            extent=kp.get_imshow_extent(),
+            vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
+            vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
+            cmap=str(plot_cfg.get("cmap", "gray")),
+            example_suffix=f"val_all_{len(val_idx_full)}",
+        )
+        print(f"Scatterer evaluation figures saved to: {sandbox_dir}")
+    except FileNotFoundError as e:
+        print(f"Warning: scatterer_eval skipped — {e}")
+    except Exception as e:
+        print(f"Warning: scatterer_eval failed — {e}")
+        import traceback
+        traceback.print_exc()
+
 print("Training finished.")
 print("Sandbox artifacts:", sandbox_dir)

@@ -507,7 +507,7 @@ def plot_scatterer_evaluation(
             ref_snr = ref_peaks / ref_bg_rms
             cmp_snr = cmp_peaks / cmp_bg_rms
             ax_max = max(float(ref_snr.max()), float(cmp_snr.max()))
-            ax.scatter(ref_snr, cmp_snr, s=30, alpha=0.7)
+            ax.scatter(ref_snr, cmp_snr, s=15, alpha=0.7)
             ax.plot([0, ax_max], [0, ax_max], color="red", linewidth=1, linestyle="--", label="y = x")
             ax.scatter(
                 [1.0], [1.0], s=110, marker="D", facecolors="none",

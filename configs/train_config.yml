@@ -9,7 +9,7 @@ target_regeneration:
   sigma_z: 0.2
 
 model:
-  physical_feature_set: distance_depth
+  physical_feature_set: distance_depth_edge
   hidden_units: 8
   n_hidden_layers: 3
   activation: relu
