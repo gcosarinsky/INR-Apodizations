@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from inr_apodizations import config
 from inr_apodizations.config import PROJ_ROOT
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
+from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.plots import to_db
 from inr_apodizations.kernels import KernelParameters2D
 import matplotlib.pyplot as plt
@@ -158,19 +159,59 @@ if not CONFIG_PATH.exists():
     sys.exit(1)
 
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
-seed = int(cfg["training"]["seed"])
+review_cfg = cfg.get("results_review", {})
+run_timestamp = str(review_cfg.get("run_timestamp", "")).strip()
+if not run_timestamp:
+    raise ValueError("results_review.run_timestamp must be set to the training run timestamp.")
 
-# Resolve dataset folder
-dataset_folder = Path(cfg["io"]["dataset_folder"])
+# Resolve sandbox root (where training outputs are stored)
+sandbox_root_cfg = Path(cfg["io"]["sandbox_output_root"])
+if not sandbox_root_cfg.is_absolute():
+    sandbox_root = config.PROJ_ROOT / sandbox_root_cfg
+else:
+    sandbox_root = sandbox_root_cfg
+
+if not sandbox_root.exists():
+    print(f"Error: sandbox output root not found at {sandbox_root}")
+    sys.exit(1)
+
+artifacts_dir = sandbox_root / run_timestamp
+if not artifacts_dir.exists():
+    print(f"Error: artifacts directory not found at {artifacts_dir}")
+    sys.exit(1)
+
+train_config_info_path = artifacts_dir / "train_config_info.yml"
+if not train_config_info_path.exists():
+    print(f"Error: train_config_info.yml missing in {artifacts_dir}")
+    sys.exit(1)
+
+with train_config_info_path.open("r", encoding="utf-8") as handle:
+    run_cfg = yaml.safe_load(handle) or {}
+if not isinstance(run_cfg, dict):
+    raise ValueError("Saved run configuration must be a mapping")
+
+run_experiment_cfg = run_cfg.get("experiment", run_cfg)
+training_cfg = run_experiment_cfg.get("training")
+if training_cfg is None or "seed" not in training_cfg:
+    raise ValueError("Saved run experiment config lacks training.seed")
+
+seed = int(training_cfg["seed"])
+
+dataset_folder_entry = run_cfg.get("dataset_folder") or run_experiment_cfg.get("io", {}).get("dataset_folder")
+if dataset_folder_entry is None:
+    raise ValueError("Saved run config does not expose a dataset_folder entry")
+
+dataset_folder = Path(dataset_folder_entry)
 if not dataset_folder.is_absolute():
     dataset_folder = config.PROJ_ROOT / dataset_folder
 dataset_folder = str(dataset_folder)
 
 print(f"Loading configuration from: {CONFIG_PATH}")
-print(f"Dataset folder: {dataset_folder}")
+print(f"Reviewing training run: {run_timestamp}")
+print(f"Dataset folder (from run config): {dataset_folder}")
+print(f"Using training artifacts from: {artifacts_dir}")
 
-# Load dataset
-sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
+sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(run_experiment_cfg)
 delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
@@ -178,26 +219,24 @@ delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
 )
 kp, cm = helpers.build_coordinate_manager(dataset_folder)
 
-# Split train/validation
+train_fraction = float(training_cfg.get("train_fraction", 0.7))
 train_idx, val_idx = helpers.split_train_validation_indices(
     n_examples=delayed.shape[0],
-    train_fraction=float(cfg["training"]["train_fraction"]),
+    train_fraction=train_fraction,
     seed=seed,
 )
 
 print(f"Dataset: {delayed.shape[0]} examples")
 print(f"Validation set: {val_idx.shape[0]} examples (indices: {val_idx[:5]}...)")
 
-# Check for saved artifacts
-artifacts_dir = Path(cfg["io"]["sandbox_dir"])
-if not artifacts_dir.exists():
-    print(f"Error: artifacts directory not found at {artifacts_dir}")
-    sys.exit(1)
-
-model_path = artifacts_dir / "inr_model.h5"
+model_path = artifacts_dir / "model.keras"
 if not model_path.exists():
-    print(f"Error: trained model not found at {model_path}")
-    sys.exit(1)
+    alternative = artifacts_dir / "inr_model.h5"
+    if alternative.exists():
+        model_path = alternative
+    else:
+        print(f"Error: trained model not found at {artifacts_dir}")
+        sys.exit(1)
 
 print(f"\nLoading trained model from: {model_path}")
 try:
@@ -206,21 +245,49 @@ except Exception as e:
     print(f"Error loading model: {e}")
     sys.exit(1)
 
-# Plot configuration
-plot_cfg = cfg.get("plots", {})
+# Plot configuration (use the saved training run settings)
+plot_cfg = run_experiment_cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))
 cmap = str(plot_cfg.get("cmap", "gray"))
 vmin_db = float(plot_cfg.get("vmin_db", -60.0))
 vmax_db = float(plot_cfg.get("vmax_db", 0.0))
 
 # Determine which validation examples to review (configurable)
-review_cfg = cfg.get("results_review", {})
 max_examples = review_cfg.get("max_validation_examples")
 example_indices = val_idx if max_examples is None else val_idx[:int(max_examples)]
 
 print(f"\nPrepared {len(example_indices)} validation examples for interactive review...")
 
-# Define content generator (closure capturing environment)
+review_output_root_cfg = cfg["io"].get(
+    "review_output_root", "sandbox/inr_das_experiment/review_outputs"
+)
+review_output_root = Path(review_output_root_cfg)
+if not review_output_root.is_absolute():
+    review_output_root = config.PROJ_ROOT / review_output_root
+
+review_output_dir = review_output_root / artifacts_dir.name
+review_output_dir.mkdir(parents=True, exist_ok=True)
+
+print(f"Output directory: {review_output_dir}")
+
+# Precompute INR apodization weights (constant across all examples)
+print("Precomputing INR apodization weights...")
+scaled_features = bool(run_experiment_cfg.get("model", {}).get("scaled_features", True))
+features_grid = cm.get_features_grid(scaled=scaled_features)
+features_flat = tf.reshape(features_grid, (-1, 3))
+coords_input = tf.cast(features_flat, tf.float32)
+
+baseline_f_number = float(training_cfg.get("baseline_f_number", 0.75))
+hanning_weights = compute_dynamic_apodizations_tf(
+    cm, f_number=baseline_f_number, methods=("hanning",), scaled=False
+)["hanning"]
+
+inr_weights_pred = inr_model(coords_input, training=False)
+inr_after_weights = tf.reshape(inr_weights_pred, (kp.n_elements, kp.nz, kp.nx))
+print("Apodization weights computed.")
+
+
+# Define content generator (closure capturing precomputed weights)
 def generate_inr_review_content(fig: plt.Figure, ax: plt.Axes, example_idx: int) -> None:
     """Generate INR training review panel for a single validation example.
     
@@ -251,28 +318,19 @@ def generate_inr_review_content(fig: plt.Figure, ax: plt.Axes, example_idx: int)
         val_delayed * tf.cast(uniform_weights, tf.complex64), axis=1
     )[0].numpy()
 
-    # Compute INR predictions (before: random)
-    np.random.seed(seed)
-    coords_flat = cm.get_coordinates_flat(scaled=False)
-    coords_input = tf.convert_to_tensor(coords_flat, dtype=tf.float32)
-    inr_before_weights = tf.random.normal(
-        shape=(kp.n_elements, kp.nz, kp.nx), seed=seed
-    )
-    inr_before_image = tf.reduce_sum(
-        val_delayed * tf.cast(inr_before_weights, tf.complex64), axis=1
+    # Apply precomputed apodization weights
+    hanning_image = tf.reduce_sum(
+        val_delayed * tf.cast(hanning_weights, tf.complex64), axis=1
     )[0].numpy()
 
-    # Compute INR predictions (after: trained model)
-    inr_weights_pred = inr_model(coords_input, training=False)
-    inr_weights = tf.reshape(inr_weights_pred, (kp.n_elements, kp.nz, kp.nx))
     inr_after_image = tf.reduce_sum(
-        val_delayed * tf.cast(inr_weights, tf.complex64), axis=1
+        val_delayed * tf.cast(inr_after_weights, tf.complex64), axis=1
     )[0].numpy()
 
     # Convert to dB
     images_linear = {
         "Uniform": np.abs(uniform_image),
-        "INR Before": np.abs(inr_before_image),
+        f"Hanning f/{baseline_f_number}": np.abs(hanning_image),
         "INR After": np.abs(inr_after_image),
         "Target": np.abs(val_target[0]),
     }
@@ -288,7 +346,7 @@ def generate_inr_review_content(fig: plt.Figure, ax: plt.Axes, example_idx: int)
 
     # Plot
     extent = kp.get_imshow_extent()
-    panel_names = ["Uniform", "INR Before", "INR After", "Target"]
+    panel_names = ["Uniform", f"Hanning f/{baseline_f_number}", "INR After", "Target"]
 
     first_im = None
     for idx, name in enumerate(panel_names):
@@ -319,14 +377,11 @@ def generate_inr_review_content(fig: plt.Figure, ax: plt.Axes, example_idx: int)
 
 
 print(f"\nLaunching interactive reviewer with {len(example_indices)} validation examples...")
-output_dir = artifacts_dir / "inr_review_output"
-output_dir.mkdir(parents=True, exist_ok=True)
-print(f"Output directory: {output_dir}")
 
 nav = InteractiveImageNavigator(
     example_indices=list(example_indices),
     generate_figure_content=generate_inr_review_content,
-    output_dir=output_dir,
+    output_dir=review_output_dir,
     prefix="inr_training_result_val",
     dpi=150,
 )
