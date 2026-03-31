@@ -281,11 +281,22 @@ def load_saved_beamforming_config(folder: str) -> dict:
     return np.load(cfg_path, allow_pickle=True).item()
 
 
-def build_coordinate_manager(dataset_folder: str) -> tuple[KernelParameters2D, CoordinateManager]:
-    """Build ``KernelParameters2D`` and ``CoordinateManager`` from a dataset folder."""
+def build_coordinate_manager(
+    dataset_folder: str,
+    physical_feature_set: str = "distance_depth_edge",
+) -> tuple[KernelParameters2D, CoordinateManager]:
+    """Build ``KernelParameters2D`` and ``CoordinateManager`` from a dataset folder.
+
+    Args:
+        dataset_folder: Dataset folder containing the saved beamforming config.
+        physical_feature_set: Physical feature variant used by ``CoordinateManager``.
+
+    Returns:
+        Tuple ``(kp, cm)`` with initialized kernel parameters and coordinate manager.
+    """
     cfg = load_saved_beamforming_config(dataset_folder)
     kp = KernelParameters2D(cfg)
-    cm = CoordinateManager(kp)
+    cm = CoordinateManager(kp, physical_feature_set=physical_feature_set)
     return kp, cm
 
 

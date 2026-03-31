@@ -211,7 +211,13 @@ delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
 )
-kp, cm = helpers.build_coordinate_manager(dataset_folder)
+physical_feature_set = str(
+    run_experiment_cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
+)
+kp, cm = helpers.build_coordinate_manager(
+    dataset_folder,
+    physical_feature_set=physical_feature_set,
+)
 
 train_fraction = float(training_cfg.get("train_fraction", 0.7))
 train_idx, val_idx = helpers.split_train_validation_indices(
@@ -268,7 +274,7 @@ print(f"Output directory: {review_output_dir}")
 print("Precomputing INR apodization weights...")
 scaled_features = bool(run_experiment_cfg.get("model", {}).get("scaled_features", True))
 features_grid = cm.get_features_grid(scaled=scaled_features)
-features_flat = tf.reshape(features_grid, (-1, 3))
+features_flat = tf.reshape(features_grid, (-1, cm.n_physical_features))
 coords_input = tf.cast(features_flat, tf.float32)
 
 baseline_f_number = float(training_cfg.get("baseline_f_number", 0.75))

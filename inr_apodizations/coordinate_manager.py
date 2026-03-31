@@ -8,7 +8,9 @@ class CoordinateManager:
 
     Generates and stores:
     - Spatial coordinates: x, z, x_elem (in mm and scaled by D)
-    - Physical features: |x - x_elem|, z, D/2 - |x| (in mm and scaled by D)
+        - Physical features, configurable by feature set:
+            - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
+            - 'distance_depth': [|x - x_elem|, z]
 
     Scaling: all coordinates are scaled by dividing by D (array aperture)
 
@@ -18,15 +20,33 @@ class CoordinateManager:
     - Points: (n_elem * n_points, 3) - for arbitrary points
     """
 
-    def __init__(self, kp):
+    def __init__(self, kp, physical_feature_set="distance_depth_edge"):
         """
+        Initializes the coordinate manager.
+
         Args:
-            kp: KernelParameters object (2D or 3D) with system parameters
-            Type of features to generate
-                - 'physical': [|x - x_elem|, z, D/2 - |x|]
-                - 'coordinates': [x, z, x_elem]
+            kp: KernelParameters object (2D or 3D) with system parameters.
+            physical_feature_set: Physical feature variant to generate.
+                - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
+                - 'distance_depth': [|x - x_elem|, z]
+
+        Raises:
+            ValueError: If the requested physical feature set is not supported.
         """
         self.kp = kp
+        self.physical_feature_set = physical_feature_set
+
+        valid_feature_sets = {
+            "distance_depth_edge": ("dist_to_elem", "depth", "dist_to_edge"),
+            "distance_depth": ("dist_to_elem", "depth"),
+        }
+        if self.physical_feature_set not in valid_feature_sets:
+            raise ValueError(
+                "physical_feature_set must be one of "
+                f"{tuple(valid_feature_sets.keys())}"
+            )
+        self.physical_feature_names = valid_feature_sets[self.physical_feature_set]
+        self.n_physical_features = len(self.physical_feature_names)
 
         # Verify that it is 2D (for now)
         if not hasattr(kp, 'nx') or not hasattr(kp, 'nz'):
@@ -66,16 +86,17 @@ class CoordinateManager:
         self._coords_grid_scaled = None  # (n_elem, nz, nx, 3)
         self._coords_flat_scaled = None  # (n_elem * nz * nx, 3)
 
-        # Features [|x-x_elem|, z, D/2-|x|]
-        self._features_grid_mm = None  # (n_elem, nz, nx, 3)
-        self._features_flat_mm = None  # (n_elem * nz * nx, 3)
-        self._features_grid_scaled = None  # (n_elem, nz, nx, 3)
-        self._features_flat_scaled = None  # (n_elem * nz * nx, 3)
+        # Features depend on the selected physical feature set.
+        self._features_grid_mm = None  # (n_elem, nz, nx, n_physical_features)
+        self._features_flat_mm = None  # (n_elem * nz * nx, n_physical_features)
+        self._features_grid_scaled = None  # (n_elem, nz, nx, n_physical_features)
+        self._features_flat_scaled = None  # (n_elem * nz * nx, n_physical_features)
 
         print(f"📐 [CoordinateManager] Initialized:")
         print(f"   Grid shape: (nz={self.nz}, nx={self.nx})")
         print(f"   Elements: {self.n_elem}")
         print(f"   Aperture D: {self.D:.2f} mm")
+        print(f"   Physical feature set: {self.physical_feature_set}")
 
     # ========================================================================
     # PRIVATE METHODS: Base coordinate creation
@@ -100,6 +121,18 @@ class CoordinateManager:
     # PRIVATE METHODS: Physical feature calculation
     # ========================================================================
 
+    def _stack_physical_features(self, feature_tensors):
+        """
+        Stacks the selected physical features along the last axis.
+
+        Args:
+            feature_tensors: Sequence of feature tensors with shape (nz, nx).
+
+        Returns:
+            tensor: Physical features with shape (nz, nx, n_physical_features).
+        """
+        return tf.stack(feature_tensors, axis=-1)
+
     def _compute_physical_features_mm(self, X_mm, Z_mm, x_elem_mm):
         """
         Computes physical features IN MILLIMETERS.
@@ -110,13 +143,16 @@ class CoordinateManager:
             x_elem_mm: x coordinate of the element in mm (scalar)
 
         Returns:
-            tuple: (dist_to_elem, depth, dist_to_edge) in mm
+            tuple: Physical features in mm according to the selected feature set.
         """
         # Feature 1: |x - x_elem| in mm
         dist_to_elem = tf.abs(X_mm - x_elem_mm)
 
         # Feature 2: z in mm
         depth = Z_mm
+
+        if self.physical_feature_set == "distance_depth":
+            return dist_to_elem, depth
 
         # Feature 3: D/2 - |x - x_center| in mm
         x_from_center = tf.abs(X_mm - self.x_center)
@@ -134,7 +170,7 @@ class CoordinateManager:
             x_elem_mm: x coordinate of the element in mm (scalar)
 
         Returns:
-            tuple: (dist_to_elem_scaled, depth_scaled, dist_to_edge_scaled)
+            tuple: Physical features scaled by D according to the selected feature set.
         """
         # Feature 1: |x - x_elem| / D
         dist_to_elem = tf.abs(X_mm - x_elem_mm)
@@ -142,6 +178,9 @@ class CoordinateManager:
 
         # Feature 2: z / D (already scaled)
         depth_scaled = Z_scaled
+
+        if self.physical_feature_set == "distance_depth":
+            return dist_to_elem_scaled, depth_scaled
 
         # Feature 3: (D/2 - |x - x_center|) / D = 0.5 - |x - x_center| / D
         x_from_center = tf.abs(X_mm - self.x_center)
@@ -197,12 +236,12 @@ class CoordinateManager:
 
         features_list = []
         for x_elem_mm in x_elem_mm_tf:
-            feat1, feat2, feat3 = self._compute_physical_features_mm(X_mm, Z_mm, x_elem_mm)
-            features = tf.stack([feat1, feat2, feat3], axis=-1)  # (nz, nx, 3)
+            feature_tensors = self._compute_physical_features_mm(X_mm, Z_mm, x_elem_mm)
+            features = self._stack_physical_features(feature_tensors)
             features_list.append(features)
 
-        self._features_grid_mm = tf.stack(features_list, axis=0)  # (n_elem, nz, nx, 3)
-        self._features_flat_mm = tf.reshape(self._features_grid_mm, [-1, 3])
+        self._features_grid_mm = tf.stack(features_list, axis=0)
+        self._features_flat_mm = tf.reshape(self._features_grid_mm, [-1, self.n_physical_features])
 
     def _build_features_grid_scaled(self):
         """Builds grid of physical features SCALED by D."""
@@ -214,12 +253,15 @@ class CoordinateManager:
 
         features_list = []
         for x_elem_mm in x_elem_mm_tf:
-            feat1, feat2, feat3 = self._compute_physical_features_scaled(X_mm, Z_scaled, x_elem_mm)
-            features = tf.stack([feat1, feat2, feat3], axis=-1)  # (nz, nx, 3)
+            feature_tensors = self._compute_physical_features_scaled(X_mm, Z_scaled, x_elem_mm)
+            features = self._stack_physical_features(feature_tensors)
             features_list.append(features)
 
-        self._features_grid_scaled = tf.stack(features_list, axis=0)  # (n_elem, nz, nx, 3)
-        self._features_flat_scaled = tf.reshape(self._features_grid_scaled, [-1, 3])
+        self._features_grid_scaled = tf.stack(features_list, axis=0)
+        self._features_flat_scaled = tf.reshape(
+            self._features_grid_scaled,
+            [-1, self.n_physical_features]
+        )
 
     # ========================================================================
     # PUBLIC METHODS: Get 1D coordinates
@@ -300,13 +342,13 @@ class CoordinateManager:
 
     def get_features_grid(self, scaled=False):
         """
-        Returns features [|x-x_elem|, z, D/2-|x|] in grid format.
+        Returns the selected physical features in grid format.
 
         Args:
-            scaled: False for mm, True for scaled by D
+            scaled: False for mm, True for scaled by D.
 
         Returns:
-            tensor: (n_elem, nz, nx, 3)
+            tensor: (n_elem, nz, nx, n_physical_features)
         """
         if scaled:
             if self._features_grid_scaled is None:
@@ -319,14 +361,14 @@ class CoordinateManager:
 
     def get_features_flat(self, scaled=False):
         """
-        Returns features [|x-x_elem|, z, D/2-|x|] in flat format.
+        Returns the selected physical features in flat format.
         This is the format to pass to ApodizationINR.
 
         Args:
-            scaled: False for mm, True for scaled by D
+            scaled: False for mm, True for scaled by D.
 
         Returns:
-            tensor: (n_elem * nz * nx, 3)
+            tensor: (n_elem * nz * nx, n_physical_features)
         """
         if scaled:
             if self._features_flat_scaled is None:
@@ -346,11 +388,11 @@ class CoordinateManager:
         Returns features for a specific element.
 
         Args:
-            elem_idx: index of the element
-            scaled: False for mm, True for scaled by D
+            elem_idx: Index of the element.
+            scaled: False for mm, True for scaled by D.
 
         Returns:
-            tensor: (nz, nx, 3)
+            tensor: (nz, nx, n_physical_features)
         """
         if elem_idx < 0 or elem_idx >= self.n_elem:
             raise ValueError(f"elem_idx must be between 0 and {self.n_elem - 1}")
@@ -394,4 +436,21 @@ class CoordinateManager:
             'D': self.D,
             'D_half': self.D_half,
             'x_center': self.x_center
+        }
+
+    def get_physical_feature_info(self):
+        """
+        Returns information about the selected physical feature set.
+
+        Returns:
+            dict: {
+                'physical_feature_set': str,
+                'physical_feature_names': tuple[str, ...],
+                'n_physical_features': int
+            }
+        """
+        return {
+            'physical_feature_set': self.physical_feature_set,
+            'physical_feature_names': self.physical_feature_names,
+            'n_physical_features': self.n_physical_features,
         }

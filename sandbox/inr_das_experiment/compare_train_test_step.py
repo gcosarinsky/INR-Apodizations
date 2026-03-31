@@ -40,7 +40,13 @@ delayed, targets, gaussian_masks, _ = helpers.load_delayed_samples_dataset(
     sigma_z=sigma_z_override,
 )
 helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
-_, cm = helpers.build_coordinate_manager(str(dataset_folder))
+physical_feature_set = str(
+    cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
+)
+_, cm = helpers.build_coordinate_manager(
+    str(dataset_folder),
+    physical_feature_set=physical_feature_set,
+)
 
 max_examples = cfg["training"].get("max_examples")
 if max_examples is not None:
@@ -72,7 +78,7 @@ val_ds = helpers.build_tf_dataset_by_examples(
 # Build INR model and trainer exactly like train_inr_das.
 features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]))
 apodization_model = helpers.build_mlp_inr(
-    input_dim=3,
+    input_dim=cm.n_physical_features,
     hidden_units=int(cfg["model"]["hidden_units"]),
     n_hidden=int(cfg["model"]["n_hidden_layers"]),
     activation=cfg["model"]["activation"],

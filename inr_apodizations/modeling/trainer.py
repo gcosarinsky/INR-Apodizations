@@ -33,7 +33,7 @@ class DasInrTrainer(tf.keras.Model):
 
         Args:
             apodization_model: INR model mapping geometry features to weights.
-            features_grid: Feature tensor with shape (E, Z, X, 3).
+            features_grid: Feature tensor with shape (E, Z, X, F).
             feature_chunk_size: Number of feature rows processed per forward chunk.
             weight_regularization_enabled: Whether to enable low-norm hinge regularization.
             weight_regularization_lambda: Multiplicative factor for regularization loss.
@@ -46,7 +46,11 @@ class DasInrTrainer(tf.keras.Model):
         """
         super().__init__(name="das_inr_trainer")
         self.apodization_model = apodization_model
-        self.features_flat = tf.reshape(tf.cast(features_grid, tf.float32), (-1, 3))
+        self.n_features_per_point = int(features_grid.shape[-1])
+        self.features_flat = tf.reshape(
+            tf.cast(features_grid, tf.float32),
+            (-1, self.n_features_per_point)
+        )
         self.n_elem, self.nz, self.nx = [int(dim) for dim in features_grid.shape[:3]]
         self.feature_chunk_size = int(feature_chunk_size)
 
