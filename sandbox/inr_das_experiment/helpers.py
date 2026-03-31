@@ -165,6 +165,8 @@ def load_delayed_samples_dataset(
     folder: str,
     sigma_x: float | None = None,
     sigma_z: float | None = None,
+    noise_fraction: float | None = None,
+    noise_seed: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
     Load delayed samples dataset, targets, gaussian masks and metadata from a dataset folder.
@@ -210,10 +212,53 @@ def load_delayed_samples_dataset(
     targets = np.load(targets_path, allow_pickle=False)
     gaussian_masks = np.load(masks_path, allow_pickle=False)
 
+    # Load optional dataset info prior to any runtime modifications.
     info = {}
     if os.path.exists(info_path):
         with open(info_path, "r", encoding="utf-8") as f:
             info = yaml.safe_load(f) or {}
+
+    # Optionally add reproducible complex Gaussian noise to the delayed samples.
+    # Noise is applied independently to real and imaginary parts and is computed
+    # as sigma = noise_fraction * max_abs(delayed) when `noise_fraction` > 0.
+    if noise_fraction is not None and float(noise_fraction) > 0.0:
+        max_abs = float(np.max(np.abs(delayed)))
+        sigma = float(noise_fraction) * max_abs
+        # Use Generator for reproducible behavior and generate noise per-example
+        # to avoid allocating large temporary arrays. This keeps peak memory low
+        # by creating small temporaries per example and updating `delayed` in-place.
+        rng = np.random.default_rng(int(noise_seed) if noise_seed is not None else None)
+
+        # Notify that noise generation is starting (can be slow for large datasets).
+        print(
+            f"Injecting complex Gaussian noise into delayed samples: fraction={noise_fraction}, seed={noise_seed}, sigma={sigma:.6g}"
+        )
+
+        delayed = delayed.astype(np.complex64, copy=True)
+        n_examples = int(delayed.shape[0])
+        progress_interval = max(1, n_examples // 10)
+        for i in range(n_examples):
+            # Generate per-example noise (real and imag) and add in-place.
+            real = rng.standard_normal(size=delayed.shape[1:], dtype=np.float32) * sigma
+            imag = rng.standard_normal(size=delayed.shape[1:], dtype=np.float32) * sigma
+            delayed[i] += (real + 1.0j * imag).astype(np.complex64)
+            if n_examples <= 10 or (i + 1) % progress_interval == 0:
+                print(f"  noise: processed {i+1}/{n_examples} examples")
+
+        info = copy.deepcopy(info)
+        info.setdefault("runtime_noise_injection", {})
+        info["runtime_noise_injection"].update(
+            {
+                "enabled": True,
+                "fraction_of_max": float(noise_fraction),
+                "seed": int(noise_seed) if noise_seed is not None else None,
+                "sigma": float(sigma),
+                "max_abs": float(max_abs),
+                "per_example_generation": True,
+            }
+        )
+
+    
 
     if regenerate:
         scatterers = load_saved_scatterers(folder)

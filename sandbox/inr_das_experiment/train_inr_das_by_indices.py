@@ -49,11 +49,27 @@ if not dataset_folder.is_absolute():
 dataset_folder = str(dataset_folder)
 sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
 print("Loading dataset from:", dataset_folder)
+# Dataset noise configuration (applied on-load, complex Gaussian noise)
+dataset_noise_cfg = dict(cfg.get("io", {}).get("dataset_noise", {}))
+noise_enabled = bool(dataset_noise_cfg.get("enabled", False))
+noise_fraction = float(dataset_noise_cfg.get("fraction_of_max")) if noise_enabled else None
+noise_seed = int(dataset_noise_cfg.get("seed")) if dataset_noise_cfg.get("seed") is not None else None
+
 delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
+    noise_fraction=noise_fraction,
+    noise_seed=noise_seed,
 )
+
+# Log noise injection details when enabled
+if info.get("runtime_noise_injection", {}).get("enabled", False):
+    ninfo = info.get("runtime_noise_injection", {})
+    print("Applied complex Gaussian noise to delayed samples:")
+    print(
+        f"  fraction_of_max={ninfo.get('fraction_of_max')} seed={ninfo.get('seed')} sigma={ninfo.get('sigma'):.6g} max_abs={ninfo.get('max_abs'):.6g}"
+    )
 helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
 physical_feature_set = str(
     cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")

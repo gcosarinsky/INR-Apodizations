@@ -2,6 +2,10 @@ io:
   dataset_folder: data/delayed_samples_dataset/20260327_141700
   sandbox_output_root: sandbox/inr_das_experiment/outputs
   review_output_root: sandbox/inr_das_experiment/review_outputs
+  dataset_noise:
+    enabled: true
+    fraction_of_max: 0.005
+    seed: 42
 
 target_regeneration:
   enabled: true
