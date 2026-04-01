@@ -24,3 +24,12 @@ dataset_generation:
   n_examples: 64          # total number of examples to simulate
   n_scat: 100             # number of scatterers per example
   roi_simulation: [-22, 22, 1, 42]  # [xmin, xmax, zmin, zmax] in mm
+
+# Noise generation options (optional). If enabled, `noise.npy` is created
+# with the same shape as `rf.npy`. `snr_db` is interpreted as target
+# signal-to-noise ratio (dB) computed per-example using RMS power.
+noise:
+  enable: true
+  snr_db: 12
+  seed: 42
+  dtype: int16  # data type for noise samples, typically int16 for RF data
