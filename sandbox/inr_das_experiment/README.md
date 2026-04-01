@@ -82,3 +82,45 @@ Loss weighting with Gaussian mask
     - Combining mask weighting with regularization helps avoid trivial solutions
         where the model reduces global amplitude to minimize weighted dB errors.
 
+    Noise generation and loading
+    ----------------------------
+
+    - **Generation (RF stage):** When simulating RF datasets, noise can be generated
+        during RF dataset creation. See `configs/rf_dataset_simus.yml` under the
+        `noise` section. If `noise.enable` is true, `scripts/generate_rf_dataset_simus.py`
+        will create a `noise.npy` file next to `rf.npy` with the same shape. Noise is
+        generated per-example to match a target SNR (dB) using RMS power. The RNG
+        seed and output dtype are configurable (`snr_db`, `seed`, `dtype`).
+
+    - **Processing into delayed samples:** When building delayed-samples datasets,
+        `scripts/create_delayed_samples_dataset.py` will try to load `noise.npy` from
+        the specified RF dataset folder if `process_noise: true` in
+        `configs/delayed_samples_dataset.yml`. The script processes the noise through
+        the same filters and beamforming kernels used for the signal and will save
+        `delayed_samples_noise.npy`. Optionally it can also save
+        `delayed_samples_combined.npy` (signal + noise) controlled by
+        `save_combined` and `noise_operation` (`sum|scale|custom`).
+
+    - **Loading in the sandbox/experiments:** The sandbox helper
+        `helpers.load_delayed_samples_dataset()` handles multiple precomputed-noise
+        variants and returns `(delayed, noise, targets, gaussian_masks, info)`. The
+        loading logic prefers explicit signal files (`delayed_samples_signal.npy`) and
+        explicit noise files (`delayed_samples_noise.npy`). If a combined file is
+        present together with a signal file, the helper computes `noise = combined - signal`
+        and sets `info['precomputed_noise_source']` accordingly. If only `combined` is
+        present, it is treated as the delayed samples and no separate noise array is
+        returned.
+
+    - **Evaluation-time noise:** The sandbox training script supports applying
+        scaled noise only during evaluation/plotting via the `eval_noise` config in
+        `configs/train_config.yml` (`enabled`, `scale`). This does not alter training
+        datasets; it only affects post-training reconstructions and visualizations.
+
+    See these files for implementation details and configuration examples:
+
+    - `configs/rf_dataset_simus.yml` (noise generation options)
+    - `scripts/generate_rf_dataset_simus.py` (creates `noise.npy` when enabled)
+    - `configs/delayed_samples_dataset.yml` (process_noise, noise_operation)
+    - `scripts/create_delayed_samples_dataset.py` (processes RF noise -> delayed noise)
+    - `sandbox/inr_das_experiment/helpers.py` (loading logic and `info` keys)
+
