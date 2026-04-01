@@ -10,6 +10,7 @@ from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.dataset import generate_das_modulated_target, generate_unit_gaussian_mask
 from inr_apodizations.config import CONFIGS_DIR, DATA_DIR, CUDA_DIR
 import yaml
+from inr_apodizations.utils import save_config_yaml
 plt.ion()
 
 # Load beamforming/delayed samples config (independent of the RF dataset)
@@ -152,8 +153,9 @@ for idx in range(n_examples):
 cp.cuda.Device().synchronize()  # Ensure all operations are complete
 
 #%% Save results
-output_folder = DATA_DIR / "delayed_samples_dataset" / datetime.now().strftime("%Y%m%d_%H%M%S")
-output_folder.mkdir(parents=True, exist_ok=True)    
+ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_folder = DATA_DIR / "delayed_samples_dataset" / ts
+output_folder.mkdir(parents=True, exist_ok=True)
 # Save delayed samples (signal-only)
 np.save(output_folder / 'delayed_samples_signal.npy', delayed_samples_all)
 # If noise was processed, save noise-only delayed samples and optional combined
@@ -169,7 +171,7 @@ np.save(output_folder / 'cfg_delayed_samples.npy', cfg)
 # Guardar la configuración de beamforming y metadatos en YAML
 info_yaml_path = output_folder / 'delayed_samples_info.yaml'
 info = {
-    'generated': datetime.now().strftime("%Y%m%d_%H%M%S"),
+    'generated': ts,
     'delayed_samples_shape': list(delayed_samples_all.shape),
     'delayed_samples_noise_saved': delayed_samples_noise_all is not None,
     'delayed_samples_combined_saved': delayed_samples_combined_all is not None,
@@ -181,8 +183,7 @@ info = {
     'config': cfg,    
 }
 
-with open(info_yaml_path, 'w', encoding='utf-8') as f:
-    yaml.safe_dump(info, f, allow_unicode=True)
+save_config_yaml(info_yaml_path, info, {})
 print(f'Delayed samples dataset configuration saved to: {info_yaml_path}')
 
 #%% plot example, do sum over elements
