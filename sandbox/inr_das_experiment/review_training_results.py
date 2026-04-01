@@ -206,7 +206,7 @@ print(f"Dataset folder (from run config): {dataset_folder}")
 print(f"Using training artifacts from: {artifacts_dir}")
 
 sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(run_experiment_cfg)
-delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
+delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,

@@ -49,11 +49,16 @@ if not dataset_folder.is_absolute():
 dataset_folder = str(dataset_folder)
 sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
 print("Loading dataset from:", dataset_folder)
-delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
+delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
 )
+# Log noise provenance when present
+if info.get("precomputed_noise_source", {}):
+    pinfo = info.get("precomputed_noise_source", {})
+    print("Dataset contains precomputed noise information:")
+    print(f"  source={pinfo.get('source')}")
 helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
 physical_feature_set = str(
     cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
@@ -269,7 +274,7 @@ trainer.compile(
 )
 
 # Keep a deterministic baseline prediction from random INR initialization.
-sample_delayed = tf.convert_to_tensor(val_delayed[:1])
+sample_delayed = tf.convert_to_tensor(val_delayed[:1].astype(np.complex64, copy=False))
 predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_delayed, training=False)
 
 # Resolve sandbox output root and create a timestamped sandbox outputs folder.
@@ -335,6 +340,59 @@ boxcar_weights = apods_b["boxcar"]  # shape: (E, Z, X)
 boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)  # add batch dim -> (1, E, Z, X)
 boxcar_image_complex = tf.reduce_sum(sample_delayed * tf.cast(boxcar_weights_b, sample_delayed.dtype), axis=1)
 boxcar_image = tf.abs(boxcar_image_complex)
+
+# Evaluation-time noise configuration (applies only to validation/eval)
+eval_noise_cfg = dict(cfg.get("eval_noise", {}))
+eval_noise_enabled = bool(eval_noise_cfg.get("enabled", False))
+eval_noise_scale = float(eval_noise_cfg.get("scale", 1.0)) if eval_noise_enabled else 1.0
+
+if eval_noise_enabled:
+    try:
+        val_max_abs = float(np.max(np.abs(val_delayed)))
+    except Exception:
+        val_max_abs = float(np.max(np.abs(delayed)))
+    print(f"Eval noise enabled: scale={eval_noise_scale}, val_max_abs={val_max_abs:.6g}")
+
+if eval_noise_enabled:
+    if noise is None:
+        raise ValueError(
+            "Eval noise requested but dataset does not contain precomputed noise. "
+            "Provide delayed_samples_noise.npy or delayed_samples_combined.npy (and a signal file when needed)."
+        )
+    # Build noisy single-sample used for plotting (batch size 1)
+    sample_signal_np = sample_delayed.numpy()
+    sample_noise_np = noise[:1] if noise is not None else np.zeros_like(sample_signal_np)
+    noisy_sample_np = sample_signal_np + eval_noise_scale * sample_noise_np
+    noisy_sample = tf.convert_to_tensor(noisy_sample_np.astype(np.complex64, copy=False))
+
+    # Recompute INR reconstructions on the noisy sample
+    weights_before_b = tf.expand_dims(weights_before_grid, axis=0)  # add batch dim -> (1, E, Z, X)
+    predicted_before_image_noisy = tf.abs(
+        tf.reduce_sum(noisy_sample * tf.cast(weights_before_b, noisy_sample.dtype), axis=1)
+    )
+
+    # Compute post-training image using trained INR
+    predicted_after_image_noisy, weights_after_grid_noisy = trainer.reconstruct_image(noisy_sample, training=False)
+    uniform_image_noisy = tf.abs(tf.reduce_sum(noisy_sample, axis=1))
+
+    # Recompute baseline apodization images on noisy sample
+    hanning_image_complex_noisy = tf.reduce_sum(noisy_sample * tf.cast(hanning_weights_b, noisy_sample.dtype), axis=1)
+    hanning_image_noisy = tf.abs(hanning_image_complex_noisy)
+    boxcar_image_complex_noisy = tf.reduce_sum(noisy_sample * tf.cast(boxcar_weights_b, noisy_sample.dtype), axis=1)
+    boxcar_image_noisy = tf.abs(boxcar_image_complex_noisy)
+
+    # Select variables for plotting
+    uniform_for_plot = uniform_image_noisy
+    inr_before_for_plot = predicted_before_image_noisy
+    inr_after_for_plot = predicted_after_image_noisy
+    hanning_for_plot = hanning_image_noisy
+    boxcar_for_plot = boxcar_image_noisy
+else:
+    uniform_for_plot = uniform_image
+    inr_before_for_plot = predicted_before_image
+    inr_after_for_plot = predicted_after_image
+    hanning_for_plot = hanning_image
+    boxcar_for_plot = boxcar_image
 
 
 effective_cfg = {
