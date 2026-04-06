@@ -24,6 +24,7 @@ from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.config import PROJ_ROOT
+from inr_apodizations.plots import plot_lateral_reflector_profiles
 
 # Temporary path fix: ensure `sandbox/inr_das_experiment` is on sys.path
 # so the local `helpers.py` module can be imported when running this script
@@ -34,7 +35,7 @@ if str(_helpers_dir) not in _sys.path:
     _sys.path.insert(0, str(_helpers_dir))
 
 import helpers
-
+plt.ion()  # interactive mode for plotting
 
 def _load_config(cfg_path: Path) -> dict[str, Any]:
     with open(cfg_path, encoding="utf-8") as f:
@@ -45,6 +46,77 @@ def _load_delayed_samples(path: Path) -> np.ndarray:
     arr = np.load(path)
     # expected shape: (n_examples, n_elements, nz, nx)
     return arr
+
+
+def _build_grid_row_definitions(cfg: dict[str, Any], line_length_margin_mm: float) -> list[dict[str, float]]:
+    """Derive horizontal reflector-row definitions from phantom grid config.
+
+    Args:
+        cfg: Full evaluation config dictionary.
+        line_length_margin_mm: Extra lateral margin added to the row span.
+
+    Returns:
+        List of dictionaries with keys ``z_center``, ``x_center`` and ``line_length``.
+
+    Raises:
+        ValueError: If phantom mode/config is invalid or inconsistent.
+    """
+    phantom_cfg = cfg.get("phantom", {})
+    mode = str(phantom_cfg.get("mode", "")).strip().lower()
+    if mode != "grid":
+        raise ValueError(
+            "Este flujo de perfiles laterales requiere `phantom.mode: grid` en evaluation_config.yml."
+        )
+
+    grid_cfg = phantom_cfg.get("grid")
+    if not isinstance(grid_cfg, dict):
+        raise ValueError("Falta el bloque `phantom.grid` en evaluation_config.yml.")
+
+    required = (
+        "x_count",
+        "z_count",
+        "x_center_mm",
+        "z_start_mm",
+        "x_spacing_mm",
+        "z_spacing_mm",
+    )
+    missing = [name for name in required if name not in grid_cfg]
+    if missing:
+        raise ValueError(f"Faltan campos requeridos en `phantom.grid`: {missing}")
+
+    x_count = int(grid_cfg["x_count"])
+    z_count = int(grid_cfg["z_count"])
+    x_center_mm = float(grid_cfg["x_center_mm"])
+    z_start_mm = float(grid_cfg["z_start_mm"])
+    x_spacing_mm = float(grid_cfg["x_spacing_mm"])
+    z_spacing_mm = float(grid_cfg["z_spacing_mm"])
+
+    if x_count <= 0 or z_count <= 0:
+        raise ValueError("`x_count` y `z_count` deben ser enteros positivos en `phantom.grid`.")
+    if x_spacing_mm <= 0.0 or z_spacing_mm <= 0.0:
+        raise ValueError("`x_spacing_mm` y `z_spacing_mm` deben ser > 0 en `phantom.grid`.")
+    if line_length_margin_mm < 0.0:
+        raise ValueError("`line_length_margin_mm` debe ser >= 0.")
+
+    x_indices = np.arange(x_count, dtype=np.float32)
+    x_offsets = (x_indices - (x_count - 1) / 2.0) * x_spacing_mm
+    x_positions = x_center_mm + x_offsets
+
+    x_row_center = float(np.mean(x_positions))
+    x_row_span = float(np.max(x_positions) - np.min(x_positions)) if x_count > 1 else float(x_spacing_mm)
+    line_length = x_row_span + float(line_length_margin_mm)
+
+    rows = []
+    for z_idx in range(z_count):
+        z_center = z_start_mm + z_idx * z_spacing_mm
+        rows.append(
+            {
+                "z_center": float(z_center),
+                "x_center": x_row_center,
+                "line_length": float(line_length),
+            }
+        )
+    return rows
 
 
 # Note: apodization helpers removed — use compute_dynamic_apodizations_tf and
@@ -229,4 +301,82 @@ plot_path = out_root / "evaluate_apodizations_quicklook.png"
 fig.savefig(plot_path, dpi=150)
 plt.show()
 
+# ===== Reflector lateral profiles by row (from phantom.grid) =====
+profile_cfg = cfg.get("reflector_lateral_profiles", {})
+profiles_enabled = bool(profile_cfg.get("enabled", True))
+if profiles_enabled:
+    methods_cfg = profile_cfg.get("methods", ["uniform", "hanning", "boxcar", "inr"])
+    if not isinstance(methods_cfg, list) or len(methods_cfg) == 0:
+        raise ValueError(
+            "`reflector_lateral_profiles.methods` debe ser una lista no vacia en evaluation_config.yml."
+        )
+
+    selected_method_names = [str(name).strip().lower() for name in methods_cfg]
+    # Preserve order while removing duplicates.
+    selected_method_names = list(dict.fromkeys(selected_method_names))
+
+    missing_methods = [name for name in selected_method_names if name not in images_db]
+    if missing_methods:
+        raise RuntimeError(
+            "No se pueden generar perfiles laterales: faltan metodos en images_db: "
+            f"{missing_methods}"
+        )
+
+    selected_images_db = {name: np.asarray(images_db[name]) for name in selected_method_names}
+    line_length_margin_mm = float(profile_cfg.get("line_length_margin_mm", 1.0))
+    vmin_db = float(profile_cfg.get("vmin_db", -60.0))
+    save_individual_rows = bool(profile_cfg.get("save_individual_rows", False))
+    row_defs = _build_grid_row_definitions(cfg, line_length_margin_mm=line_length_margin_mm)
+
+    nrows = len(row_defs)
+    fig_rows, axes_rows = plt.subplots(
+        nrows,
+        1,
+        figsize=(10, max(4.0, 2.9 * nrows)),
+        sharex=False,
+        constrained_layout=True,
+    )
+    axes_rows = np.atleast_1d(axes_rows)
+
+    tmp_rows_dir = out_root / "_tmp_reflector_rows"
+    tmp_rows_dir.mkdir(parents=True, exist_ok=True)
+
+    for row_idx, row_def in enumerate(row_defs):
+        row_png = tmp_rows_dir / f"row_{row_idx:02d}.png"
+        sampled_x, profiles = plot_lateral_reflector_profiles(
+            images=selected_images_db,
+            output_path=str(row_png),
+            extent=kp.get_imshow_extent(),
+            x_center=float(row_def["x_center"]),
+            z_center=float(row_def["z_center"]),
+            line_length=float(row_def["line_length"]),
+            overlay_profiles=True,
+            cm=cm,
+            vmin_db=vmin_db,
+        )
+
+        ax = axes_rows[row_idx]
+        for method_name in selected_method_names:
+            ax.plot(sampled_x, profiles[method_name], linewidth=2, label=method_name)
+        ax.set_ylim(vmin_db, 0.0)
+        ax.grid(True, alpha=0.3)
+        ax.axvline(float(row_def["x_center"]), color="black", linestyle=":", linewidth=1.2)
+        ax.set_ylabel("Amplitude (dB)")
+        ax.set_title(
+            "Reflector row profile "
+            f"z={float(row_def['z_center']):.2f} mm, len={float(row_def['line_length']):.2f} mm"
+        )
+        if row_idx == 0:
+            legend_cols = min(4, max(1, len(selected_method_names)))
+            ax.legend(ncol=legend_cols, fontsize=9)
+
+        if not save_individual_rows and row_png.exists():
+            row_png.unlink()
+
+    axes_rows[-1].set_xlabel("x (mm)")
+    profiles_plot_path = out_root / "evaluate_reflector_row_profiles_db.png"
+    fig_rows.savefig(profiles_plot_path, dpi=150)
+
 print("Evaluate complete. Plot saved to:", plot_path)
+if profiles_enabled:
+    print("Row profiles plot saved to:", profiles_plot_path)

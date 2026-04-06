@@ -48,3 +48,10 @@ beamforming:
 visualization:
   enabled: true
   dyn_range_db: 60
+
+reflector_lateral_profiles:
+  enabled: true
+  methods: [hanning, inr]
+  line_length_margin_mm: 1.0
+  vmin_db: -60.0
+  save_individual_rows: false
