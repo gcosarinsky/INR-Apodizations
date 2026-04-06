@@ -10,6 +10,7 @@ class CoordinateManager:
     - Spatial coordinates: x, z, x_elem (in mm and scaled by D)
         - Physical features, configurable by feature set:
             - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
+            - 'distance_depth_center': [|x - x_elem|, z, |x|]
             - 'distance_depth': [|x - x_elem|, z]
 
     Scaling: all coordinates are scaled by dividing by D (array aperture)
@@ -28,6 +29,7 @@ class CoordinateManager:
             kp: KernelParameters object (2D or 3D) with system parameters.
             physical_feature_set: Physical feature variant to generate.
                 - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
+                - 'distance_depth_center': [|x - x_elem|, z, |x|]
                 - 'distance_depth': [|x - x_elem|, z]
 
         Raises:
@@ -38,6 +40,7 @@ class CoordinateManager:
 
         valid_feature_sets = {
             "distance_depth_edge": ("dist_to_elem", "depth", "dist_to_edge"),
+            "distance_depth_center": ("dist_to_elem", "depth", "dist_to_center"),
             "distance_depth": ("dist_to_elem", "depth"),
         }
         if self.physical_feature_set not in valid_feature_sets:
@@ -151,11 +154,16 @@ class CoordinateManager:
         # Feature 2: z in mm
         depth = Z_mm
 
+        # Feature 3 base: |x - x_center| in mm (|x| when x_center = 0)
+        x_from_center = tf.abs(X_mm - self.x_center)
+
         if self.physical_feature_set == "distance_depth":
             return dist_to_elem, depth
 
+        if self.physical_feature_set == "distance_depth_center":
+            return dist_to_elem, depth, x_from_center
+
         # Feature 3: D/2 - |x - x_center| in mm
-        x_from_center = tf.abs(X_mm - self.x_center)
         dist_to_edge = self.D_half - x_from_center
 
         return dist_to_elem, depth, dist_to_edge
@@ -179,11 +187,17 @@ class CoordinateManager:
         # Feature 2: z / D (already scaled)
         depth_scaled = Z_scaled
 
+        # Feature 3 base: |x - x_center| / D
+        x_from_center = tf.abs(X_mm - self.x_center)
+        dist_to_center_scaled = x_from_center / self.D
+
         if self.physical_feature_set == "distance_depth":
             return dist_to_elem_scaled, depth_scaled
 
+        if self.physical_feature_set == "distance_depth_center":
+            return dist_to_elem_scaled, depth_scaled, dist_to_center_scaled
+
         # Feature 3: (D/2 - |x - x_center|) / D = 0.5 - |x - x_center| / D
-        x_from_center = tf.abs(X_mm - self.x_center)
         dist_to_edge = self.D_half - x_from_center
         dist_to_edge_scaled = dist_to_edge / self.D
         return dist_to_elem_scaled, depth_scaled, dist_to_edge_scaled
