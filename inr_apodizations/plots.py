@@ -246,6 +246,7 @@ def plot_lateral_reflector_profiles(
     x_center: float,
     z_center: float,
     line_length: float,
+    thickness_mm: float = 0.0,
     overlay_profiles: bool = True,
     labels: list[str] | tuple[str, ...] | None = None,
     cm: CoordinateManager | None = None,
@@ -261,6 +262,10 @@ def plot_lateral_reflector_profiles(
         x_center: Lateral center of the sampled line in mm.
         z_center: Depth center of the sampled line in mm.
         line_length: Total horizontal profile length in mm.
+        thickness_mm: Vertical band thickness in mm used to aggregate profiles.
+            If ``thickness_mm <= 0``, profiles are sampled on a single line.
+            If ``thickness_mm > 0``, each profile point is the maximum value
+            across the selected depth band.
         overlay_profiles: If True, all profiles are drawn on the same axes.
             If False, one subplot is created per image.
         labels: Optional labels used when ``images`` is a list or tuple.
@@ -281,6 +286,8 @@ def plot_lateral_reflector_profiles(
     """
     if line_length <= 0.0:
         raise ValueError(f"`line_length` must be > 0, got {line_length}.")
+    if thickness_mm < 0.0:
+        raise ValueError(f"`thickness_mm` must be >= 0, got {thickness_mm}.")
 
     if isinstance(images, dict):
         image_items = [(str(name), np.asarray(image)) for name, image in images.items()]
@@ -357,11 +364,35 @@ def plot_lateral_reflector_profiles(
             "The requested line_length is too short for the image sampling resolution."
         )
 
+    if thickness_mm <= 0.0:
+        z_start_idx = z_idx
+        z_end_idx = z_idx + 1
+    else:
+        half_thickness = thickness_mm / 2.0
+        z_start = z_center - half_thickness
+        z_end = z_center + half_thickness
+        z_start_idx = int(np.searchsorted(z_axis, z_start, side="left"))
+        z_end_idx = int(np.searchsorted(z_axis, z_end, side="right"))
+        z_start_idx = max(0, z_start_idx)
+        z_end_idx = min(nz, z_end_idx)
+        if z_end_idx - z_start_idx < 1:
+            z_start_idx = z_idx
+            z_end_idx = z_idx + 1
+
     sampled_x = x_axis[x_start_idx:x_end_idx]
-    profiles = {
-        image_name: np.asarray(image[z_idx, x_start_idx:x_end_idx])
-        for image_name, image in image_items
-    }
+    if thickness_mm <= 0.0:
+        profiles = {
+            image_name: np.asarray(image[z_idx, x_start_idx:x_end_idx])
+            for image_name, image in image_items
+        }
+    else:
+        profiles = {
+            image_name: np.max(
+                np.asarray(image[z_start_idx:z_end_idx, x_start_idx:x_end_idx]),
+                axis=0,
+            )
+            for image_name, image in image_items
+        }
 
     if overlay_profiles:
         fig, ax = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
@@ -369,10 +400,18 @@ def plot_lateral_reflector_profiles(
             ax.plot(sampled_x, profile, linewidth=2, label=image_name)
             if vmin_db is not None:
                 ax.set_ylim(vmin_db, 0.0)
-        ax.set_title(
-            "Lateral reflector profiles "
-            f"at z={z_axis[z_idx]:.2f} mm centered on x={x_center:.2f} mm"
-        )
+        if thickness_mm <= 0.0:
+            ax.set_title(
+                "Lateral reflector profiles "
+                f"at z={z_axis[z_idx]:.2f} mm centered on x={x_center:.2f} mm"
+            )
+        else:
+            z0 = float(z_axis[z_start_idx])
+            z1 = float(z_axis[z_end_idx - 1])
+            ax.set_title(
+                "Lateral reflector profiles (max over thickness) "
+                f"z=[{z0:.2f}, {z1:.2f}] mm centered on x={x_center:.2f} mm"
+            )
         ax.set_xlabel("x (mm)")
         ax.set_ylabel("Amplitude")
         ax.grid(True, alpha=0.3)
@@ -391,9 +430,16 @@ def plot_lateral_reflector_profiles(
             ax.plot(sampled_x, profile, linewidth=2)
             if vmin_db is not None:
                 ax.set_ylim(vmin_db, 0.0)
-            ax.set_title(
-                f"{image_name} at z={z_axis[z_idx]:.2f} mm centered on x={x_center:.2f} mm"
-            )
+            if thickness_mm <= 0.0:
+                ax.set_title(
+                    f"{image_name} at z={z_axis[z_idx]:.2f} mm centered on x={x_center:.2f} mm"
+                )
+            else:
+                z0 = float(z_axis[z_start_idx])
+                z1 = float(z_axis[z_end_idx - 1])
+                ax.set_title(
+                    f"{image_name} max over z=[{z0:.2f}, {z1:.2f}] mm centered on x={x_center:.2f} mm"
+                )
             ax.set_ylabel("Amplitude")
             ax.grid(True, alpha=0.3)
             ax.axvline(x_center, color="black", linestyle=":", linewidth=1.2)

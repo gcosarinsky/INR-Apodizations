@@ -324,6 +324,7 @@ if profiles_enabled:
 
     selected_images_db = {name: np.asarray(images_db[name]) for name in selected_method_names}
     line_length_margin_mm = float(profile_cfg.get("line_length_margin_mm", 1.0))
+    thickness_mm = float(profile_cfg.get("thickness_mm", 0.0))
     vmin_db = float(profile_cfg.get("vmin_db", -60.0))
     save_individual_rows = bool(profile_cfg.get("save_individual_rows", False))
     row_defs = _build_grid_row_definitions(cfg, line_length_margin_mm=line_length_margin_mm)
@@ -350,6 +351,7 @@ if profiles_enabled:
             x_center=float(row_def["x_center"]),
             z_center=float(row_def["z_center"]),
             line_length=float(row_def["line_length"]),
+            thickness_mm=thickness_mm,
             overlay_profiles=True,
             cm=cm,
             vmin_db=vmin_db,
