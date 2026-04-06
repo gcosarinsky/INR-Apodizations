@@ -165,16 +165,18 @@ def load_delayed_samples_dataset(
     folder: str,
     sigma_x: float | None = None,
     sigma_z: float | None = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+) -> Tuple[np.ndarray, np.ndarray | None, np.ndarray, np.ndarray, dict]:
     """
     Load delayed samples dataset, targets, gaussian masks and metadata from a dataset folder.
 
-    Expects files inside `folder`: `delayed_samples_dataset.npy`,
+    Expects files inside `folder`: `delayed_samples_dataset.npy` (or
+    `delayed_samples_signal.npy`), `targets_dataset.npy`,
     `targets_dataset.npy`, `gaussian_masks_dataset.npy` and
     `delayed_samples_info.yaml` (optional).
 
     Returns:
         delayed: np.ndarray, shape (N, E, Z, X), dtype complex64
+        noise: np.ndarray or None, shape (N, E, Z, X), dtype complex64 when precomputed noise is available
         targets: np.ndarray, shape (N, Z, X), dtype float32
         gaussian_masks: np.ndarray, shape (N, Z, X), dtype float32, values in [0, 1]
         info: dict with parsed YAML metadata (empty dict if not present)
@@ -188,7 +190,6 @@ def load_delayed_samples_dataset(
         FileNotFoundError: If delayed samples, targets or gaussian masks files are missing.
         ValueError: If only one sigma override is provided or if sigma values are non-positive.
     """
-    delayed_path = os.path.join(folder, "delayed_samples_dataset.npy")
     targets_path = os.path.join(folder, "targets_dataset.npy")
     masks_path = os.path.join(folder, "gaussian_masks_dataset.npy")
     info_path = os.path.join(folder, "delayed_samples_info.yaml")
@@ -199,23 +200,89 @@ def load_delayed_samples_dataset(
     if regenerate and (float(sigma_x) <= 0.0 or float(sigma_z) <= 0.0):
         raise ValueError("sigma_x and sigma_z must be > 0")
 
-    if not os.path.exists(delayed_path) or not os.path.exists(targets_path):
-        raise FileNotFoundError("Delayed samples or targets .npy not found in %s" % folder)
+    if not os.path.exists(targets_path):
+        raise FileNotFoundError("targets_dataset.npy not found in %s" % folder)
     if not os.path.exists(masks_path):
         raise FileNotFoundError(
             "gaussian_masks_dataset.npy not found in %s. Regenerate the dataset." % folder
         )
 
-    delayed = np.load(delayed_path, allow_pickle=False)
+    print("loading targets.npy and gaussian_masks.npy")
     targets = np.load(targets_path, allow_pickle=False)
     gaussian_masks = np.load(masks_path, allow_pickle=False)
 
+    # Load optional dataset info prior to any runtime modifications.
     info = {}
     if os.path.exists(info_path):
         with open(info_path, "r", encoding="utf-8") as f:
             info = yaml.safe_load(f) or {}
 
+    # Candidate signal files (prefer explicit signal file first).
+    signal_candidates = (
+        os.path.join(folder, "delayed_samples_signal.npy"),
+        os.path.join(folder, "delayed_samples_dataset.npy"),
+        os.path.join(folder, "delayed_samples.npy"),
+    )
+    signal_path = None
+    for p in signal_candidates:
+        if os.path.exists(p):
+            signal_path = p
+            break
+
+    combined_path = os.path.join(folder, "delayed_samples_combined.npy")
+    noise_path = os.path.join(folder, "delayed_samples_noise.npy")
+
+    # Load noise file if present (do not add it to delayed here).
+    noise = None
+    if os.path.exists(noise_path):
+        print("Loading precomputed noise")
+        noise = np.load(noise_path, allow_pickle=False)
+        info = copy.deepcopy(info)
+        info.setdefault("precomputed_noise_source", {})
+        info["precomputed_noise_source"].update({"source": "noise_file"})
+
+    # Load combined / signal logic
+    print("Loading signal and/or combined delayed samples")
+    if os.path.exists(combined_path):
+        combined = np.load(combined_path, allow_pickle=False)
+        if signal_path is not None:
+            signal = np.load(signal_path, allow_pickle=False)
+            # compute noise = combined - signal, keep delayed = signal
+            noise = combined.astype(np.complex64, copy=False) - signal.astype(np.complex64, copy=False)
+            delayed = signal.astype(np.complex64, copy=False)
+            info = copy.deepcopy(info)
+            info.setdefault("precomputed_noise_source", {})
+            info["precomputed_noise_source"].update({"source": "combined_minus_signal"})
+        else:
+            # only combined exists -> delayed is combined, no separate noise returned
+            delayed = combined.astype(np.complex64, copy=False)
+            noise = None
+            info = copy.deepcopy(info)
+            info.setdefault("precomputed_noise_source", {})
+            info["precomputed_noise_source"].update({"source": "combined_only"})
+    else:
+        # No combined file
+        if signal_path is not None:
+            delayed = np.load(signal_path, allow_pickle=False).astype(np.complex64, copy=False)
+            if noise is not None:
+                # both explicit signal and explicit noise files present
+                info = copy.deepcopy(info)
+                info.setdefault("precomputed_noise_source", {})
+                info["precomputed_noise_source"].update({"source": "signal_and_noise_file"})
+        else:
+            # Fall back to legacy dataset file name (delayed_samples_dataset.npy)
+            fallback = os.path.join(folder, "delayed_samples_dataset.npy")
+            if os.path.exists(fallback):
+                delayed = np.load(fallback, allow_pickle=False).astype(np.complex64, copy=False)
+            else:
+                raise FileNotFoundError(
+                    "No delayed-samples file found in %s. Searched for signal/combined/noise variants." % folder
+                )
+
+    
+
     if regenerate:
+        print("Regenerating targets and gaussian masks with sigma_x=%.3f mm, sigma_z=%.3f mm" % (float(sigma_x), float(sigma_z)))
         scatterers = load_saved_scatterers(folder)
         x_grid, z_grid = _build_target_grids(folder)
         targets, gaussian_masks = _regenerate_targets_and_masks(
@@ -233,7 +300,7 @@ def load_delayed_samples_dataset(
             "sigma_z": float(sigma_z),
         }
 
-    return delayed, targets, gaussian_masks, info
+    return delayed, noise, targets, gaussian_masks, info
 
 
 def get_target_sigma_override(config: dict) -> tuple[float | None, float | None]:
@@ -350,6 +417,17 @@ def load_experiment_config(config_path: str) -> dict:
     """Load the sandbox experiment YAML configuration."""
     with open(config_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
+
+
+# Note: runtime/stateless RNG-based noise maps have been removed to enforce
+# a single source-of-noise: precomputed noise files in the dataset folder.
+# Previous helper `make_eval_noise_map` (which added noise via TF ops) was
+# intentionally removed to avoid multiple noise injection paths.
+
+
+# Note: runtime RNG-based noise generation has been removed. Precomputed
+# noise files (`delayed_samples_noise.npy` or `delayed_samples_combined.npy`)
+# must be provided by the dataset producer. See `scripts/create_delayed_samples_dataset.py`.
 
 
 def create_run_directories(processed_root: str, sandbox_root: str) -> tuple[str, str, str]:

@@ -9,7 +9,7 @@
 ## Idioma y estilo de interacción
 
 - El chat con el usuario debe ser en castellano.
-- El codigo, comentarios y docstrings deben estar en ingles.
+- El codigo, comentarios y docstrings deben estar en ingles. Los mensajes al usuario deben ser en inglés.
 
 ## Reglas de desarrollo del proyecto
 

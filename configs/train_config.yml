@@ -1,7 +1,8 @@
 io:
-  dataset_folder: data/delayed_samples_dataset/20260327_141700
+  dataset_folder: data/delayed_samples_dataset/20260401_120625
   sandbox_output_root: sandbox/inr_das_experiment/outputs
   review_output_root: sandbox/inr_das_experiment/review_outputs
+  # dataset_noise removed: noise must be provided as precomputed files in the dataset folder
 
 target_regeneration:
   enabled: true
@@ -16,6 +17,10 @@ model:
   output_activation: sigmoid
   scaled_features: true
   feature_chunk_size: 262144
+ 
+eval_noise:
+  enabled: true
+  scale: 1.0
 
 training:
   batch_size: 4
@@ -57,5 +62,5 @@ scatterer_eval:
   hist_bins: 50
 
 results_review:
-  run_timestamp: "20260330_154310"  # Folder under sandbox_output_root that contains model.keras + train_config_info.yml
+  run_timestamp: ""  # Folder under sandbox_output_root that contains model.keras + train_config_info.yml
   max_validation_examples: null

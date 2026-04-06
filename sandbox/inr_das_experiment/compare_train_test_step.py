@@ -34,7 +34,7 @@ if not dataset_folder.is_absolute():
 
 # Load and validate dataset.
 sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
-delayed, targets, gaussian_masks, _ = helpers.load_delayed_samples_dataset(
+delayed, noise, targets, gaussian_masks, _ = helpers.load_delayed_samples_dataset(
     str(dataset_folder),
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,

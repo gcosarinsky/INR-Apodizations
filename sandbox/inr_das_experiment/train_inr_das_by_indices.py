@@ -49,11 +49,17 @@ if not dataset_folder.is_absolute():
 dataset_folder = str(dataset_folder)
 sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
 print("Loading dataset from:", dataset_folder)
-delayed, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
+delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
 )
+
+# Log noise provenance when present
+if info.get("precomputed_noise_source", {}):
+    pinfo = info.get("precomputed_noise_source", {})
+    print("Dataset contains precomputed noise information:")
+    print(f"  source={pinfo.get('source')}")
 helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
 physical_feature_set = str(
     cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
@@ -160,6 +166,21 @@ val_ds = helpers.build_tf_dataset_by_indices(
     shuffle=False,
     seed=int(cfg["training"]["seed"]),
 )
+
+# Evaluation-time noise configuration (applies only to validation/eval)
+eval_noise_cfg = dict(cfg.get("eval_noise", {}))
+eval_noise_enabled = bool(eval_noise_cfg.get("enabled", False))
+eval_noise_scale = float(eval_noise_cfg.get("scale", 1.0)) if eval_noise_enabled else 1.0
+
+if eval_noise_enabled:
+    # Compute max_abs over validation subset just for information (scale is explicit)
+    try:
+        val_max_abs = float(np.max(np.abs(delayed[val_idx])))
+    except Exception:
+        val_max_abs = float(np.max(np.abs(delayed)))
+    print(f"Eval noise enabled: scale={eval_noise_scale}, val_max_abs={val_max_abs:.6g}")
+# Note: Do NOT modify `val_ds` used for training validation. Evaluation-time
+# noise will be applied only during post-training reconstruction/plotting.
 
 features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]))
 output_activation = cfg["model"].get("output_activation", "sigmoid")
@@ -363,6 +384,48 @@ boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)  # add batch dim -> (1
 boxcar_image_complex = tf.reduce_sum(sample_delayed * tf.cast(boxcar_weights_b, sample_delayed.dtype), axis=1)
 boxcar_image = tf.abs(boxcar_image_complex)
 
+# If eval-time noise is requested, build noisy samples using precomputed noise
+if eval_noise_enabled:
+    if noise is None:
+        raise ValueError(
+            "Eval noise requested but dataset does not contain precomputed noise. "
+            "Provide delayed_samples_noise.npy or delayed_samples_combined.npy (and a signal file when needed)."
+        )
+    # Build noisy single-sample used for plotting (batch size 1)
+    sample_signal_np = sample_delayed.numpy()
+    sample_noise_np = noise[val_idx[:1]] if noise is not None else np.zeros_like(sample_signal_np)
+    noisy_sample_np = sample_signal_np + eval_noise_scale * sample_noise_np
+    noisy_sample = tf.convert_to_tensor(noisy_sample_np.astype(np.complex64, copy=False))
+
+    # Recompute INR reconstructions on the noisy sample
+    weights_before_b = tf.expand_dims(weights_before_grid, axis=0)  # add batch dim -> (1, E, Z, X)
+    predicted_before_image_noisy = tf.abs(
+        tf.reduce_sum(noisy_sample * tf.cast(weights_before_b, noisy_sample.dtype), axis=1)
+    )
+
+    # Compute post-training image using trained INR
+    predicted_after_image_noisy, weights_after_grid_noisy = trainer.reconstruct_image(noisy_sample, training=False)
+    uniform_image_noisy = tf.abs(tf.reduce_sum(noisy_sample, axis=1))
+
+    # Recompute baseline apodization images on noisy sample
+    hanning_image_complex_noisy = tf.reduce_sum(noisy_sample * tf.cast(hanning_weights_b, noisy_sample.dtype), axis=1)
+    hanning_image_noisy = tf.abs(hanning_image_complex_noisy)
+    boxcar_image_complex_noisy = tf.reduce_sum(noisy_sample * tf.cast(boxcar_weights_b, noisy_sample.dtype), axis=1)
+    boxcar_image_noisy = tf.abs(boxcar_image_complex_noisy)
+
+    # Select variables for plotting
+    uniform_for_plot = uniform_image_noisy
+    inr_before_for_plot = predicted_before_image_noisy
+    inr_after_for_plot = predicted_after_image_noisy
+    hanning_for_plot = hanning_image_noisy
+    boxcar_for_plot = boxcar_image_noisy
+else:
+    uniform_for_plot = uniform_image
+    inr_before_for_plot = predicted_before_image
+    inr_after_for_plot = predicted_after_image
+    hanning_for_plot = hanning_image
+    boxcar_for_plot = boxcar_image
+
 
 effective_cfg = {
     "config_path": str(CONFIG_PATH),
@@ -394,9 +457,9 @@ helpers.plot_training_curves(
     output_path=str(Path(sandbox_dir) / "training_loss.png"),
 )
 helpers.plot_das_comparison_db(
-    uniform_image=uniform_image.numpy()[0],
-    inr_before_image=predicted_before_image.numpy()[0],
-    inr_after_image=predicted_after_image.numpy()[0],
+    uniform_image=uniform_for_plot.numpy()[0],
+    inr_before_image=inr_before_for_plot.numpy()[0],
+    inr_after_image=inr_after_for_plot.numpy()[0],
     target_image=sample_target[0],
     output_path=str(Path(sandbox_dir) / "das_images_comparison_db.png"),
     extent=kp.get_imshow_extent(),
@@ -407,9 +470,9 @@ helpers.plot_das_comparison_db(
 )
 # Also save a comparison figure using Hanning as the baseline instead of Uniform
 helpers.plot_das_comparison_db(
-    uniform_image=hanning_image.numpy()[0],
-    inr_before_image=predicted_before_image.numpy()[0],
-    inr_after_image=predicted_after_image.numpy()[0],
+    uniform_image=hanning_for_plot.numpy()[0],
+    inr_before_image=inr_before_for_plot.numpy()[0],
+    inr_after_image=inr_after_for_plot.numpy()[0],
     target_image=sample_target[0],
     output_path=str(Path(sandbox_dir) / "das_images_comparison_db_hanning.png"),
     extent=kp.get_imshow_extent(),
@@ -422,9 +485,9 @@ helpers.plot_das_comparison_db(
 
 # Also save a comparison figure using Boxcar as the baseline
 helpers.plot_das_comparison_db(
-    uniform_image=boxcar_image.numpy()[0],
-    inr_before_image=predicted_before_image.numpy()[0],
-    inr_after_image=predicted_after_image.numpy()[0],
+    uniform_image=boxcar_for_plot.numpy()[0],
+    inr_before_image=inr_before_for_plot.numpy()[0],
+    inr_after_image=inr_after_for_plot.numpy()[0],
     target_image=sample_target[0],
     output_path=str(Path(sandbox_dir) / "das_images_comparison_db_boxcar.png"),
     extent=kp.get_imshow_extent(),
@@ -507,8 +570,20 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             end = min(start + eval_batch_size, n_val)
             idx_chunk = val_idx[start:end]
 
-            # Build tensor for this chunk and run reconstruction
-            val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
+            # Build tensor for this chunk and run reconstruction. Use precomputed
+            # noise when requested (the loader returns `noise` separately).
+            if eval_noise_enabled:
+                if noise is None:
+                    raise ValueError(
+                        "Eval noise requested but dataset does not contain precomputed noise. "
+                        "Provide delayed_samples_noise.npy or delayed_samples_combined.npy."
+                    )
+                sig_chunk = delayed[idx_chunk].astype(np.complex64, copy=False)
+                noise_chunk = noise[idx_chunk].astype(np.complex64, copy=False)
+                combined_chunk = sig_chunk + eval_noise_scale * noise_chunk
+                val_delayed_chunk = tf.convert_to_tensor(combined_chunk)
+            else:
+                val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
 
             predicted_chunk_complex, weights_chunk = trainer.reconstruct_image(
                 val_delayed_chunk, training=False
