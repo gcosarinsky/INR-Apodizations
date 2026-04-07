@@ -31,6 +31,8 @@ from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
+# New import for loss scaling (division by first‑batch loss)
+from inr_apodizations.modeling.losses import ScaledLoss
 import matplotlib.pyplot as plt
 
 
@@ -294,6 +296,9 @@ if use_pixelwise_weights and isinstance(loss_name, str):
         loss_obj = _pixelwise_mae
     elif loss_str in ("mse", "mean_squared_error"):
         loss_obj = _pixelwise_mse
+
+# Wrap the resolved loss with esto es par alinux=Loss (division by first‑batch loss, no extra factor)
+loss_obj = ScaledLoss(base_loss=loss_obj)
 
 # Resolve metrics from config with optional support for custom mae_db.
 metrics_cfg = cfg["training"].get("metric", "mae")

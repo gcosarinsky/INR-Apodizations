@@ -16,7 +16,7 @@ model:
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
   hidden_units: [16, 8, 4, 2]
-  n_hidden_layers: 3
+  n_hidden_layers: 4
   # Example Mode 2 (per-layer hidden sizes):
   # hidden_units: [8, 16, 8]
   # n_hidden_layers: 3  # Will be ignored; inferred as 3 from list length
@@ -38,7 +38,7 @@ training:
   weight_regularization:
     enabled: true
     type: hinge_low_norm
-    lambda: 20000
+    lambda: 0.1
     tau: 0.50
     epsilon: 1.0e-8
     normalize_norm: true
