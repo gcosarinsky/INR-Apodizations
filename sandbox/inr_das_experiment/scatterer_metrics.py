@@ -510,10 +510,6 @@ def plot_scatterer_evaluation(
             ax_max = max(float(ref_snr.max()), float(cmp_snr.max()))
             ax.scatter(ref_snr, cmp_snr, s=15, alpha=0.7)
             ax.plot([0, ax_max], [0, ax_max], color="red", linewidth=1, linestyle="--", label="y = x")
-            ax.scatter(
-                [1.0], [1.0], s=110, marker="D", facecolors="none",
-                edgecolors="black", linewidths=1.5, label="bg_rms reference", zorder=5,
-            )
             ax.set_xlabel(f"{ref_name} SNR (peak / bg_rms)")
             ax.set_ylabel(f"{cmp_name} SNR (peak / bg_rms)")
             title_suffix = (
@@ -533,10 +529,8 @@ def plot_scatterer_evaluation(
         )
         plt.close(fig_snr)
 
-        fig_norm, axes_norm = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5), squeeze=False)
-        for col_idx, (ref_name, cmp_name) in enumerate(compare_pairs):
-            ax = axes_norm[0, col_idx]
-            _validate_aligned_aggregated_points(all_metrics[ref_name], all_metrics[cmp_name])
+        # Plot histogram of SNR ratio for each requested comparison pair
+        for ref_name, cmp_name in compare_pairs:
             ref_view = _get_plot_metric_view(all_metrics[ref_name])
             cmp_view = _get_plot_metric_view(all_metrics[cmp_name])
             ref_peaks = np.asarray(ref_view["peak_amplitudes"], dtype=np.float64)
@@ -550,44 +544,30 @@ def plot_scatterer_evaluation(
                     f"Compared methods '{ref_name}' and '{cmp_name}' do not contain scatterer points"
                 )
 
-            if "point_image_maxima" in ref_view:
-                ref_max = np.maximum(np.asarray(ref_view["point_image_maxima"], dtype=np.float64), 1e-12)
-                cmp_max = np.maximum(np.asarray(cmp_view["point_image_maxima"], dtype=np.float64), 1e-12)
-                ref_bg_rms = np.asarray(ref_view["point_background_rms"], dtype=np.float64)
-                cmp_bg_rms = np.asarray(cmp_view["point_background_rms"], dtype=np.float64)
+            if "point_background_rms" in ref_view:
+                ref_bg_rms = np.maximum(np.asarray(ref_view["point_background_rms"], dtype=np.float64), 1e-12)
+                cmp_bg_rms = np.maximum(np.asarray(cmp_view["point_background_rms"], dtype=np.float64), 1e-12)
             else:
-                ref_max = np.full(ref_peaks.shape, max(float(np.max(np.asarray(images_abs[ref_name]))), 1e-12))
-                cmp_max = np.full(cmp_peaks.shape, max(float(np.max(np.asarray(images_abs[cmp_name]))), 1e-12))
-                ref_bg_rms = np.full(ref_peaks.shape, float(ref_view["background_rms"]))
-                cmp_bg_rms = np.full(cmp_peaks.shape, float(cmp_view["background_rms"]))
+                ref_bg_rms = np.full(ref_peaks.shape, max(float(ref_view["background_rms"] or 1e-12), 1e-12))
+                cmp_bg_rms = np.full(cmp_peaks.shape, max(float(cmp_view["background_rms"] or 1e-12), 1e-12))
 
-            ax.scatter(ref_peaks / ref_max, cmp_peaks / cmp_max, s=30, alpha=0.7)
-            ax.plot([0, 1], [0, 1], color="red", linewidth=1, linestyle="--", label="y = x")
-            ax.scatter(
-                [float(np.mean(ref_bg_rms / ref_max))], [float(np.mean(cmp_bg_rms / cmp_max))],
-                s=110, marker="D", facecolors="none", edgecolors="black",
-                linewidths=1.5, label="bg_rms", zorder=5,
+            ref_snr = ref_peaks / ref_bg_rms
+            cmp_snr = cmp_peaks / cmp_bg_rms
+            ratio = cmp_snr / ref_snr
+
+            fig_ratio, ax_ratio = plt.subplots(1, 1, figsize=(8, 5))
+            ax_ratio.hist(ratio, bins=50, color="tab:blue", alpha=0.75, edgecolor="black")
+            ax_ratio.set_xlabel(f"{cmp_name} / {ref_name} SNR ratio")
+            ax_ratio.set_ylabel("Frequency")
+            ax_ratio.set_title(f"SNR ratio histogram: {cmp_name} / {ref_name} ({len(ratio)} points)")
+            ax_ratio.grid(True, alpha=0.3)
+            fig_ratio.tight_layout()
+            fig_ratio.savefig(
+                os.path.join(output_dir, f"scatt_snr_ratio_hist_{ref_name}_vs_{cmp_name}{sfx}.png"),
+                dpi=150,
+                bbox_inches="tight",
             )
-            ax.set_xlabel(f"{ref_name} peak / image max")
-            ax.set_ylabel(f"{cmp_name} peak / image max")
-            title_suffix = (
-                f"{len(ref_peaks)} points, {batch_size} examples"
-                if uses_batch
-                else f"{len(ref_peaks)} scatterers"
-            )
-            ax.set_title(f"{cmp_name} vs {ref_name} normalized ({title_suffix})")
-            ax.set_xlim(0.0, 1.0)
-            ax.set_ylim(0.0, 1.0)
-            ax.set_aspect("equal")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-        fig_norm.suptitle(f"Normalized peak amplitude comparison{sfx}")
-        fig_norm.tight_layout()
-        fig_norm.savefig(
-            os.path.join(output_dir, f"scatt_normalized_scatter{sfx}.png"),
-            dpi=150, bbox_inches="tight",
-        )
-        plt.close(fig_norm)
+            plt.close(fig_ratio)
 
     return all_metrics
 
