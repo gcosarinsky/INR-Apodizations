@@ -152,3 +152,73 @@ class DasInrTrainer(tf.keras.Model):
             self.w_norm_tracker.update_state(norm_value)
             self.reg_active_rate_tracker.update_state(reg_active)
         return predicted_image
+
+
+def build_mlp_inr(
+    input_dim: int,
+    hidden_units_config: int | float | list | tuple,
+    n_hidden_layers: int | None = None,
+    activation: str = "relu",
+    output_activation: str = "sigmoid",
+) -> tf.keras.Model:
+    """Build a flexible MLP that maps geometry features to apodization weights.
+
+    The MLP takes `input_dim` features as input and outputs a single scalar weight
+    in [0, 1] for each spatial point. Hidden layer sizes can be specified uniformly
+    (int) or per-layer (list/tuple).
+
+    Args:
+        input_dim: Number of input features.
+        hidden_units_config: Hidden layer size specification. Can be:
+            - int or float: All hidden layers have this size. Requires `n_hidden_layers`.
+            - list or tuple: Per-layer sizes. Length determines n_hidden_layers.
+              If `n_hidden_layers` is also provided and differs, a warning is logged
+              but the list length takes precedence.
+        n_hidden_layers: Number of hidden layers (used only when `hidden_units_config`
+            is int/float). Ignored if `hidden_units_config` is a list/tuple.
+        activation: Activation function for hidden layers (e.g., "relu", "tanh").
+        output_activation: Activation function for output layer (e.g., "sigmoid", "relu").
+
+    Returns:
+        Uncompiled tf.keras.Model that maps (batch, input_dim) -> (batch, 1).
+
+    Raises:
+        ValueError: If hidden_units_config is int but n_hidden_layers is None or <= 0.
+        TypeError: If hidden_units_config has unsupported type.
+    """
+    import warnings
+
+    # Normalize hidden_units_config to a list
+    if isinstance(hidden_units_config, (list, tuple)):
+        hidden_sizes = list(hidden_units_config)
+        inferred_n_hidden = len(hidden_sizes)
+
+        # Warn if n_hidden_layers conflicts with list length
+        if n_hidden_layers is not None and n_hidden_layers != inferred_n_hidden:
+            warnings.warn(
+                f"hidden_units_config is a list with {inferred_n_hidden} layers, "
+                f"but n_hidden_layers={n_hidden_layers} was also provided. "
+                f"Using list length {inferred_n_hidden}.",
+                UserWarning,
+            )
+    elif isinstance(hidden_units_config, (int, float)):
+        if n_hidden_layers is None or n_hidden_layers <= 0:
+            raise ValueError(
+                f"When hidden_units_config is int/float ({hidden_units_config}), "
+                f"n_hidden_layers must be a positive integer, got {n_hidden_layers}"
+            )
+        hidden_sizes = [int(hidden_units_config)] * int(n_hidden_layers)
+    else:
+        raise TypeError(
+            f"hidden_units_config must be int, float, list, or tuple; "
+            f"got {type(hidden_units_config)}"
+        )
+
+    # Build the model
+    inputs = tf.keras.Input(shape=(input_dim,), name="coords")
+    x = inputs
+    for i, units in enumerate(hidden_sizes):
+        x = tf.keras.layers.Dense(int(units), activation=activation, name=f"dense_{i + 1}")(x)
+    outputs = tf.keras.layers.Dense(1, activation=output_activation, name="weight_out")(x)
+    model = tf.keras.Model(inputs=inputs, outputs=outputs, name="inr_mlp")
+    return model
