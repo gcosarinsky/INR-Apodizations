@@ -27,7 +27,7 @@ import numpy as np
 import tensorflow as tf
 
 import helpers
-from inr_apodizations.modeling.trainer import DasInrTrainer
+from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
@@ -185,10 +185,12 @@ if eval_noise_enabled:
 
 features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]))
 output_activation = cfg["model"].get("output_activation", "sigmoid")
-apodization_model = helpers.build_mlp_inr(
+hidden_units_raw = cfg["model"].get("hidden_units")
+n_hidden_layers_raw = cfg["model"].get("n_hidden_layers")
+apodization_model = build_mlp_inr(
     input_dim=cm.n_physical_features,
-    hidden_units=int(cfg["model"]["hidden_units"]),
-    n_hidden=int(cfg["model"]["n_hidden_layers"]),
+    hidden_units_config=hidden_units_raw,
+    n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
     activation=cfg["model"]["activation"],
     output_activation=output_activation,
 )

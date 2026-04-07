@@ -422,27 +422,6 @@ def validate_dataset_shapes(
     assert gaussian_masks.dtype == np.float32 or gaussian_masks.dtype == np.float64, "gaussian_masks must be float"
 
 
-def build_mlp_inr(
-    input_dim: int = 3,
-    hidden_units: int = 8,
-    n_hidden: int = 3,
-    activation: str = "relu",
-    output_activation: str = "sigmoid",
-) -> tf.keras.Model:
-    """
-    Build a small MLP that maps `input_dim` features -> scalar weight [0,1].
-
-    Returns a compiled but un-trained `tf.keras.Model` (caller compiles with chosen optimizer/loss).
-    """
-    inputs = tf.keras.Input(shape=(input_dim,), name="coords")
-    x = inputs
-    for i in range(n_hidden):
-        x = tf.keras.layers.Dense(hidden_units, activation=activation, name=f"dense_{i + 1}")(x)
-    outputs = tf.keras.layers.Dense(1, activation=output_activation, name="weight_out")(x)
-    model = tf.keras.Model(inputs=inputs, outputs=outputs, name="inr_mlp")
-    return model
-
-
 def load_experiment_config(config_path: str) -> dict:
     """Load the sandbox experiment YAML configuration."""
     with open(config_path, "r", encoding="utf-8") as file:
