@@ -31,6 +31,8 @@ from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
+# New import for loss scaling (division by first‑batch loss)
+from inr_apodizations.modeling.losses import ScaledLoss
 import matplotlib.pyplot as plt
 
 
@@ -240,6 +242,7 @@ print(
 # Shared optional parameters for custom mae_db loss/metric.
 mae_db_ref_cfg = cfg["training"].get("mae_db_ref", None)
 mae_db_eps = float(cfg["training"].get("mae_db_eps", 1e-8))
+weight_decay = float(cfg["training"].get("weight_decay", 0.0))
 
 if mae_db_ref_cfg is None:
     mae_db_ref = None
@@ -295,6 +298,9 @@ if use_pixelwise_weights and isinstance(loss_name, str):
     elif loss_str in ("mse", "mean_squared_error"):
         loss_obj = _pixelwise_mse
 
+# Wrap the resolved loss with esto es par alinux=Loss (division by first‑batch loss, no extra factor)
+loss_obj = ScaledLoss(base_loss=loss_obj)
+
 # Resolve metrics from config with optional support for custom mae_db.
 metrics_cfg = cfg["training"].get("metric", "mae")
 def _resolve_metric(metric_item):
@@ -313,7 +319,10 @@ else:
     metrics_list = [_resolve_metric(metrics_cfg)]
 
 trainer.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])),
+    optimizer=tf.keras.optimizers.Adam(
+        learning_rate=float(cfg["training"]["learning_rate"]),
+        decay=weight_decay,
+    ),
     loss=loss_obj,
     metrics=metrics_list,
 )
