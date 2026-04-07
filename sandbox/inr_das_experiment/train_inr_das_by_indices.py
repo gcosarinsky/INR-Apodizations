@@ -242,6 +242,7 @@ print(
 # Shared optional parameters for custom mae_db loss/metric.
 mae_db_ref_cfg = cfg["training"].get("mae_db_ref", None)
 mae_db_eps = float(cfg["training"].get("mae_db_eps", 1e-8))
+weight_decay = float(cfg["training"].get("weight_decay", 0.0))
 
 if mae_db_ref_cfg is None:
     mae_db_ref = None
@@ -318,7 +319,10 @@ else:
     metrics_list = [_resolve_metric(metrics_cfg)]
 
 trainer.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=float(cfg["training"]["learning_rate"])),
+    optimizer=tf.keras.optimizers.Adam(
+        learning_rate=float(cfg["training"]["learning_rate"]),
+        decay=weight_decay,
+    ),
     loss=loss_obj,
     metrics=metrics_list,
 )

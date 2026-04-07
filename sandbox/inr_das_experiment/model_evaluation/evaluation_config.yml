@@ -1,7 +1,7 @@
 io:
   output_root: sandbox/inr_das_experiment/model_evaluation/outputs
   save_plot: true
-  model_path: sandbox/inr_das_experiment/outputs/20260406_160933
+  model_path: sandbox/inr_das_experiment/outputs/20260407_130013
   delayed_samples_path: sandbox/inr_das_experiment/model_evaluation/outputs/20260401_160355/delayed_samples_signal.npy
 
 phantom:
