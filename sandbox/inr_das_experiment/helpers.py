@@ -120,6 +120,7 @@ def _regenerate_targets_and_masks(
     z_grid: np.ndarray,
     sigma_x: float,
     sigma_z: float,
+    alpha: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Recompute targets and gaussian masks from delayed samples and scatterers.
 
@@ -156,7 +157,13 @@ def _regenerate_targets_and_masks(
             sigma_z=sigma_z,
         )
         gaussian_masks[idx] = gaussian_mask.astype(np.float32, copy=False)
-        targets[idx] = np.abs(das_uniform).astype(np.float32, copy=False) * gaussian_mask
+        abs_das = np.abs(das_uniform).astype(np.float32, copy=False)
+        if alpha is None:
+            targets[idx] = abs_das * gaussian_mask
+        else:
+            a = np.float32(alpha)
+            relaxed_mask = a + (np.float32(1.0) - a) * gaussian_mask
+            targets[idx] = abs_das * relaxed_mask
 
     return targets, gaussian_masks
 
@@ -165,6 +172,7 @@ def load_delayed_samples_dataset(
     folder: str,
     sigma_x: float | None = None,
     sigma_z: float | None = None,
+    alpha_override: float | None = None,
 ) -> Tuple[np.ndarray, np.ndarray | None, np.ndarray, np.ndarray, dict]:
     """
     Load delayed samples dataset, targets, gaussian masks and metadata from a dataset folder.
@@ -185,6 +193,11 @@ def load_delayed_samples_dataset(
         folder: Dataset folder containing delayed samples artifacts.
         sigma_x: Optional lateral sigma override in mm. Must be provided with ``sigma_z``.
         sigma_z: Optional axial sigma override in mm. Must be provided with ``sigma_x``.
+        alpha_override: Optional blending parameter for regenerated targets. Must be in
+            the interval [0.0, 1.0). When provided, targets will be regenerated using
+            the same sigma overrides and the relaxed target formula
+            ``alpha + (1-alpha) * gauss``. ``alpha_override=0`` reproduces the
+            default behavior.
 
     Raises:
         FileNotFoundError: If delayed samples, targets or gaussian masks files are missing.
@@ -194,11 +207,18 @@ def load_delayed_samples_dataset(
     masks_path = os.path.join(folder, "gaussian_masks_dataset.npy")
     info_path = os.path.join(folder, "delayed_samples_info.yaml")
 
-    regenerate = sigma_x is not None or sigma_z is not None
+    regenerate = sigma_x is not None or sigma_z is not None or alpha_override is not None
     if regenerate and (sigma_x is None or sigma_z is None):
         raise ValueError("sigma_x and sigma_z must be provided together")
     if regenerate and (float(sigma_x) <= 0.0 or float(sigma_z) <= 0.0):
         raise ValueError("sigma_x and sigma_z must be > 0")
+
+    if alpha_override is not None:
+        alpha_val = float(alpha_override)
+        if not (0.0 <= alpha_val < 1.0):
+            raise ValueError("alpha_override must be in the interval [0.0, 1.0)")
+        if not regenerate:
+            raise ValueError("alpha_override requires sigma_x and sigma_z to be provided for regeneration")
 
     if not os.path.exists(targets_path):
         raise FileNotFoundError("targets_dataset.npy not found in %s" % folder)
@@ -282,7 +302,7 @@ def load_delayed_samples_dataset(
     
 
     if regenerate:
-        print("Regenerating targets and gaussian masks with sigma_x=%.3f mm, sigma_z=%.3f mm" % (float(sigma_x), float(sigma_z)))
+        print("Regenerating targets and gaussian masks with sigma_x=%.3f mm, sigma_z=%.3f mm, alpha=%s" % (float(sigma_x), float(sigma_z), str(alpha_override)))
         scatterers = load_saved_scatterers(folder)
         x_grid, z_grid = _build_target_grids(folder)
         targets, gaussian_masks = _regenerate_targets_and_masks(
@@ -292,6 +312,7 @@ def load_delayed_samples_dataset(
             z_grid,
             sigma_x=float(sigma_x),
             sigma_z=float(sigma_z),
+            alpha=(float(alpha_override) if alpha_override is not None else None),
         )
         info = copy.deepcopy(info)
         info["runtime_target_override"] = {
@@ -299,25 +320,27 @@ def load_delayed_samples_dataset(
             "sigma_x": float(sigma_x),
             "sigma_z": float(sigma_z),
         }
+        if alpha_override is not None:
+            info["runtime_target_override"]["alpha"] = float(alpha_override)
 
     return delayed, noise, targets, gaussian_masks, info
 
 
-def get_target_sigma_override(config: dict) -> tuple[float | None, float | None]:
-    """Extract optional target sigma overrides from sandbox configuration.
+def get_target_regeneration_override(config: dict) -> tuple[float | None, float | None, float | None]:
+    """Extract optional target regeneration overrides from sandbox configuration.
 
     Args:
         config: Sandbox experiment configuration mapping.
 
     Returns:
-        Tuple ``(sigma_x, sigma_z)`` or ``(None, None)`` when disabled.
+        Tuple ``(sigma_x, sigma_z, alpha)`` or ``(None, None, None)`` when disabled.
 
     Raises:
         ValueError: If the override section is enabled but incomplete.
     """
     override_cfg = dict(config.get("target_regeneration", {}))
     if not bool(override_cfg.get("enabled", False)):
-        return None, None
+        return None, None, None
 
     sigma_x = override_cfg.get("sigma_x")
     sigma_z = override_cfg.get("sigma_z")
@@ -327,7 +350,14 @@ def get_target_sigma_override(config: dict) -> tuple[float | None, float | None]
             "when regeneration is enabled"
         )
 
-    return float(sigma_x), float(sigma_z)
+    alpha = override_cfg.get("alpha")
+    if alpha is not None:
+        alpha_val = float(alpha)
+        if not (0.0 <= alpha_val < 1.0):
+            raise ValueError("target_regeneration.alpha must be in [0.0, 1.0)")
+        alpha = alpha_val
+
+    return float(sigma_x), float(sigma_z), (float(alpha) if alpha is not None else None)
 
 
 def load_saved_beamforming_config(folder: str) -> dict:

@@ -1,5 +1,5 @@
 io:
-  dataset_folder: data/delayed_samples_dataset/20260401_120625
+  dataset_folder: data/delayed_samples_dataset/20260406_155448
   sandbox_output_root: sandbox/inr_das_experiment/outputs
   review_output_root: sandbox/inr_das_experiment/review_outputs
   # dataset_noise removed: noise must be provided as precomputed files in the dataset folder
@@ -8,6 +8,7 @@ target_regeneration:
   enabled: true
   sigma_x: 0.2
   sigma_z: 0.2
+  alpha: 0.1
 
 model:
   physical_feature_set: distance_depth_edge
@@ -16,7 +17,7 @@ model:
   activation: relu
   output_activation: sigmoid
   scaled_features: true
-  feature_chunk_size: 262144
+  feature_chunk_size: 65536
  
 eval_noise:
   enabled: true

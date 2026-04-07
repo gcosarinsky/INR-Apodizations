@@ -205,11 +205,12 @@ print(f"Reviewing training run: {run_timestamp}")
 print(f"Dataset folder (from run config): {dataset_folder}")
 print(f"Using training artifacts from: {artifacts_dir}")
 
-sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(run_experiment_cfg)
+sigma_x_override, sigma_z_override, alpha_override = helpers.get_target_regeneration_override(run_experiment_cfg)
 delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
+    alpha_override=alpha_override,
 )
 physical_feature_set = str(
     run_experiment_cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")

@@ -47,12 +47,13 @@ dataset_folder = Path(cfg["io"]["dataset_folder"])
 if not dataset_folder.is_absolute():
     dataset_folder = config.PROJ_ROOT / dataset_folder
 dataset_folder = str(dataset_folder)
-sigma_x_override, sigma_z_override = helpers.get_target_sigma_override(cfg)
+sigma_x_override, sigma_z_override, alpha_override = helpers.get_target_regeneration_override(cfg)
 print("Loading dataset from:", dataset_folder)
 delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
+    alpha_override=alpha_override,
 )
 # Log noise provenance when present
 if info.get("precomputed_noise_source", {}):

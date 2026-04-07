@@ -1,7 +1,7 @@
 io:
   output_root: sandbox/inr_das_experiment/model_evaluation/outputs
   save_plot: true
-  model_path: sandbox/inr_das_experiment/outputs/20260401_130029
+  model_path: sandbox/inr_das_experiment/outputs/20260406_160933
   delayed_samples_path: sandbox/inr_das_experiment/model_evaluation/outputs/20260401_160355/delayed_samples_signal.npy
 
 phantom:
@@ -12,8 +12,8 @@ phantom:
     x_count: 9
     z_count: 6
     x_center_mm: 0.0
-    z_start_mm: 8.0
-    x_spacing_mm: 3.0
+    z_start_mm: 4.0
+    x_spacing_mm: 4.0
     z_spacing_mm: 4.0
     amplitude_range: [0.4, 1.0]
   list:

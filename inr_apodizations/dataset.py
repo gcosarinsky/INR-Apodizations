@@ -54,16 +54,18 @@ def generate_unit_gaussian_mask(scatterers, x_grid, z_grid, sigma_x=0.001, sigma
     return np.exp(exponent, dtype=np.float32).sum(axis=0, dtype=np.float32)
 
 
-def generate_das_modulated_target(das_image, scatterers, x_grid, z_grid, sigma_x=0.001, sigma_z=0.001):
+def generate_das_modulated_target(das_image, scatterers, x_grid, z_grid, sigma_x=0.001, sigma_z=0.001, alpha=0.0):
     """
     Generate target by modulating a DAS image with a unit-amplitude Gaussian mask.
 
     das_image: ndarray (nz, nx), real or complex
     scatterers: (n_scatterers, >=2) - columns include x, z as first two values
     x_grid, z_grid: meshgrid arrays of shape (nz, nx)
+    alpha: Blending factor for relaxed targets. When alpha=0, uses the modulated target. When alpha>0, adds a constant background to avoid zeros.
 
     TODO: target could be RF instead of abs
     """
+    assert alpha >= 0.0 and alpha < 1.0, "alpha must be in the range [0, 1)"
     gaussian_mask = generate_unit_gaussian_mask(
         scatterers,
         x_grid,
@@ -71,7 +73,8 @@ def generate_das_modulated_target(das_image, scatterers, x_grid, z_grid, sigma_x
         sigma_x=sigma_x,
         sigma_z=sigma_z,
     )
-    target = np.abs(das_image).astype(np.float32) * gaussian_mask
+    relaxed_mask = alpha + (1 - alpha) * gaussian_mask
+    target = np.abs(das_image).astype(np.float32) * relaxed_mask
     return target.astype(np.float32)
 
 
