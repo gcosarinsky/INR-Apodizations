@@ -1,0 +1,54 @@
+io:
+  dataset_folder: "data/delayed_samples_dataset/20260406_155448"
+  sandbox_output_root: "sandbox/outputs/kt_tuning"
+
+model:
+  scaled_features: true
+  feature_chunk_size: 16384
+  physical_feature_set: "distance_depth_edge"
+  activation: "relu"
+  output_activation: "sigmoid"
+
+training:
+  seed: 42
+  train_fraction: 0.8
+  batch_size: 2
+  epochs: 20
+  early_stopping_patience: 10
+  reduce_lr_patience: 5
+  weight_decay: 1e-5
+  # Baseline for comparison
+  baseline_f_number: 0.5
+  mask_weighting:
+    enabled: true
+    lambda: 0.5
+
+tuning:
+  max_trials: 1
+  executions_per_trial: 1
+  # Candidate architecture generation ranges
+  n_layers_min: 2
+  n_layers_max: 6
+  n_layers_step: 1
+  units_min: 4
+  units_max: 32
+  units_step: 4
+  # Candidate architecture policy and size control
+  non_increasing: true
+  max_candidates: 32
+  candidate_seed: 42
+  reg_lambda_min: 1e-4
+  reg_lambda_max: 1e-1
+  reg_tau_min: 0.2
+  reg_tau_max: 0.8
+  lr_min: 1e-4
+  lr_max: 1e-2
+
+plots:
+  cmap: "gray"
+  vmin_db: -60.0
+  vmax_db: 0.0
+
+scatterer_eval:
+  enabled: true
+  radius_mm: 1.5
