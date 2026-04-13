@@ -36,7 +36,6 @@ tuning:
   # Candidate architecture policy and size control
   non_increasing: true
   max_candidates: 32
-  candidate_seed: 42
   reg_lambda_min: 1e-4
   reg_lambda_max: 1e-1
   reg_tau_min: 0.2
