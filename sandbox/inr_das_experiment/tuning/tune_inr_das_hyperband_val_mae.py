@@ -98,7 +98,7 @@ train_idx, val_idx = helpers.split_train_validation_indices(
     seed=seed
 )
 # Optionally reduce the number of validation examples (config: training.val_subset_size)
-val_subset_size = int(cfg["training"].get("val_subset_size", 1))
+val_subset_size = int(cfg["training"].get("val_subset_size", 0))
 if val_subset_size > 0 and val_subset_size < len(val_idx):
     rnd = np.random.RandomState(seed)
     val_idx = list(rnd.choice(val_idx, size=val_subset_size, replace=False))
