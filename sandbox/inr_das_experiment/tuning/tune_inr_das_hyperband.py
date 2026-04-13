@@ -1,8 +1,7 @@
-"""Bayesian Hyperparameter Tuning for INR-based DAS using Keras Tuner.
+"""Hyperband Hyperparameter Tuning for INR-based DAS using Keras Tuner.
 
-This script searches for the optimal MLP architecture and regularization
-parameters to maximize the number of scatterers that achieve a better SNR
-than the Hanning apodization baseline.
+This script is a copy of `tune_inr_das.py` but uses Keras Tuner's
+Hyperband strategy instead of BayesianOptimization.
 """
 from __future__ import annotations
 
@@ -46,8 +45,6 @@ from inr_apodizations.modeling.losses import ScaledLoss
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from scatterer_metrics import compute_scatterer_metrics
 
-
-# Candidate generation is provided by inr_apodizations.tuning.utils.generate_candidate_architectures
 
 # --- Configuration & Data Loading ---
 CONFIG_PATH = Path("configs/tune_config.yml")
@@ -127,7 +124,7 @@ val_delayed_tf = tf.convert_to_tensor(val_delayed)
 hanning_complex = tf.reduce_sum(val_delayed_tf * tf.cast(hanning_weights_b, val_delayed_tf.dtype), axis=1)
 hanning_abs = tf.abs(hanning_complex).numpy()
 
-h_metrics = compute_scatterer_metrics(hanning_abs, val_scatterers, cm, radius_mm=cfg["scatterer_eval"]["radius_mm"])
+h_metrics = compute_scatterer_metrics(hanning_abs, val_scatterers, cm, radius_mm=cfg["scatterer_eval"]["radius_mm"]) 
 # Extract individual SNRs: peak / background_rms (expanded per point)
 h_peaks = h_metrics["aggregated"]["peak_amplitudes"]
 h_bg_rms = h_metrics["aggregated"]["point_background_rms"]
@@ -203,7 +200,7 @@ def build_model(hp):
     lr = hp.Float("lr", cfg["tuning"]["lr_min"], cfg["tuning"]["lr_max"], sampling="log")
     loss_fn = _pixelwise_mae if use_pixelwise_weights else tf.keras.losses.MeanAbsoluteError()
     trainer.compile(
-        jit_compile=True,
+        jit_compile=False, # Hyperband may not benefit from JIT due to short epochs; set to True if desired.
         optimizer=tf.keras.optimizers.experimental.AdamW(
             weight_decay=float(cfg["training"]["weight_decay"]),
             learning_rate=lr,
@@ -220,13 +217,18 @@ timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 project_name = f"inr_das_tuning_{timestamp}"
 tuning_dir = Path(cfg["io"]["sandbox_output_root"]) / project_name
 
-tuner = kt.BayesianOptimization(
+# Hyperband params (from config)
+max_epochs = int(cfg["tuning"].get("hyperband_max_epochs", cfg["training"]["epochs"]))
+factor = int(cfg["tuning"].get("hyperband_factor", 3))
+print(f"Using Hyperband: max_epochs={max_epochs}, factor={factor}")
+
+tuner = kt.Hyperband(
     build_model,
     objective=kt.Objective("val_snr_better_count", direction="max"),
-    max_trials=cfg["tuning"]["max_trials"],
-    executions_per_trial=cfg["tuning"]["executions_per_trial"],
+    max_epochs=max_epochs,
+    factor=factor,
     directory=str(tuning_dir),
-    project_name="kt_search"
+    project_name="kt_hyperband"
 )
 
 # Prepare datasets for fit
@@ -244,15 +246,16 @@ val_ds = helpers.build_tf_dataset_by_indices(
     batch_size=cfg["training"]["batch_size"], shuffle=False, seed=seed
 )
 
-print("\nStarting Bayesian Optimization...")
+print("\nStarting Hyperband Optimization...")
 tuner.search(
     train_ds,
-    epochs=cfg["training"]["epochs"],
+    epochs=max_epochs,
     validation_data=val_ds,
     callbacks=[
         SnrImprovementCallback(val_delayed_tf, val_scatterers, hanning_snrs, cm),
-        tf.keras.callbacks.EarlyStopping(monitor="val_snr_better_count", mode="max", patience=cfg["training"]["early_stopping_patience"])
-    ]
+        tf.keras.callbacks.EarlyStopping(monitor="val_snr_better_count", mode="max", patience=cfg["training"]["early_stopping_patience"]) 
+    ],
+    verbose=True
 )
 
 # --- Results & Artifacts ---

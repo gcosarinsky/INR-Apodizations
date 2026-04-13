@@ -15,9 +15,22 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+import os
+
+# Configure XLA using the active Conda environment before importing TensorFlow.
+conda_prefix = os.environ.get("CONDA_PREFIX", "").replace("\\", "/")
+if not conda_prefix:
+    raise RuntimeError(
+        "CONDA_PREFIX is not set. Activate the Conda environment before running this script."
+    )
+
+os.environ["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir={conda_prefix}"
+os.environ["PATH"] = f"{conda_prefix}/bin;" + os.environ["PATH"]
+
+print(f"XLA search path configured to: {conda_prefix}")
+print(f"Effective XLA env: XLA_FLAGS={os.environ.get('XLA_FLAGS', '(unset)')}")
+
 import tensorflow as tf
-# Disable XLA/JIT for this script to avoid libdevice/XLA compilation warnings
-tf.config.optimizer.set_jit(False)
 import optuna
 
 # Make `helpers.py` importable when running from project root
@@ -96,6 +109,7 @@ def build_and_compile_trainer(cfg, cm, candidate_architectures, arch_index, reg_
             learning_rate=float(lr),
         ),
         loss=ScaledLoss(loss_fn),
+        weighted_metrics=[],
     )
     return trainer
 
@@ -110,6 +124,12 @@ random.seed(seed)
 np.random.seed(seed)
 
 candidate_architectures = generate_candidate_architectures(cfg["tuning"], fallback_seed=seed)
+# Ensure architectures are immutable for internal use
+candidate_architectures = [tuple(a) for a in candidate_architectures]
+# Optuna persistent storage expects categorical choices to be simple types
+# so expose architectures as serializable string labels (e.g. "16-8-4") and
+# map labels back to tuples when building the model.
+candidate_architecture_labels = ["-".join(map(str, arch)) for arch in candidate_architectures]
 print(f"Generated {len(candidate_architectures)} candidate architectures")
 
 # Data & coordinate manager
@@ -167,28 +187,28 @@ val_ds = helpers.build_tf_dataset_by_indices(
     batch_size=cfg["training"]["batch_size"], shuffle=False, seed=seed,
 )
 
-# Smoke test: run a single-epoch training outside the Optuna study to verify
-# `trainer.fit` works and to surface any TF/CUDA/XLA errors early.
-print("Running 1-epoch smoke test (outside Optuna)...")
-try:
-    smoke_arch_index = 0
-    smoke_reg_lambda = float(cfg["tuning"]["reg_lambda_min"])
-    smoke_reg_tau = float(cfg["tuning"]["reg_tau_min"])
-    smoke_lr = float(cfg["tuning"]["lr_min"])
-    smoke_trainer = build_and_compile_trainer(cfg, cm, candidate_architectures,
-                                              smoke_arch_index, smoke_reg_lambda,
-                                              smoke_reg_tau, smoke_lr)
-    smoke_trainer.fit(
-        train_ds,
-        epochs=1,
-        validation_data=val_ds,
-        callbacks=[],
-        verbose=1,
-    )
-    print("Smoke test completed successfully.")
-except Exception as e:
-    print("Smoke test failed with exception:", repr(e))
-    raise
+# # Smoke test: run a single-epoch training outside the Optuna study to verify
+# # `trainer.fit` works and to surface any TF/CUDA/XLA errors early.
+# print("Running 1-epoch smoke test (outside Optuna)...")
+# try:
+#     smoke_arch_index = 0
+#     smoke_reg_lambda = float(cfg["tuning"]["reg_lambda_min"])
+#     smoke_reg_tau = float(cfg["tuning"]["reg_tau_min"])
+#     smoke_lr = float(cfg["tuning"]["lr_min"])
+#     smoke_trainer = build_and_compile_trainer(cfg, cm, candidate_architectures,
+#                                               smoke_arch_index, smoke_reg_lambda,
+#                                               smoke_reg_tau, smoke_lr)
+#     smoke_trainer.fit(
+#         train_ds,
+#         epochs=1,
+#         validation_data=val_ds,
+#         callbacks=[],
+#         verbose=1,
+#     )
+#     print("Smoke test completed successfully.")
+# except Exception as e:
+#     print("Smoke test failed with exception:", repr(e))
+#     raise
 
 # Output folder (use sandbox output root from config)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -209,7 +229,13 @@ study = optuna.create_study(direction="maximize", sampler=sampler, pruner=pruner
 
 
 def objective(trial: optuna.trial.Trial):
-    arch_index = trial.suggest_int("architecture_index", 0, len(candidate_architectures) - 1)
+    # Treat architectures as categorical choices to avoid ordinal assumptions.
+    # Use string labels for storage safety and parse back to tuples.
+    arch_label = trial.suggest_categorical("architecture", candidate_architecture_labels)
+    arch = tuple(map(int, arch_label.split("-")))
+    arch_index = candidate_architectures.index(arch)
+    # Log architecture being tested for traceability
+    print(f"Trial {trial.number}: testing architecture: {list(arch)}")
     reg_lambda = trial.suggest_float(
         "reg_lambda",
         float(cfg["tuning"]["reg_lambda_min"]),
@@ -232,16 +258,19 @@ def objective(trial: optuna.trial.Trial):
 
     optuna_cb = OptunaPruningCallback(trial, val_delayed_tf, val_scatterers, hanning_snrs, cm, cfg)
 
+    # Debug logs: show when fit starts and ends (flush to ensure immediate output).
+    print(f"Trial {trial.number}: starting fit (epochs={cfg['training']['epochs']})", flush=True)
     try:
         trainer.fit(
             train_ds,
             epochs=cfg["training"]["epochs"],
             validation_data=val_ds,
             callbacks=[optuna_cb],
-            verbose=0,
+            verbose=1,
         )
     except optuna.exceptions.TrialPruned:
         raise
+    print(f"Trial {trial.number}: fit completed", flush=True)
 
     return float(optuna_cb.best)
 
@@ -254,13 +283,17 @@ study.optimize(objective, n_trials=n_trials, n_jobs=1)
 # Save best hyperparameters
 best_trial = study.best_trial
 best_hps = best_trial.params
-best_arch = candidate_architectures[int(best_hps["architecture_index"])]
+# Optuna now stores the chosen architecture under the "architecture" key
+best_arch = best_hps.get("architecture")
+if best_arch is None and "architecture_index" in best_hps:
+    # backward compatibility: older runs might have used the index key
+    best_arch = candidate_architectures[int(best_hps["architecture_index"])]
 best_config = {
     "hidden_units": [int(v) for v in best_arch],
     "reg_lambda": float(best_hps.get("reg_lambda")),
     "reg_tau": float(best_hps.get("reg_tau")),
     "lr": float(best_hps.get("lr")),
-}
+    }
 best_config_path = output_dir / "best_config.yml"
 with open(best_config_path, "w") as f:
     yaml.safe_dump(best_config, f, sort_keys=False)
