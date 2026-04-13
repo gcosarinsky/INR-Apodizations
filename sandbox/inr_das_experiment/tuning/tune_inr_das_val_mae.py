@@ -1,7 +1,7 @@
 """Hyperband Hyperparameter Tuning for INR-based DAS using Keras Tuner.
 
-This script is a copy of `tune_inr_das.py` but uses Keras Tuner's
-Hyperband strategy instead of BayesianOptimization.
+This script is a copy of `tune_inr_das_hyperband.py` but uses `val_mae`
+as the Keras Tuner objective (to be minimized).
 """
 from __future__ import annotations
 
@@ -125,58 +125,6 @@ def _pixelwise_mae(y_true, y_pred):
     """
     return tf.abs(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
 
-# --- Pre-compute Hanning Baseline ---
-print("Computing Hanning baseline SNR...")
-baseline_f = float(cfg["training"]["baseline_f_number"])
-apods_h = compute_dynamic_apodizations_tf(cm=cm, f_number=baseline_f, methods=("hanning",), 
-                                          scaled=bool(cfg["model"]["scaled_features"]))
-hanning_weights = apods_h["hanning"]
-hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
-
-# Compute Hanning SNR for each scatterer in val set
-val_delayed_tf = tf.convert_to_tensor(val_delayed)
-hanning_complex = tf.reduce_sum(val_delayed_tf * tf.cast(hanning_weights_b, val_delayed_tf.dtype), axis=1)
-hanning_abs = tf.abs(hanning_complex).numpy()
-
-h_metrics = compute_scatterer_metrics(hanning_abs, val_scatterers, cm, radius_mm=cfg["scatterer_eval"]["radius_mm"]) 
-# Extract individual SNRs: peak / background_rms (expanded per point)
-h_peaks = h_metrics["aggregated"]["peak_amplitudes"]
-h_bg_rms = h_metrics["aggregated"]["point_background_rms"]
-hanning_snrs = h_peaks / (h_bg_rms + 1e-12)
-
-print(f"Hanning baseline ready. Mean SNR: {np.mean(hanning_snrs):.4f}")
-
-# --- Custom Metric Callback ---
-class SnrImprovementCallback(tf.keras.callbacks.Callback):
-    def __init__(self, val_delayed_tf, val_scatterers, hanning_snrs, cm):
-        super().__init__()
-        self.val_delayed_tf = val_delayed_tf
-        self.val_scatterers = val_scatterers
-        self.hanning_snrs = hanning_snrs
-        self.cm = cm
-
-    def on_epoch_end(self, epoch, logs=None):
-        # Reconstruct validation set with current INR
-        # Note: We use the full val set here; for very large datasets, use a subset.
-        pred_complex, _ = self.model.reconstruct_image(self.val_delayed_tf, training=False)
-        pred_abs = np.abs(pred_complex.numpy())
-        
-        # Compute metrics
-        metrics = compute_scatterer_metrics(pred_abs, self.val_scatterers, self.cm, 
-                                            radius_mm=cfg["scatterer_eval"]["radius_mm"])
-        inr_peaks = metrics["aggregated"]["peak_amplitudes"]
-        inr_bg_rms = metrics["aggregated"]["point_background_rms"]
-        inr_snrs = inr_peaks / (inr_bg_rms + 1e-12)
-        
-        # Calculate ratio and count improvements
-        snr_ratios = inr_snrs / (self.hanning_snrs + 1e-12)
-        better_count = int(np.sum(snr_ratios > 1.0))
-        better_fraction = better_count / len(snr_ratios)
-        
-        logs["val_snr_better_count"] = better_count
-        logs["val_snr_better_fraction"] = better_fraction
-        print(f" - val_snr_better_count: {better_count}/{len(snr_ratios)} ({better_fraction:.2%})")
-
 # --- Tuner Model Builder ---
 def build_model(hp):
     # 1. Explicit architecture candidate selected by index.
@@ -207,7 +155,7 @@ def build_model(hp):
                                               sampling="log"),
         weight_regularization_tau=hp.Float("reg_tau", 
                                            cfg["tuning"]["reg_tau_min"], 
-                                           cfg["tuning"]["reg_tau_max"])
+                                           cfg["tuning"]["reg_tau_max"]) 
     )
     
     # 3. Compilation
@@ -220,6 +168,7 @@ def build_model(hp):
             decay=float(cfg["training"]["weight_decay"]),
         ),
         loss=ScaledLoss(loss_fn),
+        metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae")],
         weighted_metrics=[],
     )
     
@@ -238,7 +187,7 @@ print(f"Using Hyperband: max_epochs={max_epochs}, factor={factor}")
 with strategy.scope():
     tuner = kt.Hyperband(
         build_model,
-        objective=kt.Objective("val_snr_better_count", direction="max"),
+        objective=kt.Objective("val_mae", direction="min"),
         max_epochs=max_epochs,
         factor=factor,
         directory=str(tuning_dir),
@@ -266,8 +215,7 @@ tuner.search(
     epochs=max_epochs,
     validation_data=val_ds,
     callbacks=[
-        SnrImprovementCallback(val_delayed_tf, val_scatterers, hanning_snrs, cm),
-        tf.keras.callbacks.EarlyStopping(monitor="val_snr_better_count", mode="max", patience=cfg["training"]["early_stopping_patience"]) 
+        tf.keras.callbacks.EarlyStopping(monitor="val_mae", mode="min", patience=cfg["training"]["early_stopping_patience"]) 
     ],
     verbose=True
 )
