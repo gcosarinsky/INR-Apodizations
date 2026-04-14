@@ -13,7 +13,7 @@ training:
   seed: 42
   train_fraction: 0.8
   batch_size: 2
-  epochs: 1
+  epochs: 27
   early_stopping_patience: 5
   reduce_lr_patience: 5
   weight_decay: 1e-5
@@ -28,14 +28,14 @@ tuning:
   executions_per_trial: 1
   # Candidate architecture generation ranges
   n_layers_min: 2
-  n_layers_max: 6
+  n_layers_max: 5
   n_layers_step: 1
   units_min: 4
   units_max: 32
   units_step: 4
   # Candidate architecture policy and size control
   non_increasing: true
-  max_candidates: 4
+  max_candidates: 32
   reg_lambda_min: 1e-4
   reg_lambda_max: 1e-1
   reg_tau_min: 0.2
@@ -43,7 +43,7 @@ tuning:
   lr_min: 1e-4
   lr_max: 1e-2
   # Hyperband-specific parameters (used by tune_inr_das_hyperband.py)
-  hyperband_max_epochs: 2
+  hyperband_max_epochs: 27
   hyperband_factor: 3
 
 plots:

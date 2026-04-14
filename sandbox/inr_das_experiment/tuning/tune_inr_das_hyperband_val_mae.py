@@ -222,6 +222,12 @@ tuner.search(
 
 # --- Results & Artifacts ---
 print("\nTuning Finished!")
+# Save per-architecture scores (trials grouped by candidate architecture)
+try:
+    helpers.save_tuner_architecture_scores(tuner, candidate_architectures, str(tuning_dir), objective_name="val_mae")
+    print(f"Per-architecture scores saved to: {tuning_dir}")
+except Exception as e:
+    print("Warning: failed to save per-architecture scores:", e)
 best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
 best_arch_index = int(best_hps.get("architecture_index"))
 best_hidden_units = candidate_architectures[best_arch_index]
@@ -231,7 +237,7 @@ for key in best_hps.values:
     print(f"  {key}: {best_hps.get(key)}")
 print(f"  hidden_units: {best_hidden_units}")
 
-# Save best config as YAML
+# Save best config as YAML.
 best_config_path = tuning_dir / "best_config.yml"
 best_config = {
     "hidden_units": [int(v) for v in best_hidden_units],
@@ -239,7 +245,14 @@ best_config = {
     "reg_tau": float(best_hps.get("reg_tau")),
     "lr": float(best_hps.get("lr")),
 }
+
 with open(best_config_path, "w") as f:
     yaml.safe_dump(best_config, f, sort_keys=False)
+
+# Save all candidate architectures for reference
+candidates_path = tuning_dir / "candidate_architectures.yml"
+with open(candidates_path, "w") as f:
+    yaml.safe_dump({"candidates": candidate_architectures}, f, sort_keys=False)
+
 
 print(f"Artifacts saved in: {tuning_dir}")

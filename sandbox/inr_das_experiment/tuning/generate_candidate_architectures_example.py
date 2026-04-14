@@ -26,5 +26,11 @@ print(f"Generated {len(candidates)} candidate architectures from {cfg_path}")
 for i, arch in enumerate(candidates):
     print(f"{i}: {arch}")
 
+# Save candidates to a file for inspection
+output_path = Path("candidate_architectures.yml")
+# Prepare a YAML-friendly structure and write it
+candidates_for_yaml = [{"index": i, "architecture": arch} for i, arch in enumerate(candidates)]
+output_path.write_text(yaml.safe_dump({"candidates": candidates_for_yaml}, sort_keys=False))
+print(f"Candidate architectures saved to {output_path}")
 
 
