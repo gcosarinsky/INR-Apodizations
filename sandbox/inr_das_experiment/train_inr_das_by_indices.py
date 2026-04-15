@@ -13,6 +13,7 @@ The script keeps logic direct and sandbox-oriented. Configuration lives in
 """
 from __future__ import annotations
 
+import json
 import os
 import pprint
 import random
@@ -28,6 +29,7 @@ import tensorflow as tf
 
 import helpers
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
+from inr_apodizations.modeling.metrics import MaskedMAE
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
@@ -165,6 +167,7 @@ val_ds = helpers.build_tf_dataset_by_indices(
     delayed,
     targets,
     indices=val_idx,
+    sample_weights=train_loss_weights,
     batch_size=int(cfg["training"]["batch_size"]),
     shuffle=False,
     seed=int(cfg["training"]["seed"]),
@@ -318,6 +321,10 @@ if isinstance(metrics_cfg, (list, tuple)):
 else:
     metrics_list = [_resolve_metric(metrics_cfg)]
 
+weighted_metrics_list = []
+if use_pixelwise_weights:
+    weighted_metrics_list.append(MaskedMAE(name="masked_mae"))
+
 trainer.compile(
     optimizer=tf.keras.optimizers.Adam(
         learning_rate=float(cfg["training"]["learning_rate"]),
@@ -325,6 +332,7 @@ trainer.compile(
     ),
     loss=loss_obj,
     metrics=metrics_list,
+    weighted_metrics=weighted_metrics_list,
 )
 
 # Keep a deterministic baseline prediction from random INR initialization.
@@ -464,6 +472,7 @@ helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effectiv
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))
+
 helpers.plot_training_curves(
     history.history,
     output_path=str(Path(sandbox_dir) / "training_loss.png"),
@@ -548,8 +557,81 @@ for x_value in x_values_apod:
         hanning_apod=hanning_weights.numpy(),
     )
 
-# --- Scatterer metrics evaluation (full validation set) ---
+validation_targets = targets[val_idx].astype(np.float32, copy=False)
+validation_sample_weights = (
+    train_loss_weights[val_idx].astype(np.float32, copy=False)
+    if train_loss_weights is not None
+    else None
+)
 scatterer_eval_cfg = cfg.get("scatterer_eval", {})
+radius_mm_eval = float(scatterer_eval_cfg.get("radius_mm", 1.5))
+hist_bins_eval = int(scatterer_eval_cfg.get("hist_bins", 50))
+eval_batch_size = int(scatterer_eval_cfg.get("eval_batch_size", cfg["training"].get("batch_size", 1)))
+n_val = int(len(val_idx))
+
+predicted_val_abs_list = []
+uniform_val_abs_list = []
+hanning_val_abs_list = []
+boxcar_val_abs_list = []
+
+hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
+boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)
+
+for start in range(0, n_val, eval_batch_size):
+    end = min(start + eval_batch_size, n_val)
+    idx_chunk = val_idx[start:end]
+
+    if eval_noise_enabled:
+        if noise is None:
+            raise ValueError(
+                "Eval noise requested but dataset does not contain precomputed noise. "
+                "Provide delayed_samples_noise.npy or delayed_samples_combined.npy."
+            )
+        sig_chunk = delayed[idx_chunk].astype(np.complex64, copy=False)
+        noise_chunk = noise[idx_chunk].astype(np.complex64, copy=False)
+        combined_chunk = sig_chunk + eval_noise_scale * noise_chunk
+        val_delayed_chunk = tf.convert_to_tensor(combined_chunk)
+    else:
+        val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
+
+    predicted_chunk_complex, weights_chunk = trainer.reconstruct_image(val_delayed_chunk, training=False)
+    predicted_val_abs_list.append(tf.abs(predicted_chunk_complex).numpy())
+
+    uniform_val_abs_list.append(tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1)).numpy())
+
+    hanning_val_complex_chunk = tf.reduce_sum(
+        val_delayed_chunk * tf.cast(hanning_weights_b, val_delayed_chunk.dtype), axis=1
+    )
+    hanning_val_abs_list.append(tf.abs(hanning_val_complex_chunk).numpy())
+
+    boxcar_val_complex_chunk = tf.reduce_sum(
+        val_delayed_chunk * tf.cast(boxcar_weights_b, val_delayed_chunk.dtype), axis=1
+    )
+    boxcar_val_abs_list.append(tf.abs(boxcar_val_complex_chunk).numpy())
+
+predicted_val_abs = np.concatenate(predicted_val_abs_list, axis=0)
+uniform_val_abs = np.concatenate(uniform_val_abs_list, axis=0)
+hanning_val_abs = np.concatenate(hanning_val_abs_list, axis=0)
+boxcar_val_abs = np.concatenate(boxcar_val_abs_list, axis=0)
+
+images_abs_eval = {
+    "uniform": uniform_val_abs,
+    "hanning": hanning_val_abs,
+    "inr_after": predicted_val_abs,
+    "boxcar": boxcar_val_abs,
+}
+
+validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
+    images_abs=images_abs_eval,
+    targets=validation_targets,
+    scatterers_xy=None,
+    cm=cm,
+    sample_weights=validation_sample_weights,
+    radius_mm=radius_mm_eval,
+    hist_bins=hist_bins_eval,
+)
+
+# --- Scatterer metrics evaluation (full validation set) ---
 if bool(scatterer_eval_cfg.get("enabled", False)):
     try:
         scatterers_all = helpers.load_saved_scatterers(dataset_folder)
@@ -561,71 +643,15 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             s[:, :2] *= 1000.0
             scatterers_batch.append(s[:, :2])
 
-        radius_mm_eval = float(scatterer_eval_cfg.get("radius_mm", 1.5))
-        hist_bins_eval = int(scatterer_eval_cfg.get("hist_bins", 50))
-
-        # Reconstruct full validation set images in smaller chunks to avoid GPU OOM.
-        eval_batch_size = int(scatterer_eval_cfg.get("eval_batch_size", cfg["training"].get("batch_size", 1)))
-        n_val = int(len(val_idx))
-
-        # Prepare lists to accumulate per-chunk results
-        predicted_val_abs_list = []
-        uniform_val_abs_list = []
-        hanning_val_abs_list = []
-        boxcar_val_abs_list = []
-
-        # Precompute baseline apodization batches (will be cast per-chunk)
-        hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
-        boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)
-
-        for start in range(0, n_val, eval_batch_size):
-            end = min(start + eval_batch_size, n_val)
-            idx_chunk = val_idx[start:end]
-
-            # Build tensor for this chunk and run reconstruction. Use precomputed
-            # noise when requested (the loader returns `noise` separately).
-            if eval_noise_enabled:
-                if noise is None:
-                    raise ValueError(
-                        "Eval noise requested but dataset does not contain precomputed noise. "
-                        "Provide delayed_samples_noise.npy or delayed_samples_combined.npy."
-                    )
-                sig_chunk = delayed[idx_chunk].astype(np.complex64, copy=False)
-                noise_chunk = noise[idx_chunk].astype(np.complex64, copy=False)
-                combined_chunk = sig_chunk + eval_noise_scale * noise_chunk
-                val_delayed_chunk = tf.convert_to_tensor(combined_chunk)
-            else:
-                val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
-
-            predicted_chunk_complex, weights_chunk = trainer.reconstruct_image(
-                val_delayed_chunk, training=False
-            )
-            predicted_val_abs_list.append(tf.abs(predicted_chunk_complex).numpy())
-
-            uniform_val_abs_list.append(tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1)).numpy())
-
-            hanning_val_complex_chunk = tf.reduce_sum(
-                val_delayed_chunk * tf.cast(hanning_weights_b, val_delayed_chunk.dtype), axis=1
-            )
-            hanning_val_abs_list.append(tf.abs(hanning_val_complex_chunk).numpy())
-
-            boxcar_val_complex_chunk = tf.reduce_sum(
-                val_delayed_chunk * tf.cast(boxcar_weights_b, val_delayed_chunk.dtype), axis=1
-            )
-            boxcar_val_abs_list.append(tf.abs(boxcar_val_complex_chunk).numpy())
-
-        # Concatenate chunks back into full arrays
-        predicted_val_abs = np.concatenate(predicted_val_abs_list, axis=0)
-        uniform_val_abs = np.concatenate(uniform_val_abs_list, axis=0)
-        hanning_val_abs = np.concatenate(hanning_val_abs_list, axis=0)
-        boxcar_val_abs = np.concatenate(boxcar_val_abs_list, axis=0)
-
-        images_abs_eval = {
-            "uniform": uniform_val_abs,
-            "hanning": hanning_val_abs,
-            "inr_after": predicted_val_abs,
-            "boxcar": boxcar_val_abs,
-        }
+        validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
+            images_abs=images_abs_eval,
+            targets=validation_targets,
+            scatterers_xy=scatterers_batch,
+            cm=cm,
+            sample_weights=validation_sample_weights,
+            radius_mm=radius_mm_eval,
+            hist_bins=hist_bins_eval,
+        )
 
         helpers.plot_scatterer_evaluation(
             images_abs=images_abs_eval,
@@ -640,6 +666,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             vmax_db=float(plot_cfg.get("vmax_db", 0.0)),
             cmap=str(plot_cfg.get("cmap", "gray")),
             example_suffix=f"val_all_{len(val_idx)}",
+            all_metrics=validation_bundle["scatterer_metrics"],
         )
 
         # Also produce SNR ratio scatter plots per-reflector for requested comparisons
@@ -660,6 +687,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
                     point_size=15,
                     alpha=0.7,
                     return_fig=True,
+                    all_metrics=validation_bundle["scatterer_metrics"],
                 )
                 fig = res.get("fig")
                 label = res.get("ratio_label", f"{cmp_name}/{ref_name}")
@@ -679,6 +707,40 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
         print(f"Warning: scatterer_eval failed — {e}")
         import traceback
         traceback.print_exc()
+
+history_val_mae = history.history.get("val_mae")
+if history_val_mae is None:
+    history_val_mae = history.history.get("val_mean_absolute_error")
+if history_val_mae is None:
+    raise ValueError("history does not contain val_mae or val_mean_absolute_error")
+history_val_mae = float(history_val_mae[-1])
+
+comparison_summary = {
+    "history_val_mae": history_val_mae,
+    "validation_mae": validation_bundle["mae_by_method"],
+    "validation_masked_mae": validation_bundle.get("masked_mae_by_method", {}),
+    "delta_inr_after_vs_history": float(validation_bundle["mae_by_method"]["inr_after"] - history_val_mae),
+}
+
+with open(Path(sandbox_dir) / "validation_mae_summary.json", "w", encoding="utf-8") as file:
+    json.dump(comparison_summary, file, indent=2)
+
+print("Validation MAE summary:")
+for method_name in ("uniform", "hanning", "boxcar", "inr_after"):
+    mae_value = validation_bundle["mae_by_method"].get(method_name)
+    if mae_value is not None:
+        print(f"  {method_name:>10}: {mae_value:.6g}")
+if validation_bundle.get("masked_mae_by_method"):
+    print("Validation MaskedMAE summary:")
+    for method_name in ("uniform", "hanning", "boxcar", "inr_after"):
+        mae_value = validation_bundle["masked_mae_by_method"].get(method_name)
+        if mae_value is not None:
+            print(f"  {method_name:>10}: {mae_value:.6g}")
+print(f"  {'history_val_mae':>10}: {history_val_mae:.6g}")
+print(
+    f"  {'delta_inr_after_vs_history':>10}: "
+    f"{comparison_summary['delta_inr_after_vs_history']:.6g}"
+)
 
 print("Training finished.")
 print("Sandbox artifacts:", sandbox_dir)

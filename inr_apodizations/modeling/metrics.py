@@ -150,3 +150,47 @@ class GlobalRMSE(tf.keras.metrics.Metric):
         """Reset metric internal state."""
         self.sse.assign(0.0)
         self.count.assign(0.0)
+
+
+class MaskedMAE(tf.keras.metrics.Metric):
+    """Compute mean absolute error requiring per-element sample weights.
+
+    This metric computes ``sum(|y_true - y_pred| * sample_weight) / sum(sample_weight)``
+    across all updates. A ``sample_weight`` must be provided to ``update_state``;
+    omitting it will raise an error. This avoids the inefficiency of creating
+    large temporary unit-weight tensors when weighting is intended.
+    """
+
+    def __init__(self, name: str = "masked_mae", epsilon: float = 1e-12, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total_abs_error = self.add_weight(name="total_abs_error", initializer="zeros")
+        self.total_weight = self.add_weight(name="total_weight", initializer="zeros")
+        self.epsilon = float(epsilon)
+
+    def update_state(self, y_true, y_pred, sample_weight):
+        """Update accumulated absolute error and weight sum.
+
+        Args:
+            y_true: Ground-truth tensor.
+            y_pred: Predicted tensor.
+            sample_weight: Tensor broadcastable to ``y_true``. This argument is
+                required and a ``ValueError`` is raised when it is ``None``.
+        """
+        if sample_weight is None:
+            raise ValueError("MaskedMAE requires a non-None sample_weight tensor")
+
+        abs_error = tf.abs(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
+        weight = tf.cast(sample_weight, tf.float32)
+        weight = tf.broadcast_to(weight, tf.shape(abs_error))
+
+        self.total_abs_error.assign_add(tf.reduce_sum(abs_error * weight))
+        self.total_weight.assign_add(tf.reduce_sum(weight))
+
+    def result(self):
+        """Return the accumulated weighted MAE."""
+        return self.total_abs_error / (self.total_weight + self.epsilon)
+
+    def reset_states(self):
+        """Reset metric internal state."""
+        self.total_abs_error.assign(0.0)
+        self.total_weight.assign(0.0)

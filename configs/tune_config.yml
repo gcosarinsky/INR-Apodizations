@@ -23,6 +23,12 @@ training:
     enabled: true
     lambda: 0.5
 
+target_regeneration:
+  enabled: true
+  sigma_x: 0.2
+  sigma_z: 0.2
+  alpha: 0
+
 tuning:
   max_trials: 1
   executions_per_trial: 1
@@ -36,10 +42,10 @@ tuning:
   # Candidate architecture policy and size control
   non_increasing: true
   max_candidates: 32
-  reg_lambda_min: 1e-4
-  reg_lambda_max: 1e-1
-  reg_tau_min: 0.2
-  reg_tau_max: 0.8
+  reg_lambda_min: 0.1
+  reg_lambda_max: 0.9
+  reg_tau_min: 0.5
+  reg_tau_max: 0.9
   lr_min: 1e-4
   lr_max: 1e-2
   # Hyperband-specific parameters (used by tune_inr_das_hyperband.py)

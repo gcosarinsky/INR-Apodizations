@@ -342,6 +342,117 @@ def compute_scatterer_metrics(
     }
 
 
+def compute_validation_mae_and_scatterer_metrics(
+    images_abs: dict[str, np.ndarray],
+    targets: np.ndarray,
+    scatterers_xy: np.ndarray | Sequence[np.ndarray] | None,
+    cm: CoordinateManager,
+    sample_weights: np.ndarray | None = None,
+    radius_mm: float = 1.5,
+    hist_bins: int = 50,
+) -> dict:
+    """Compute validation MAE and scatterer metrics for multiple reconstruction methods.
+
+    Args:
+        images_abs: Mapping from method name to 2D or 3D absolute image arrays.
+        targets: Validation target images with shape (B, Z, X) or (Z, X).
+        scatterers_xy: Per-example scatterer coordinates in mm.
+        cm: Coordinate manager used by the scatterer metrics.
+        sample_weights: Optional validation weights with shape (B, Z, X) or (Z, X).
+        radius_mm: Radius used to compute local peak amplitudes around scatterers.
+        hist_bins: Histogram bins used for background amplitude histograms.
+
+    Returns:
+        Dictionary with per-method MAE values and the per-method scatterer metrics.
+
+    Raises:
+        ValueError: If image and target shapes are incompatible.
+    """
+    targets_array = np.asarray(targets)
+    if targets_array.ndim not in (2, 3):
+        raise ValueError("targets must be a 2D (Z, X) or 3D (B, Z, X) array")
+
+    if targets_array.ndim == 2:
+        targets_batch = targets_array[np.newaxis, ...]
+    else:
+        targets_batch = targets_array
+
+    weights_batch = None
+    if sample_weights is not None:
+        weights_array = np.asarray(sample_weights)
+        if weights_array.ndim == 2:
+            weights_batch = weights_array[np.newaxis, ...]
+        elif weights_array.ndim == 3:
+            weights_batch = weights_array
+        else:
+            raise ValueError("sample_weights must be a 2D (Z, X) or 3D (B, Z, X) array")
+
+        if weights_batch.shape != targets_batch.shape:
+            raise ValueError(
+                f"sample_weights shape {weights_batch.shape} does not match targets shape {targets_batch.shape}"
+            )
+
+    mae_by_method: dict[str, float] = {}
+    masked_mae_by_method: dict[str, float] = {}
+    normalized_images: dict[str, np.ndarray] = {}
+
+    for method_name, image in images_abs.items():
+        image_array = np.asarray(image)
+        if image_array.ndim == 2:
+            image_batch = image_array[np.newaxis, ...]
+        elif image_array.ndim == 3:
+            image_batch = image_array
+        else:
+            raise ValueError(
+                f"images_abs['{method_name}'] must be a 2D (Z, X) or 3D (B, Z, X) array"
+            )
+
+        if image_batch.shape != targets_batch.shape:
+            raise ValueError(
+                f"images_abs['{method_name}'] shape {image_batch.shape} does not match targets shape {targets_batch.shape}"
+            )
+
+        mae_by_method[method_name] = float(
+            np.mean(
+                np.abs(
+                    image_batch.astype(np.float64, copy=False)
+                    - targets_batch.astype(np.float64, copy=False)
+                )
+            )
+        )
+
+        if weights_batch is not None:
+            abs_error = np.abs(
+                image_batch.astype(np.float64, copy=False) - targets_batch.astype(np.float64, copy=False)
+            )
+            weighted_error = abs_error * weights_batch.astype(np.float64, copy=False)
+            weight_sum = float(np.sum(weights_batch, dtype=np.float64))
+            masked_mae_by_method[method_name] = float(np.sum(weighted_error, dtype=np.float64) / max(weight_sum, 1e-12))
+
+        normalized_images[method_name] = image_batch
+
+    scatterer_metrics = {}
+    if scatterers_xy is not None:
+        scatterer_metrics = {
+            method_name: compute_scatterer_metrics(
+                image,
+                scatterers_xy,
+                cm,
+                radius_mm=radius_mm,
+                return_masks=False,
+                return_background_hist=True,
+                hist_bins=hist_bins,
+            )
+            for method_name, image in normalized_images.items()
+        }
+
+    return {
+        "mae_by_method": mae_by_method,
+        "masked_mae_by_method": masked_mae_by_method,
+        "scatterer_metrics": scatterer_metrics,
+    }
+
+
 def plot_scatterer_evaluation(
     images_abs: dict,
     scatterers_xy: np.ndarray | Sequence[np.ndarray],
@@ -355,6 +466,7 @@ def plot_scatterer_evaluation(
     vmax_db: float = 0.0,
     cmap: str = "gray",
     example_suffix: str = "",
+    all_metrics: dict | None = None,
 ) -> dict:
     os.makedirs(output_dir, exist_ok=True)
     if compare_pairs is None:
@@ -389,18 +501,19 @@ def plot_scatterer_evaluation(
     first_ref = compare_pairs[0][0] if compare_pairs else None
     sfx = f"_{example_suffix}" if example_suffix else ""
 
-    all_metrics: dict = {}
-    for method_name, image in images_abs.items():
-        need_masks = method_name == first_ref
-        all_metrics[method_name] = compute_scatterer_metrics(
-            image,
-            scatterers_xy,
-            cm,
-            radius_mm=radius_mm,
-            return_masks=need_masks,
-            return_background_hist=True,
-            hist_bins=hist_bins,
-        )
+    if all_metrics is None:
+        all_metrics = {}
+        for method_name, image in images_abs.items():
+            need_masks = method_name == first_ref
+            all_metrics[method_name] = compute_scatterer_metrics(
+                image,
+                scatterers_xy,
+                cm,
+                radius_mm=radius_mm,
+                return_masks=need_masks,
+                return_background_hist=True,
+                hist_bins=hist_bins,
+            )
 
     ref_metrics = all_metrics.get(first_ref) if first_ref is not None else None
     if extent is not None and first_ref is not None and ref_metrics is not None:
@@ -587,6 +700,7 @@ def plot_scatterer_snr_ratio(
     alpha: float = 0.7,
     eps: float = 1e-8,
     return_fig: bool = True,
+    all_metrics: dict | None = None,
 ) -> dict:
     """Plot per-reflector SNR ratio between two methods.
 
@@ -660,12 +774,16 @@ def plot_scatterer_snr_ratio(
     # Normalize scatterers to per-example list
     scatterer_batch, _ = _normalize_scatterer_batch(scatterers_xy, batch_size=batch_size)
     # Compute metrics for both methods
-    ref_metrics = compute_scatterer_metrics(
-        images_abs[ref_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
-    )
-    cmp_metrics = compute_scatterer_metrics(
-        images_abs[cmp_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
-    )
+    if all_metrics is not None and ref_method in all_metrics and cmp_method in all_metrics:
+        ref_metrics = all_metrics[ref_method]
+        cmp_metrics = all_metrics[cmp_method]
+    else:
+        ref_metrics = compute_scatterer_metrics(
+            images_abs[ref_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
+        )
+        cmp_metrics = compute_scatterer_metrics(
+            images_abs[cmp_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
+        )
 
     # Ensure alignment of aggregated points
     _validate_aligned_aggregated_points(ref_metrics, cmp_metrics)

@@ -1,7 +1,7 @@
 """Hyperband Hyperparameter Tuning for INR-based DAS using Keras Tuner.
 
-This script is a copy of `tune_inr_das_hyperband.py` but uses `val_mae`
-as the Keras Tuner objective (to be minimized).
+This script is a copy of `tune_inr_das_hyperband.py` but uses a validation
+MAE objective (weighted when mask weighting is enabled) to be minimized.
 """
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ if str(sandbox_pkg_dir) not in sys.path:
 
 import helpers
 from inr_apodizations import config
+from inr_apodizations.modeling.metrics import MaskedMAE
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.losses import ScaledLoss
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
@@ -161,6 +162,11 @@ def build_model(hp):
     # 3. Compilation
     lr = hp.Float("lr", cfg["tuning"]["lr_min"], cfg["tuning"]["lr_max"], sampling="log")
     loss_fn = _pixelwise_mae if use_pixelwise_weights else tf.keras.losses.MeanAbsoluteError()
+    metrics = [tf.keras.metrics.MeanAbsoluteError(name="mae")]
+    weighted_metrics = []
+    if use_pixelwise_weights:
+        weighted_metrics.append(MaskedMAE(name="masked_mae"))
+
     trainer.compile(
         jit_compile=False, # Hyperband may not benefit from JIT due to short epochs; set to True if desired.
         optimizer=tf.keras.optimizers.Adam(
@@ -168,8 +174,8 @@ def build_model(hp):
             decay=float(cfg["training"]["weight_decay"]),
         ),
         loss=ScaledLoss(loss_fn),
-        metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae")],
-        weighted_metrics=[],
+        metrics=metrics,
+        weighted_metrics=weighted_metrics,
     )
     
     return trainer
@@ -187,7 +193,10 @@ print(f"Using Hyperband: max_epochs={max_epochs}, factor={factor}")
 with strategy.scope():
     tuner = kt.Hyperband(
         build_model,
-        objective=kt.Objective("val_mae", direction="min"),
+        objective=kt.Objective(
+            "val_masked_mae" if use_pixelwise_weights else "val_mae",
+            direction="min",
+        ),
         max_epochs=max_epochs,
         factor=factor,
         directory=str(tuning_dir),
@@ -210,12 +219,17 @@ val_ds = helpers.build_tf_dataset_by_indices(
 )
 
 print("\nStarting Hyperband Optimization...")
+objective_name = "val_masked_mae" if use_pixelwise_weights else "val_mae"
 tuner.search(
     train_ds,
     epochs=max_epochs,
     validation_data=val_ds,
     callbacks=[
-        tf.keras.callbacks.EarlyStopping(monitor="val_mae", mode="min", patience=cfg["training"]["early_stopping_patience"]) 
+        tf.keras.callbacks.EarlyStopping(
+            monitor=objective_name,
+            mode="min",
+            patience=cfg["training"]["early_stopping_patience"],
+        )
     ],
     verbose=True
 )
@@ -224,7 +238,12 @@ tuner.search(
 print("\nTuning Finished!")
 # Save per-architecture scores (trials grouped by candidate architecture)
 try:
-    helpers.save_tuner_architecture_scores(tuner, candidate_architectures, str(tuning_dir), objective_name="val_mae")
+    helpers.save_tuner_architecture_scores(
+        tuner,
+        candidate_architectures,
+        str(tuning_dir),
+        objective_name=objective_name,
+    )
     print(f"Per-architecture scores saved to: {tuning_dir}")
 except Exception as e:
     print("Warning: failed to save per-architecture scores:", e)

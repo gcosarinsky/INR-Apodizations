@@ -626,6 +626,7 @@ def plot_apodization_energy_comparison(
 # Backward-compatible exports after scatterer refactor.
 from scatterer_metrics import (  # noqa: E402
     compute_scatterer_metrics,
+    compute_validation_mae_and_scatterer_metrics,
     plot_scatterer_evaluation,
     plot_scatterer_snr_ratio,
 )
