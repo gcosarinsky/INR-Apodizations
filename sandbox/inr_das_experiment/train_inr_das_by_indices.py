@@ -33,8 +33,7 @@ from inr_apodizations.modeling.metrics import MaskedMAE
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-# New import for loss scaling (division by first‑batch loss)
-from inr_apodizations.modeling.losses import ScaledLoss
+
 import matplotlib.pyplot as plt
 
 
@@ -301,8 +300,7 @@ if use_pixelwise_weights and isinstance(loss_name, str):
     elif loss_str in ("mse", "mean_squared_error"):
         loss_obj = _pixelwise_mse
 
-# Wrap the resolved loss with esto es par alinux=Loss (division by first‑batch loss, no extra factor)
-loss_obj = ScaledLoss(base_loss=loss_obj)
+# Use the resolved loss object directly (do not apply ScaledLoss wrapper)
 
 # Resolve metrics from config with optional support for custom mae_db.
 metrics_cfg = cfg["training"].get("metric", "mae")
@@ -339,6 +337,102 @@ trainer.compile(
 sample_delayed = tf.convert_to_tensor(delayed[val_idx[:1]].astype(np.complex64, copy=False))
 sample_target = np.expand_dims(targets[val_idx[0]].astype(np.float32, copy=False), axis=0)
 predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_delayed, training=False)
+
+# --- Pre-training reference MAE evaluation using MaskedMAE ---
+
+scatterer_eval_cfg = cfg.get("scatterer_eval", {})
+eval_batch_size = int(scatterer_eval_cfg.get("eval_batch_size", cfg["training"].get("batch_size", 1)))
+validation_targets = targets[val_idx].astype(np.float32, copy=False)
+
+# Baseline f-number resolution (same logic used later)
+_cfg_f_number = cfg["training"].get("baseline_f_number", None)
+if _cfg_f_number is None:
+    baseline_f_number = kp.f_number
+else:
+    try:
+        baseline_f_number = float(_cfg_f_number)
+    except Exception:
+        baseline_f_number = kp.f_number
+
+# Apodization weights for baselines
+apods_h = compute_dynamic_apodizations_tf(
+    cm=cm, f_number=baseline_f_number, methods=("hanning",), scaled=bool(cfg["model"].get("scaled_features", False))
+)
+apods_b = compute_dynamic_apodizations_tf(
+    cm=cm, f_number=baseline_f_number, methods=("boxcar",), scaled=bool(cfg["model"].get("scaled_features", False))
+)
+hanning_weights = apods_h.get("hanning")
+boxcar_weights = apods_b.get("boxcar")
+
+# Metrics that accumulate weighted MAE across the validation set
+m_zero = MaskedMAE(name="ref_zero")
+m_uniform = MaskedMAE(name="ref_uniform")
+m_hanning = MaskedMAE(name="ref_hanning") if hanning_weights is not None else None
+m_boxcar = MaskedMAE(name="ref_boxcar") if boxcar_weights is not None else None
+
+if hanning_weights is not None:
+    hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
+else:
+    hanning_weights_b = None
+if boxcar_weights is not None:
+    boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)
+else:
+    boxcar_weights_b = None
+
+n_val = int(len(val_idx))
+for start in range(0, n_val, eval_batch_size):
+    end = min(start + eval_batch_size, n_val)
+    idx_chunk = val_idx[start:end]
+    local_slice = slice(start, end)
+
+    if eval_noise_enabled:
+        if noise is None:
+            raise ValueError(
+                "Eval noise requested but dataset does not contain precomputed noise."
+            )
+        sig_chunk = delayed[idx_chunk].astype(np.complex64, copy=False)
+        noise_chunk = noise[idx_chunk].astype(np.complex64, copy=False)
+        combined_chunk = sig_chunk + eval_noise_scale * noise_chunk
+        val_delayed_chunk = tf.convert_to_tensor(combined_chunk)
+    else:
+        val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
+
+    y_true_chunk = tf.convert_to_tensor(validation_targets[local_slice])
+
+    # determine per-pixel weights for this chunk
+    if train_loss_weights is not None:
+        weights_chunk = tf.convert_to_tensor(train_loss_weights[idx_chunk].astype(np.float32, copy=False))
+    else:
+        weights_chunk = tf.ones_like(tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1)), dtype=tf.float32)
+
+    # zero reference (predict zeros)
+    m_zero.update_state(y_true_chunk, tf.zeros_like(y_true_chunk), sample_weight=weights_chunk)
+
+    # uniform (sum over elements)
+    uniform_pred = tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1))
+    m_uniform.update_state(y_true_chunk, uniform_pred, sample_weight=weights_chunk)
+
+    # hanning / boxcar if available
+    if hanning_weights_b is not None and m_hanning is not None:
+        hanning_pred = tf.abs(tf.reduce_sum(val_delayed_chunk * tf.cast(hanning_weights_b, val_delayed_chunk.dtype), axis=1))
+        m_hanning.update_state(y_true_chunk, hanning_pred, sample_weight=weights_chunk)
+    if boxcar_weights_b is not None and m_boxcar is not None:
+        boxcar_pred = tf.abs(tf.reduce_sum(val_delayed_chunk * tf.cast(boxcar_weights_b, val_delayed_chunk.dtype), axis=1))
+        m_boxcar.update_state(y_true_chunk, boxcar_pred, sample_weight=weights_chunk)
+
+pre_training_reference_mae = {
+    "zero": float(m_zero.result().numpy()),
+    "uniform": float(m_uniform.result().numpy()),
+}
+if m_hanning is not None:
+    pre_training_reference_mae["hanning"] = float(m_hanning.result().numpy())
+if m_boxcar is not None:
+    pre_training_reference_mae["boxcar"] = float(m_boxcar.result().numpy())
+
+print("Pre-training reference MAE (MaskedMAE):")
+for k, v in pre_training_reference_mae.items():
+    print(f"  {k:>8}: {v:.6g}")
+
 
 # Resolve sandbox output root and create a timestamped sandbox outputs folder.
 sandbox_root_cfg = Path(cfg["io"]["sandbox_output_root"])
@@ -719,6 +813,7 @@ comparison_summary = {
     "history_val_mae": history_val_mae,
     "validation_mae": validation_bundle["mae_by_method"],
     "validation_masked_mae": validation_bundle.get("masked_mae_by_method", {}),
+    "reference_mae": validation_bundle.get("reference_mae", {}),
     "delta_inr_after_vs_history": float(validation_bundle["mae_by_method"]["inr_after"] - history_val_mae),
 }
 
@@ -730,6 +825,9 @@ for method_name in ("uniform", "hanning", "boxcar", "inr_after"):
     mae_value = validation_bundle["mae_by_method"].get(method_name)
     if mae_value is not None:
         print(f"  {method_name:>10}: {mae_value:.6g}")
+    # print reference MAE if available
+for ref_name, ref_val in validation_bundle.get("reference_mae", {}).items():
+    print(f"  ref_{ref_name:>7}: {ref_val:.6g}")
 if validation_bundle.get("masked_mae_by_method"):
     print("Validation MaskedMAE summary:")
     for method_name in ("uniform", "hanning", "boxcar", "inr_after"):
@@ -744,3 +842,14 @@ print(
 
 print("Training finished.")
 print("Sandbox artifacts:", sandbox_dir)
+
+# Re-plot training curves including reference MAE lines when available
+try:
+    ref_mae = validation_bundle.get("reference_mae", None) if "validation_bundle" in locals() else None
+    helpers.plot_training_curves(
+        history.history,
+        output_path=str(Path(sandbox_dir) / "training_loss_with_refs.png"),
+        reference_mae=ref_mae,
+    )
+except Exception:
+    pass

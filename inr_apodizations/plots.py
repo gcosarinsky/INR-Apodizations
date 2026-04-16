@@ -59,7 +59,7 @@ def _prepare_comparison_images_db(
         return {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
 
 
-def plot_training_curves(history: dict, output_path: str) -> None:
+def plot_training_curves(history: dict, output_path: str, reference_mae: dict | None = None) -> None:
     """
     Save a training curve figure from a Keras history dictionary.
 
@@ -119,6 +119,25 @@ def plot_training_curves(history: dict, output_path: str) -> None:
         if mae_plotted:
             axes[1].set_ylabel("MAE")
             axes[1].grid(True, alpha=0.3)
+        # Plot horizontal reference MAE lines when provided
+        if reference_mae:
+            # choose cycle of styles/colors
+            ref_colors = ["gray", "tab:purple", "tab:green", "tab:brown"]
+            for idx, (rname, rval) in enumerate(reference_mae.items()):
+                try:
+                    y = float(rval)
+                except Exception:
+                    continue
+                color = ref_colors[idx % len(ref_colors)]
+                axes[1].axhline(y=y, color=color, linestyle="--", linewidth=1.2, label=f"ref_{rname}")
+            # rebuild legend to include refs
+            lines, labels = axes[1].get_legend_handles_labels()
+            if ssim_ax is not None:
+                l2, lbl2 = ssim_ax.get_legend_handles_labels()
+                lines += l2
+                labels += lbl2
+            if lines:
+                axes[1].legend(lines, labels)
         if ssim_plotted and ssim_ax is not None:
             ssim_ax.set_ylabel("SSIM")
 

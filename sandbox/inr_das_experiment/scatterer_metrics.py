@@ -342,7 +342,7 @@ def compute_scatterer_metrics(
     }
 
 
-def compute_validation_mae_and_scatterer_metrics(
+def compute_validation_and_reference_metrics(
     images_abs: dict[str, np.ndarray],
     targets: np.ndarray,
     scatterers_xy: np.ndarray | Sequence[np.ndarray] | None,
@@ -351,22 +351,18 @@ def compute_validation_mae_and_scatterer_metrics(
     radius_mm: float = 1.5,
     hist_bins: int = 50,
 ) -> dict:
-    """Compute validation MAE and scatterer metrics for multiple reconstruction methods.
+    """Compute validation MAE, scatterer metrics and reference MAE values.
 
-    Args:
-        images_abs: Mapping from method name to 2D or 3D absolute image arrays.
-        targets: Validation target images with shape (B, Z, X) or (Z, X).
-        scatterers_xy: Per-example scatterer coordinates in mm.
-        cm: Coordinate manager used by the scatterer metrics.
-        sample_weights: Optional validation weights with shape (B, Z, X) or (Z, X).
-        radius_mm: Radius used to compute local peak amplitudes around scatterers.
-        hist_bins: Histogram bins used for background amplitude histograms.
+    This generalised function returns the original outputs (per-method MAE
+    and scatterer metrics) and also computes reference MAE values for common
+    baseline images when present in `images_abs` and for a zero image.
 
-    Returns:
-        Dictionary with per-method MAE values and the per-method scatterer metrics.
-
-    Raises:
-        ValueError: If image and target shapes are incompatible.
+    Returns a dictionary with keys:
+      - ``mae_by_method``: per-method MAE
+      - ``masked_mae_by_method``: per-method weighted MAE (if sample weights given)
+      - ``scatterer_metrics``: per-method scatterer metrics (if scatterers provided)
+      - ``reference_mae``: dict with keys `zero`, and when available `uniform`,
+        `boxcar`, `hanning` with their MAE values.
     """
     targets_array = np.asarray(targets)
     if targets_array.ndim not in (2, 3):
@@ -431,6 +427,7 @@ def compute_validation_mae_and_scatterer_metrics(
 
         normalized_images[method_name] = image_batch
 
+    # Compute scatterer metrics when requested
     scatterer_metrics = {}
     if scatterers_xy is not None:
         scatterer_metrics = {
@@ -446,11 +443,32 @@ def compute_validation_mae_and_scatterer_metrics(
             for method_name, image in normalized_images.items()
         }
 
+    # Compute reference MAE values: zero image and common baselines if present
+    reference_mae: dict[str, float] = {}
+    # zero image reference
+    zero_batch = np.zeros_like(targets_batch, dtype=np.float64)
+    reference_mae["zero"] = float(np.mean(np.abs(zero_batch - targets_batch.astype(np.float64, copy=False))))
+
+    # common baseline names to check in provided images
+    for rname in ("uniform", "boxcar", "hanning"):
+        if rname in normalized_images:
+            ref_img = normalized_images[rname]
+            reference_mae[rname] = float(
+                np.mean(np.abs(ref_img.astype(np.float64, copy=False) - targets_batch.astype(np.float64, copy=False)))
+            )
+
     return {
         "mae_by_method": mae_by_method,
         "masked_mae_by_method": masked_mae_by_method,
         "scatterer_metrics": scatterer_metrics,
+        "reference_mae": reference_mae,
     }
+
+
+# Backwards-compatible alias for callers using the old name
+def compute_validation_mae_and_scatterer_metrics(*args, **kwargs):
+    """Backward-compatible wrapper around compute_validation_and_reference_metrics."""
+    return compute_validation_and_reference_metrics(*args, **kwargs)
 
 
 def plot_scatterer_evaluation(
