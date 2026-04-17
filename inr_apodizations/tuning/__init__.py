@@ -1,8 +1,9 @@
 """Tuning helpers for INR apodizations.
 
-Public utilities for hyperparameter search and candidate generation.
+Public utilities for hyperparameter search, candidate generation, and live
+Hyperband progress plots.
 """
 
-from .utils import generate_candidate_architectures
+from .utils import LiveTrialScorePlot, PlottingHyperband, generate_candidate_architectures
 
-__all__ = ["generate_candidate_architectures"]
+__all__ = ["generate_candidate_architectures", "LiveTrialScorePlot", "PlottingHyperband"]

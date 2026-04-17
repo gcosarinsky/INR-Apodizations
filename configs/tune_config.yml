@@ -48,6 +48,8 @@ tuning:
   reg_tau_max: 0.9
   lr_min: 1e-4
   lr_max: 1e-2
+  pixel_weight_lambda_min: 0.1
+  pixel_weight_lambda_max: 2.0
   # Hyperband-specific parameters (used by tune_inr_das_hyperband.py)
   hyperband_max_epochs: 27
   hyperband_factor: 3
