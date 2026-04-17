@@ -59,101 +59,182 @@ def _prepare_comparison_images_db(
         return {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
 
 
-def plot_training_curves(history: dict, output_path: str, reference_mae: dict | None = None) -> None:
-    """
-    Save a training curve figure from a Keras history dictionary.
+def plot_training_curves(
+    history: dict,
+    output_path: str,
+    reference_mae: dict | None = None,
+) -> None:
+    """Save a grouped training-curve figure from a Keras history dictionary.
 
     Args:
         history: Mapping with metric lists, typically ``history.history``.
         output_path: Path to the output PNG file.
+        reference_mae: Optional baseline MAE values to overlay on the absolute
+            reconstruction metrics panel.
 
-    Note:
-        The docstring could be expanded to describe each supported metric
-        in more detail. The current implementation uses a series of
-        ``if`` statements to handle different metric names, which results
-        in a somewhat clunky and non‑extensible way of managing metric
-        visualization. Future enhancements should consider a more
-        systematic mapping of metric names to plot configurations.
+    The figure groups metrics into dedicated panels for loss, absolute
+    reconstruction errors, relative reconstruction errors, SSIM,
+    regularization metrics, and any remaining tracked values. This keeps the
+    plot compact while still exposing metrics such as ``reg_loss`` and
+    ``reg_active_rate`` that were previously omitted.
     """
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
 
-    if "loss" in history:
-        axes[0].plot(history["loss"], label="loss", color="black")
-    if "val_loss" in history:
-        axes[0].plot(history["val_loss"], label="val_loss", color="tab:red")
-    axes[0].set_title("Loss")
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Loss")
-    axes[0].grid(True, alpha=0.3)
-    if axes[0].lines:
-        axes[0].legend()
+    if not history:
+        raise ValueError("history must not be empty")
 
-    # Plot MAE on the primary y-axis and SSIM on a secondary y-axis if present.
-    has_metric = False
-    mae_plotted = False
-    ssim_plotted = False
-    if "mae" in history or "val_mae" in history:
-        if "mae" in history:
-            axes[1].plot(history["mae"], label="mae", color="tab:blue")
-            mae_plotted = True
-        if "val_mae" in history:
-            axes[1].plot(history["val_mae"], label="val_mae", color="tab:orange")
-            mae_plotted = True
-        has_metric = True
+    def _is_regularization_metric(metric_name: str) -> bool:
+        return (
+            metric_name == "reg_loss"
+            or metric_name.startswith("reg_")
+            or "w_norm" in metric_name
+        )
 
-    ssim_ax = None
-    if "ssim_metric" in history or "val_ssim_metric" in history:
-        # Use a twin y-axis for SSIM (range ~[0,1]) to avoid mixing scales.
-        ssim_ax = axes[1].twinx()
-        if "ssim_metric" in history:
-            ssim_ax.plot(history["ssim_metric"], label="ssim", color="tab:green")
-            ssim_plotted = True
-        if "val_ssim_metric" in history:
-            ssim_ax.plot(history["val_ssim_metric"], label="val_ssim", color="tab:red")
-            ssim_plotted = True
-        has_metric = True
+    def _is_loss_metric(metric_name: str) -> bool:
+        return metric_name in {"loss", "val_loss"} or (
+            metric_name.endswith("_loss") and not metric_name.startswith("reg_")
+        )
 
-    if has_metric:
-        axes[1].set_title("Metrics")
-        axes[1].set_xlabel("Epoch")
-        if mae_plotted:
-            axes[1].set_ylabel("MAE")
-            axes[1].grid(True, alpha=0.3)
-        # Plot horizontal reference MAE lines when provided
-        if reference_mae:
-            # choose cycle of styles/colors
+    def _is_ssim_metric(metric_name: str) -> bool:
+        return "ssim" in metric_name
+
+    def _is_absolute_reconstruction_metric(metric_name: str) -> bool:
+        if (
+            _is_loss_metric(metric_name)
+            or _is_regularization_metric(metric_name)
+            or _is_ssim_metric(metric_name)
+        ):
+            return False
+        if "relative" in metric_name:
+            return False
+        return any(token in metric_name for token in ("mae", "error"))
+
+    def _is_relative_reconstruction_metric(metric_name: str) -> bool:
+        if (
+            _is_loss_metric(metric_name)
+            or _is_regularization_metric(metric_name)
+            or _is_ssim_metric(metric_name)
+        ):
+            return False
+        return "relative" in metric_name
+
+    ordered_keys = [name for name in history.keys() if len(history[name]) > 0]
+    used_keys: set[str] = set()
+    panels: list[tuple[str, list[str], str]] = []
+
+    loss_keys = [name for name in ordered_keys if _is_loss_metric(name)]
+    if loss_keys:
+        panels.append(("Loss", loss_keys, "Loss"))
+        used_keys.update(loss_keys)
+
+    absolute_reconstruction_keys = [
+        name
+        for name in ordered_keys
+        if name not in used_keys and _is_absolute_reconstruction_metric(name)
+    ]
+    if absolute_reconstruction_keys:
+        panels.append(
+            ("Absolute reconstruction metrics", absolute_reconstruction_keys, "Metric value")
+        )
+        used_keys.update(absolute_reconstruction_keys)
+
+    relative_reconstruction_keys = [
+        name
+        for name in ordered_keys
+        if name not in used_keys and _is_relative_reconstruction_metric(name)
+    ]
+    if relative_reconstruction_keys:
+        panels.append(
+            ("Relative reconstruction metrics", relative_reconstruction_keys, "Metric value")
+        )
+        used_keys.update(relative_reconstruction_keys)
+
+    ssim_keys = [name for name in ordered_keys if name not in used_keys and _is_ssim_metric(name)]
+    if ssim_keys:
+        panels.append(("SSIM metrics", ssim_keys, "SSIM"))
+        used_keys.update(ssim_keys)
+
+    regularization_keys = [
+        name for name in ordered_keys if name not in used_keys and _is_regularization_metric(name)
+    ]
+    if regularization_keys:
+        panels.append(("Regularization metrics", regularization_keys, "Metric value"))
+        used_keys.update(regularization_keys)
+
+    other_keys = [name for name in ordered_keys if name not in used_keys]
+    if other_keys:
+        panels.append(("Other metrics", other_keys, "Metric value"))
+
+    if not panels:
+        raise ValueError("history does not contain plottable metrics")
+
+    fig_height = max(3.0, 2.8 * len(panels))
+    fig, axes = plt.subplots(len(panels), 1, figsize=(12, fig_height), constrained_layout=True)
+    if len(panels) == 1:
+        axes = np.array([axes])
+
+    palette = list(plt.rcParams["axes.prop_cycle"].by_key().get("color", []))
+    if not palette:
+        palette = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown"]
+
+    def _plot_panel(axis, metric_names: list[str], title: str, ylabel: str, include_reference: bool = False) -> None:
+        base_colors: dict[str, str] = {}
+        color_index = 0
+
+        for metric_name in metric_names:
+            series = history[metric_name]
+            base_name = metric_name[4:] if metric_name.startswith("val_") else metric_name
+            if base_name not in base_colors:
+                base_colors[base_name] = palette[color_index % len(palette)]
+                color_index += 1
+
+            line_style = "--" if metric_name.startswith("val_") else "-"
+            axis.plot(series, label=metric_name, color=base_colors[base_name], linestyle=line_style)
+
+        if include_reference and reference_mae:
             ref_colors = ["gray", "tab:purple", "tab:green", "tab:brown"]
-            for idx, (rname, rval) in enumerate(reference_mae.items()):
+            for idx, (ref_name, ref_value) in enumerate(reference_mae.items()):
                 try:
-                    y = float(rval)
+                    ref_y = float(ref_value)
                 except Exception:
                     continue
-                color = ref_colors[idx % len(ref_colors)]
-                axes[1].axhline(y=y, color=color, linestyle="--", linewidth=1.2, label=f"ref_{rname}")
-            # rebuild legend to include refs
-            lines, labels = axes[1].get_legend_handles_labels()
-            if ssim_ax is not None:
-                l2, lbl2 = ssim_ax.get_legend_handles_labels()
-                lines += l2
-                labels += lbl2
-            if lines:
-                axes[1].legend(lines, labels)
-        if ssim_plotted and ssim_ax is not None:
-            ssim_ax.set_ylabel("SSIM")
+                ref_color = ref_colors[idx % len(ref_colors)]
+                axis.axhline(
+                    y=ref_y,
+                    color=ref_color,
+                    linestyle=":",
+                    linewidth=1.2,
+                    label="_nolegend_",
+                )
+                axis.annotate(
+                    f"ref_{ref_name}",
+                    xy=(0.975, ref_y),
+                    xycoords=("axes fraction", "data"),
+                    xytext=(-4, 0),
+                    textcoords="offset points",
+                    ha="right",
+                    va="center",
+                    fontsize=8,
+                    color=ref_color,
+                    bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 1.5},
+                )
 
-        # Build combined legend from both axes if needed.
-        lines, labels = axes[1].get_legend_handles_labels()
-        if ssim_ax is not None:
-            l2, lbl2 = ssim_ax.get_legend_handles_labels()
-            lines += l2
-            labels += lbl2
+        axis.set_title(title)
+        axis.set_xlabel("Epoch")
+        axis.set_ylabel(ylabel)
+        axis.grid(True, alpha=0.3)
+        lines, labels = axis.get_legend_handles_labels()
         if lines:
-            axes[1].legend(lines, labels)
-    else:
-        axes[1].axis("off")
+            axis.legend(lines, labels, fontsize=9)
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.savefig(output_path, dpi=150)
+    for axis, (title, metric_names, ylabel) in zip(axes, panels, strict=False):
+        include_reference = title == "Absolute reconstruction metrics"
+        _plot_panel(axis, metric_names, title, ylabel, include_reference=include_reference)
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        fig.savefig(output_path, dpi=150)
+    plt.close(fig)
 
 
 def plot_das_comparison_db(

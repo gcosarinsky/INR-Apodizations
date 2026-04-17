@@ -399,6 +399,61 @@ def build_coordinate_manager(
     return kp, cm
 
 
+def compute_das_baseline_numpy(
+    delayed_samples: np.ndarray,
+    apodization: np.ndarray | None = None,
+    return_complex: bool = False,
+) -> np.ndarray:
+    """Compute baseline DAS reconstruction in NumPy.
+
+    Args:
+        delayed_samples: Delayed samples with shape ``(E, Z, X)`` or
+            ``(B, E, Z, X)`` and complex dtype.
+        apodization: Optional apodization map with shape ``(E, Z, X)``.
+            If ``None``, the baseline is uniform (all-ones weights).
+        return_complex: If ``True``, return the complex DAS image.
+            Otherwise return ``abs(image)`` as ``float32``.
+
+    Returns:
+        Reconstructed DAS image with shape ``(Z, X)`` for 3D input or
+        ``(B, Z, X)`` for 4D input.
+
+    Raises:
+        ValueError: If input shapes are invalid or incompatible.
+    """
+    delayed_np = np.asarray(delayed_samples)
+    if delayed_np.ndim not in (3, 4):
+        raise ValueError(
+            "delayed_samples must have shape (E, Z, X) or (B, E, Z, X); "
+            f"got shape {delayed_np.shape}"
+        )
+
+    delayed_np = delayed_np.astype(np.complex64, copy=False)
+    elem_axis = 0 if delayed_np.ndim == 3 else 1
+
+    if apodization is None:
+        weighted = delayed_np
+    else:
+        apod_np = np.asarray(apodization)
+        if apod_np.ndim != 3:
+            raise ValueError(
+                "apodization must have shape (E, Z, X); "
+                f"got shape {apod_np.shape}"
+            )
+        expected_shape = delayed_np.shape if delayed_np.ndim == 3 else delayed_np.shape[1:]
+        if apod_np.shape != expected_shape:
+            raise ValueError(
+                "apodization shape mismatch; expected "
+                f"{expected_shape}, got {apod_np.shape}"
+            )
+        weighted = delayed_np * apod_np.astype(np.complex64, copy=False)
+
+    image_complex = np.sum(weighted, axis=elem_axis)
+    if return_complex:
+        return image_complex.astype(np.complex64, copy=False)
+    return np.abs(image_complex).astype(np.float32, copy=False)
+
+
 def validate_dataset_shapes(
     delayed: np.ndarray, targets: np.ndarray, gaussian_masks: np.ndarray
 ) -> None:
@@ -495,31 +550,40 @@ def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config
 def build_gaussian_loss_weights(
     gaussian_masks_array: np.ndarray, weighting_cfg: dict
 ) -> np.ndarray | None:
-    """Build per-pixel loss weights directly from gaussian masks using ``1 + lambda * mask``.
+    """Build per-pixel loss weights directly from gaussian masks.
 
     The gaussian mask is expected to be in [0, 1], so the resulting weights are
-    in [1, 1 + lambda]. No normalization or clipping is applied.
+    in ``[1, 1 + pixel_weight_lambda]``. No normalization or clipping is applied.
 
     Args:
         gaussian_masks_array: Gaussian mask tensor with shape ``(N, Z, X)``,
             values in ``[0, 1]``.
         weighting_cfg: Configuration mapping under ``training.mask_weighting``.
-            Expected key: ``lambda`` (float, default 3.0).
+            Expected key: ``pixel_weight_lambda`` (float, default 3.0).
+            Legacy key ``lambda`` is also accepted as fallback.
 
     Returns:
         Optional weight tensor with shape ``(N, Z, X)`` and dtype float32.
         Returns ``None`` when weighting is disabled.
 
     Raises:
-        ValueError: If ``lambda`` is negative.
+        ValueError: If the resolved pixel-weight lambda is negative.
     """
     enabled = bool(weighting_cfg.get("enabled", False))
     if not enabled:
         return None
 
-    weight_lambda = float(weighting_cfg.get("lambda", 3.0))
+    weight_lambda = float(
+        weighting_cfg.get(
+            "pixel_weight_lambda",
+            weighting_cfg.get("lambda", 3.0),
+        )
+    )
     if weight_lambda < 0.0:
-        raise ValueError("training.mask_weighting.lambda must be >= 0")
+        raise ValueError(
+            "training.mask_weighting.pixel_weight_lambda must be >= 0 "
+            "(legacy key training.mask_weighting.lambda is also accepted)"
+        )
 
     masks_float = gaussian_masks_array.astype(np.float32, copy=False)
     weights = 1.0 + weight_lambda * masks_float

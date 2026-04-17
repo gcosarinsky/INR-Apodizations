@@ -20,7 +20,7 @@ training:
   baseline_f_number: 0.75
   mask_weighting:
     enabled: true
-    lambda: 0.5
+    pixel_weight_lambda: 0.5
 
 tuning:
   # Candidate architecture generation (kept as ranges so we can reuse generate_candidate_architectures)

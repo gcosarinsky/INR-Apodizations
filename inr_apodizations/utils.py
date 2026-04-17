@@ -48,6 +48,56 @@ def to_db_tensor(x, ref, eps: float = 1e-8):
     return 20.0 * log10
 
 
+def relative_mae(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    eps: float = 1e-12,
+    normalize_by: str = "y_pred",
+) -> float:
+    """Compute RelativeMAE with configurable normalization reference.
+
+    Formula:
+        RelativeMAE(y_true, y_pred) = MAE(y_true, y_pred) / (mean(abs(reference)) + eps)
+
+    where ``reference`` is selected by ``normalize_by``:
+        - ``"y_pred"`` -> reference is ``y_pred``
+        - ``"y_true"`` -> reference is ``y_true``
+
+    Args:
+        y_true: Ground-truth image array.
+        y_pred: Predicted image array with the same shape as ``y_true``.
+        eps: Small positive value to stabilize the denominator.
+        normalize_by: Denominator reference selector. Allowed values are
+            ``"y_pred"`` and ``"y_true"``.
+
+    Returns:
+        Relative MAE as a Python float.
+
+    Raises:
+        ValueError: If ``eps`` is not positive, shapes do not match, or
+            ``normalize_by`` is not supported.
+    """
+    if eps <= 0.0:
+        raise ValueError("eps must be > 0")
+
+    y_true_arr = np.asarray(y_true, dtype=np.float32)
+    y_pred_arr = np.asarray(y_pred, dtype=np.float32)
+    if y_true_arr.shape != y_pred_arr.shape:
+        raise ValueError(
+            "relative_mae requires matching shapes: "
+            f"y_true.shape={y_true_arr.shape}, y_pred.shape={y_pred_arr.shape}"
+        )
+
+    normalize_key = str(normalize_by).strip().lower()
+    if normalize_key not in ("y_pred", "y_true"):
+        raise ValueError("normalize_by must be either 'y_pred' or 'y_true'")
+
+    mae_value = np.mean(np.abs(y_true_arr - y_pred_arr), dtype=np.float32)
+    reference = y_pred_arr if normalize_key == "y_pred" else y_true_arr
+    reference_abs_mean = np.mean(np.abs(reference), dtype=np.float32)
+    return float(mae_value / (reference_abs_mean + np.float32(eps)))
+
+
 def cfg_to_must_param(cfg):
     """
     Convert a config dictionary into a pymust.utils.Param object.

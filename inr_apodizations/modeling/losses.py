@@ -30,7 +30,7 @@ def masked_mae_absolute_error(y_true, y_pred):
     return tf.abs(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
 
 
-class MaskedMAELoss(tf.keras.losses.Loss):
+class PixelWeightedMAELoss(tf.keras.losses.Loss):
     """Pixel-wise MAE loss intended for per-pixel sample weighting.
 
     This loss returns element-wise absolute error and delegates reduction and
@@ -39,12 +39,16 @@ class MaskedMAELoss(tf.keras.losses.Loss):
     objective used by sandbox INR-DAS experiments.
     """
 
-    def __init__(self, name: str = "masked_mae_loss"):
+    def __init__(self, name: str = "pixel_weighted_mae_loss"):
         super().__init__(name=name, reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE)
 
     def call(self, y_true, y_pred):  # type: ignore[override]
         """Compute element-wise absolute error for weighted reduction."""
         return masked_mae_absolute_error(y_true, y_pred)
+
+
+# Backward-compatible alias for existing imports.
+MaskedMAELoss = PixelWeightedMAELoss
 
 
 class ScaledLoss(tf.keras.losses.Loss):

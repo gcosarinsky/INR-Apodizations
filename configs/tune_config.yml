@@ -21,7 +21,7 @@ training:
   baseline_f_number: 0.5
   mask_weighting:
     enabled: true
-    lambda: 0.5
+    pixel_weight_lambda: 0.5
 
 target_regeneration:
   enabled: true
