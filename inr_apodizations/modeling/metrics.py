@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import tensorflow as tf
 
+from inr_apodizations.modeling.losses import masked_mae_absolute_error
 from inr_apodizations.utils import to_db_tensor
 
 
@@ -179,7 +180,7 @@ class MaskedMAE(tf.keras.metrics.Metric):
         if sample_weight is None:
             raise ValueError("MaskedMAE requires a non-None sample_weight tensor")
 
-        abs_error = tf.abs(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
+        abs_error = masked_mae_absolute_error(y_true, y_pred)
         weight = tf.cast(sample_weight, tf.float32)
         weight = tf.broadcast_to(weight, tf.shape(abs_error))
 

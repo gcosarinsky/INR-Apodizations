@@ -30,8 +30,8 @@ import tensorflow as tf
 import helpers
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.metrics import MaskedMAE
-from inr_apodizations.modeling.losses import MaskedMAELoss
-from inr_apodizations.modeling.losses import masked_mae_absolute_error
+from inr_apodizations.modeling.metrics import ssim_metric
+from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 
 import matplotlib.pyplot as plt
@@ -78,20 +78,12 @@ delayed_example_bytes = int(np.prod(delayed.shape[1:], dtype=np.int64) * delayed
 
 max_examples = cfg["training"].get("max_examples")
 if max_examples is not None:
-    max_examples = int(max_examples)
-    delayed = delayed[:max_examples]
-    targets = targets[:max_examples]
-    gaussian_masks = gaussian_masks[:max_examples]
-    if noise is not None:
-        noise = noise[:max_examples]
+    delayed = delayed[: int(max_examples)]
+    targets = targets[: int(max_examples)]
 
 mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
-mask_weight_lambda = float(mask_weighting_cfg.get("lambda", 0.0))
-if mask_weight_lambda < 0.0:
-    raise ValueError("training.mask_weighting.lambda must be >= 0")
-train_loss_weights = 1.0 + mask_weight_lambda * gaussian_masks.astype(np.float32, copy=False)
-train_loss_weights = train_loss_weights.astype(np.float32, copy=False)
-use_pixelwise_weights = True
+train_loss_weights = helpers.build_gaussian_loss_weights(gaussian_masks, mask_weighting_cfg)
+use_pixelwise_weights = train_loss_weights is not None
 
 train_idx, val_idx = helpers.split_train_validation_indices(
     n_examples=delayed.shape[0],
@@ -249,10 +241,87 @@ print(
         "normalize_norm": weight_reg_normalize,
     }
 )
+# Shared optional parameters for custom mae_db loss/metric.
+mae_db_ref_cfg = cfg["training"].get("mae_db_ref", None)
+mae_db_eps = float(cfg["training"].get("mae_db_eps", 1e-8))
 weight_decay = float(cfg["training"].get("weight_decay", 0.0))
-loss_obj = MaskedMAELoss(name="masked_mae_loss")
-metrics_list = []
-weighted_metrics_list = [MaskedMAE(name="masked_mae")]
+
+if mae_db_ref_cfg is None:
+    mae_db_ref = None
+else:
+    if not isinstance(mae_db_ref_cfg, (list, tuple)) or len(mae_db_ref_cfg) != 2:
+        raise ValueError("training.mae_db_ref must be a list/tuple with two values")
+    mae_db_ref = (float(mae_db_ref_cfg[0]), float(mae_db_ref_cfg[1]))
+
+
+def _resolve_custom_mae_db(item, *, name: str):
+    if isinstance(item, str) and item.lower() == "mae_db":
+        return mae_db_factory(ref=mae_db_ref, eps=mae_db_eps, name=name)
+    return item
+
+
+def _pixelwise_mae(y_true, y_pred):
+    """Return element-wise absolute error for per-pixel sample weighting."""
+    return tf.abs(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
+
+
+def _pixelwise_mse(y_true, y_pred):
+    """Return element-wise squared error for per-pixel sample weighting."""
+    diff = tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32)
+    return tf.square(diff)
+
+
+_pixelwise_mae.__name__ = "mae"
+_pixelwise_mse.__name__ = "mse"
+
+
+# Resolve loss from config and instantiate a Keras loss object.
+# The config can contain any valid identifier accepted by `tf.keras.losses.get`,
+# fallback to MAE if resolution fails.
+loss_name = cfg["training"].get("loss", "mae")
+if isinstance(loss_name, str) and loss_name.lower() == "mae_db":
+    loss_obj = mae_db_factory(ref=mae_db_ref, eps=mae_db_eps, name="mae_db")
+else:
+    try:
+        loss_obj = tf.keras.losses.get(loss_name)
+    except Exception:
+        loss_str = str(loss_name).lower()
+        if loss_str in ("mae", "mean_absolute_error"):
+            loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+        elif loss_str in ("mse", "mean_squared_error"):
+            loss_obj = tf.keras.losses.MeanSquaredError(name="mse")
+        else:
+            loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+
+if use_pixelwise_weights and isinstance(loss_name, str):
+    loss_str = loss_name.lower()
+    if loss_str in ("mae", "mean_absolute_error"):
+        loss_obj = _pixelwise_mae
+    elif loss_str in ("mse", "mean_squared_error"):
+        loss_obj = _pixelwise_mse
+
+# Use the resolved loss object directly (do not apply ScaledLoss wrapper)
+
+# Resolve metrics from config with optional support for custom mae_db.
+metrics_cfg = cfg["training"].get("metric", "mae")
+def _resolve_metric(metric_item):
+    if use_pixelwise_weights and isinstance(metric_item, str):
+        metric_str = metric_item.lower()
+        if metric_str in ("mae", "mean_absolute_error"):
+            return _pixelwise_mae
+        if metric_str in ("mse", "mean_squared_error"):
+            return _pixelwise_mse
+    return _resolve_custom_mae_db(metric_item, name="mae_db")
+
+
+if isinstance(metrics_cfg, (list, tuple)):
+    metrics_list = [_resolve_metric(m) for m in metrics_cfg]
+else:
+    metrics_list = [_resolve_metric(metrics_cfg)]
+
+weighted_metrics_list = []
+if use_pixelwise_weights:
+    weighted_metrics_list.append(MaskedMAE(name="masked_mae"))
 
 trainer.compile(
     optimizer=tf.keras.optimizers.Adam(
@@ -262,83 +331,6 @@ trainer.compile(
     loss=loss_obj,
     metrics=metrics_list,
     weighted_metrics=weighted_metrics_list,
-)
-
-
-def run_pre_fit_sanity_check(
-    trainer_obj: DasInrTrainer,
-    dataset: tf.data.Dataset,
-    loss_fn: tf.keras.losses.Loss,
-    epsilon: float = 1e-12,
-) -> None:
-    """Validate strict equality between weighted loss and MaskedMAE on one batch.
-
-    Args:
-        trainer_obj: Compiled trainer used for forward reconstruction.
-        dataset: Dataset yielding ``(delayed, target, sample_weight)``.
-        loss_fn: Compiled loss object.
-        epsilon: Numeric tolerance floor for weighted denominator and equality check.
-
-    Raises:
-        ValueError: If dataset does not provide sample weights.
-        RuntimeError: If loss and MaskedMAE do not match within tolerance.
-    """
-    first_batch = next(iter(dataset.take(1)))
-    if not isinstance(first_batch, (tuple, list)) or len(first_batch) != 3:
-        raise ValueError(
-            "Sanity check requires dataset batches as (delayed, target, sample_weight)."
-        )
-
-    x_batch, y_batch, sample_weight_batch = first_batch
-    y_pred_batch, _ = trainer_obj.reconstruct_image(x_batch, training=False)
-
-    # Value used by Keras loss object with sample weighting.
-    loss_value = tf.cast(
-        loss_fn(y_batch, y_pred_batch, sample_weight=sample_weight_batch), tf.float32
-    )
-
-    # MaskedMAE metric value on exactly the same tensors.
-    masked_mae_metric = MaskedMAE(name="sanity_masked_mae", epsilon=epsilon)
-    masked_mae_metric.update_state(y_batch, y_pred_batch, sample_weight=sample_weight_batch)
-    metric_value = tf.cast(masked_mae_metric.result(), tf.float32)
-
-    # Explicit manual reduction to expose numerator and denominator.
-    abs_error = masked_mae_absolute_error(y_batch, y_pred_batch)
-    weight = tf.cast(sample_weight_batch, tf.float32)
-    weight = tf.broadcast_to(weight, tf.shape(abs_error))
-    numerator = tf.reduce_sum(abs_error * weight)
-    denominator = tf.reduce_sum(weight)
-    manual_value = numerator / (denominator + tf.cast(epsilon, tf.float32))
-
-    print("Pre-fit sanity check (loss vs MaskedMAE):")
-    print(
-        {
-            "numerator_sum_abs_error_times_weight": float(numerator.numpy()),
-            "denominator_sum_weight": float(denominator.numpy()),
-            "loss_value": float(loss_value.numpy()),
-            "metric_value": float(metric_value.numpy()),
-            "manual_value": float(manual_value.numpy()),
-        }
-    )
-
-    max_diff = tf.reduce_max(
-        [
-            tf.abs(loss_value - metric_value),
-            tf.abs(loss_value - manual_value),
-            tf.abs(metric_value - manual_value),
-        ]
-    )
-    tolerance = tf.maximum(tf.cast(epsilon, tf.float32), tf.constant(1e-6, dtype=tf.float32))
-    if bool((max_diff > tolerance).numpy()):
-        raise RuntimeError(
-            "Pre-fit sanity check failed: loss and MaskedMAE do not match under sample weights."
-        )
-
-
-run_pre_fit_sanity_check(
-    trainer_obj=trainer,
-    dataset=train_ds,
-    loss_fn=loss_obj,
 )
 
 # Keep a deterministic baseline prediction from random INR initialization.
