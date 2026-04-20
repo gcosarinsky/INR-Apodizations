@@ -95,9 +95,75 @@ def _build_scatterer_disk_context(
         "nx": nx,
         "x_coords": x_coords,
         "z_coords": z_coords,
+        "dx": dx,
+        "dz": dz,
         "disk": disk,
         "r": r,
+        "rx": rx,
+        "rz": rz,
+        "lateral_profile_offsets_mm": np.arange(-rx, rx + 1, dtype=np.float64) * dx,
+        "axial_profile_offsets_mm": np.arange(-rz, rz + 1, dtype=np.float64) * dz,
     }
+
+
+def _extract_rect_max_profiles(
+    image: np.ndarray,
+    ix: int,
+    iz: int,
+    disk_ctx: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract lateral and axial profiles inside the circle bounding rectangle.
+
+    The lateral profile keeps one value per lateral sample of the minimal
+    rectangle containing the scatterer disk and collapses the orthogonal
+    direction with a maximum. The axial profile does the analogous operation
+    along depth.
+
+    Args:
+        image: Image with shape ``(nz, nx)``.
+        ix: Lateral index of the scatterer center.
+        iz: Axial index of the scatterer center.
+        disk_ctx: Precomputed disk geometry context.
+
+    Returns:
+        Tuple ``(lateral_profile, axial_profile)`` with NaN padding when the
+        rectangle is clipped by image borders.
+    """
+    rx = int(disk_ctx["rx"])
+    rz = int(disk_ctx["rz"])
+    nz = int(disk_ctx["nz"])
+    nx = int(disk_ctx["nx"])
+
+    lateral_profile = np.full(2 * rx + 1, np.nan, dtype=np.float64)
+    axial_profile = np.full(2 * rz + 1, np.nan, dtype=np.float64)
+
+    ix0 = ix - rx
+    ix1 = ix + rx + 1
+    iz0 = iz - rz
+    iz1 = iz + rz + 1
+
+    img_x0 = max(0, ix0)
+    img_x1 = min(nx, ix1)
+    img_z0 = max(0, iz0)
+    img_z1 = min(nz, iz1)
+
+    if img_x0 >= img_x1 or img_z0 >= img_z1:
+        return lateral_profile, axial_profile
+
+    image_patch = image[img_z0:img_z1, img_x0:img_x1]
+    lateral_insert = img_x0 - ix0
+    axial_insert = img_z0 - iz0
+
+    lateral_profile[lateral_insert:lateral_insert + image_patch.shape[1]] = np.max(
+        image_patch,
+        axis=0,
+    )
+    axial_profile[axial_insert:axial_insert + image_patch.shape[0]] = np.max(
+        image_patch,
+        axis=1,
+    )
+
+    return lateral_profile, axial_profile
 
 
 def _compute_scatterer_metrics_single(
@@ -125,11 +191,15 @@ def _compute_scatterer_metrics_single(
     z_coords = disk_ctx["z_coords"]
     disk = disk_ctx["disk"]
     r = int(disk_ctx["r"])
+    lateral_offsets_mm = np.asarray(disk_ctx["lateral_profile_offsets_mm"], dtype=np.float64)
+    axial_offsets_mm = np.asarray(disk_ctx["axial_profile_offsets_mm"], dtype=np.float64)
 
     n_scatterers = scatterers.shape[0]
     union_mask = np.zeros((nz, nx), dtype=bool)
     individual_masks = np.zeros((n_scatterers, nz, nx), dtype=bool) if return_masks else None
     peak_amplitudes = np.empty(n_scatterers, dtype=np.float64)
+    lateral_profiles = np.full((n_scatterers, lateral_offsets_mm.size), np.nan, dtype=np.float64)
+    axial_profiles = np.full((n_scatterers, axial_offsets_mm.size), np.nan, dtype=np.float64)
 
     for i, (x0, z0) in enumerate(scatterers):
         ix = int(np.argmin(np.abs(x_coords - x0)))
@@ -158,6 +228,9 @@ def _compute_scatterer_metrics_single(
 
         masked_pixels = image[local_mask]
         peak_amplitudes[i] = float(masked_pixels.max()) if masked_pixels.size > 0 else 0.0
+        lateral_profile, axial_profile = _extract_rect_max_profiles(image, ix, iz, disk_ctx)
+        lateral_profiles[i] = lateral_profile
+        axial_profiles[i] = axial_profile
 
         if individual_masks is not None:
             individual_masks[i] = local_mask
@@ -171,6 +244,10 @@ def _compute_scatterer_metrics_single(
     result = {
         "peak_amplitudes": peak_amplitudes,
         "background_rms": background_rms,
+        "lateral_profiles": lateral_profiles,
+        "axial_profiles": axial_profiles,
+        "lateral_profile_offsets_mm": lateral_offsets_mm.copy(),
+        "axial_profile_offsets_mm": axial_offsets_mm.copy(),
     }
 
     if return_background_hist:
@@ -197,12 +274,18 @@ def _aggregate_scatterer_metrics_batch(
     aggregated_scatterer_indices: list[np.ndarray] = []
     point_background_rms: list[np.ndarray] = []
     point_image_maxima: list[np.ndarray] = []
+    aggregated_lateral_profiles: list[np.ndarray] = []
+    aggregated_axial_profiles: list[np.ndarray] = []
     background_rms_per_example = np.empty(len(per_example_metrics), dtype=np.float64)
+    lateral_profile_offsets_mm = np.empty(0, dtype=np.float64)
+    axial_profile_offsets_mm = np.empty(0, dtype=np.float64)
 
     for example_idx, metrics in enumerate(per_example_metrics):
         peaks = np.asarray(metrics["peak_amplitudes"], dtype=np.float64)
         n_points = peaks.shape[0]
         background_rms_value = float(metrics["background_rms"])
+        lateral_profiles = np.asarray(metrics.get("lateral_profiles", np.empty((0, 0))), dtype=np.float64)
+        axial_profiles = np.asarray(metrics.get("axial_profiles", np.empty((0, 0))), dtype=np.float64)
         background_rms_per_example[example_idx] = background_rms_value
 
         aggregated_peaks.append(peaks)
@@ -210,6 +293,18 @@ def _aggregate_scatterer_metrics_batch(
         aggregated_scatterer_indices.append(np.arange(n_points, dtype=np.int32))
         point_background_rms.append(np.full(n_points, background_rms_value, dtype=np.float64))
         point_image_maxima.append(np.full(n_points, image_maxima[example_idx], dtype=np.float64))
+        aggregated_lateral_profiles.append(lateral_profiles)
+        aggregated_axial_profiles.append(axial_profiles)
+
+        if example_idx == 0:
+            lateral_profile_offsets_mm = np.asarray(
+                metrics.get("lateral_profile_offsets_mm", np.empty(0)),
+                dtype=np.float64,
+            )
+            axial_profile_offsets_mm = np.asarray(
+                metrics.get("axial_profile_offsets_mm", np.empty(0)),
+                dtype=np.float64,
+            )
 
     if aggregated_peaks:
         peak_amplitudes = np.concatenate(aggregated_peaks)
@@ -217,12 +312,16 @@ def _aggregate_scatterer_metrics_batch(
         peak_scatterer_indices = np.concatenate(aggregated_scatterer_indices)
         point_bg_rms = np.concatenate(point_background_rms)
         point_img_max = np.concatenate(point_image_maxima)
+        lateral_profiles = np.concatenate(aggregated_lateral_profiles, axis=0)
+        axial_profiles = np.concatenate(aggregated_axial_profiles, axis=0)
     else:
         peak_amplitudes = np.empty(0, dtype=np.float64)
         peak_example_indices = np.empty(0, dtype=np.int32)
         peak_scatterer_indices = np.empty(0, dtype=np.int32)
         point_bg_rms = np.empty(0, dtype=np.float64)
         point_img_max = np.empty(0, dtype=np.float64)
+        lateral_profiles = np.empty((0, lateral_profile_offsets_mm.size), dtype=np.float64)
+        axial_profiles = np.empty((0, axial_profile_offsets_mm.size), dtype=np.float64)
 
     aggregated = {
         "peak_amplitudes": peak_amplitudes,
@@ -239,6 +338,10 @@ def _aggregate_scatterer_metrics_batch(
         "point_image_maxima": point_img_max,
         "n_examples": len(per_example_metrics),
         "n_scatterers_total": int(peak_amplitudes.size),
+        "lateral_profiles": lateral_profiles,
+        "axial_profiles": axial_profiles,
+        "lateral_profile_offsets_mm": lateral_profile_offsets_mm,
+        "axial_profile_offsets_mm": axial_profile_offsets_mm,
     }
 
     if return_background_hist:
@@ -342,6 +445,135 @@ def compute_scatterer_metrics(
     }
 
 
+def compute_validation_and_reference_metrics(
+    images_abs: dict[str, np.ndarray],
+    targets: np.ndarray,
+    scatterers_xy: np.ndarray | Sequence[np.ndarray] | None,
+    cm: CoordinateManager,
+    sample_weights: np.ndarray | None = None,
+    radius_mm: float = 1.5,
+    hist_bins: int = 50,
+) -> dict:
+    """Compute validation MAE, scatterer metrics and reference MAE values.
+
+    This generalised function returns the original outputs (per-method MAE
+    and scatterer metrics) and also computes reference MAE values for common
+    baseline images when present in `images_abs` and for a zero image.
+
+    Returns a dictionary with keys:
+      - ``mae_by_method``: per-method MAE
+      - ``masked_mae_by_method``: per-method weighted MAE (if sample weights given)
+      - ``scatterer_metrics``: per-method scatterer metrics (if scatterers provided)
+      - ``reference_mae``: dict with keys `zero`, and when available `uniform`,
+        `boxcar`, `hanning` with their MAE values.
+    """
+    targets_array = np.asarray(targets)
+    if targets_array.ndim not in (2, 3):
+        raise ValueError("targets must be a 2D (Z, X) or 3D (B, Z, X) array")
+
+    if targets_array.ndim == 2:
+        targets_batch = targets_array[np.newaxis, ...]
+    else:
+        targets_batch = targets_array
+
+    weights_batch = None
+    if sample_weights is not None:
+        weights_array = np.asarray(sample_weights)
+        if weights_array.ndim == 2:
+            weights_batch = weights_array[np.newaxis, ...]
+        elif weights_array.ndim == 3:
+            weights_batch = weights_array
+        else:
+            raise ValueError("sample_weights must be a 2D (Z, X) or 3D (B, Z, X) array")
+
+        if weights_batch.shape != targets_batch.shape:
+            raise ValueError(
+                f"sample_weights shape {weights_batch.shape} does not match targets shape {targets_batch.shape}"
+            )
+
+    mae_by_method: dict[str, float] = {}
+    masked_mae_by_method: dict[str, float] = {}
+    normalized_images: dict[str, np.ndarray] = {}
+
+    for method_name, image in images_abs.items():
+        image_array = np.asarray(image)
+        if image_array.ndim == 2:
+            image_batch = image_array[np.newaxis, ...]
+        elif image_array.ndim == 3:
+            image_batch = image_array
+        else:
+            raise ValueError(
+                f"images_abs['{method_name}'] must be a 2D (Z, X) or 3D (B, Z, X) array"
+            )
+
+        if image_batch.shape != targets_batch.shape:
+            raise ValueError(
+                f"images_abs['{method_name}'] shape {image_batch.shape} does not match targets shape {targets_batch.shape}"
+            )
+
+        mae_by_method[method_name] = float(
+            np.mean(
+                np.abs(
+                    image_batch.astype(np.float64, copy=False)
+                    - targets_batch.astype(np.float64, copy=False)
+                )
+            )
+        )
+
+        if weights_batch is not None:
+            abs_error = np.abs(
+                image_batch.astype(np.float64, copy=False) - targets_batch.astype(np.float64, copy=False)
+            )
+            weighted_error = abs_error * weights_batch.astype(np.float64, copy=False)
+            weight_sum = float(np.sum(weights_batch, dtype=np.float64))
+            masked_mae_by_method[method_name] = float(np.sum(weighted_error, dtype=np.float64) / max(weight_sum, 1e-12))
+
+        normalized_images[method_name] = image_batch
+
+    # Compute scatterer metrics when requested
+    scatterer_metrics = {}
+    if scatterers_xy is not None:
+        scatterer_metrics = {
+            method_name: compute_scatterer_metrics(
+                image,
+                scatterers_xy,
+                cm,
+                radius_mm=radius_mm,
+                return_masks=False,
+                return_background_hist=True,
+                hist_bins=hist_bins,
+            )
+            for method_name, image in normalized_images.items()
+        }
+
+    # Compute reference MAE values: zero image and common baselines if present
+    reference_mae: dict[str, float] = {}
+    # zero image reference
+    zero_batch = np.zeros_like(targets_batch, dtype=np.float64)
+    reference_mae["zero"] = float(np.mean(np.abs(zero_batch - targets_batch.astype(np.float64, copy=False))))
+
+    # common baseline names to check in provided images
+    for rname in ("uniform", "boxcar", "hanning"):
+        if rname in normalized_images:
+            ref_img = normalized_images[rname]
+            reference_mae[rname] = float(
+                np.mean(np.abs(ref_img.astype(np.float64, copy=False) - targets_batch.astype(np.float64, copy=False)))
+            )
+
+    return {
+        "mae_by_method": mae_by_method,
+        "masked_mae_by_method": masked_mae_by_method,
+        "scatterer_metrics": scatterer_metrics,
+        "reference_mae": reference_mae,
+    }
+
+
+# Backwards-compatible alias for callers using the old name
+def compute_validation_mae_and_scatterer_metrics(*args, **kwargs):
+    """Backward-compatible wrapper around compute_validation_and_reference_metrics."""
+    return compute_validation_and_reference_metrics(*args, **kwargs)
+
+
 def plot_scatterer_evaluation(
     images_abs: dict,
     scatterers_xy: np.ndarray | Sequence[np.ndarray],
@@ -355,6 +587,7 @@ def plot_scatterer_evaluation(
     vmax_db: float = 0.0,
     cmap: str = "gray",
     example_suffix: str = "",
+    all_metrics: dict | None = None,
 ) -> dict:
     os.makedirs(output_dir, exist_ok=True)
     if compare_pairs is None:
@@ -389,18 +622,19 @@ def plot_scatterer_evaluation(
     first_ref = compare_pairs[0][0] if compare_pairs else None
     sfx = f"_{example_suffix}" if example_suffix else ""
 
-    all_metrics: dict = {}
-    for method_name, image in images_abs.items():
-        need_masks = method_name == first_ref
-        all_metrics[method_name] = compute_scatterer_metrics(
-            image,
-            scatterers_xy,
-            cm,
-            radius_mm=radius_mm,
-            return_masks=need_masks,
-            return_background_hist=True,
-            hist_bins=hist_bins,
-        )
+    if all_metrics is None:
+        all_metrics = {}
+        for method_name, image in images_abs.items():
+            need_masks = method_name == first_ref
+            all_metrics[method_name] = compute_scatterer_metrics(
+                image,
+                scatterers_xy,
+                cm,
+                radius_mm=radius_mm,
+                return_masks=need_masks,
+                return_background_hist=True,
+                hist_bins=hist_bins,
+            )
 
     ref_metrics = all_metrics.get(first_ref) if first_ref is not None else None
     if extent is not None and first_ref is not None and ref_metrics is not None:
@@ -587,6 +821,7 @@ def plot_scatterer_snr_ratio(
     alpha: float = 0.7,
     eps: float = 1e-8,
     return_fig: bool = True,
+    all_metrics: dict | None = None,
 ) -> dict:
     """Plot per-reflector SNR ratio between two methods.
 
@@ -660,12 +895,16 @@ def plot_scatterer_snr_ratio(
     # Normalize scatterers to per-example list
     scatterer_batch, _ = _normalize_scatterer_batch(scatterers_xy, batch_size=batch_size)
     # Compute metrics for both methods
-    ref_metrics = compute_scatterer_metrics(
-        images_abs[ref_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
-    )
-    cmp_metrics = compute_scatterer_metrics(
-        images_abs[cmp_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
-    )
+    if all_metrics is not None and ref_method in all_metrics and cmp_method in all_metrics:
+        ref_metrics = all_metrics[ref_method]
+        cmp_metrics = all_metrics[cmp_method]
+    else:
+        ref_metrics = compute_scatterer_metrics(
+            images_abs[ref_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
+        )
+        cmp_metrics = compute_scatterer_metrics(
+            images_abs[cmp_method], scatterers_xy, cm, radius_mm=radius_mm, return_masks=False, return_background_hist=False
+        )
 
     # Ensure alignment of aggregated points
     _validate_aligned_aggregated_points(ref_metrics, cmp_metrics)

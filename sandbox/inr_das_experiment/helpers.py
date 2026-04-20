@@ -13,6 +13,8 @@ import os
 import subprocess
 from datetime import datetime
 from typing import Tuple
+import csv
+import statistics
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -397,6 +399,61 @@ def build_coordinate_manager(
     return kp, cm
 
 
+def compute_das_baseline_numpy(
+    delayed_samples: np.ndarray,
+    apodization: np.ndarray | None = None,
+    return_complex: bool = False,
+) -> np.ndarray:
+    """Compute baseline DAS reconstruction in NumPy.
+
+    Args:
+        delayed_samples: Delayed samples with shape ``(E, Z, X)`` or
+            ``(B, E, Z, X)`` and complex dtype.
+        apodization: Optional apodization map with shape ``(E, Z, X)``.
+            If ``None``, the baseline is uniform (all-ones weights).
+        return_complex: If ``True``, return the complex DAS image.
+            Otherwise return ``abs(image)`` as ``float32``.
+
+    Returns:
+        Reconstructed DAS image with shape ``(Z, X)`` for 3D input or
+        ``(B, Z, X)`` for 4D input.
+
+    Raises:
+        ValueError: If input shapes are invalid or incompatible.
+    """
+    delayed_np = np.asarray(delayed_samples)
+    if delayed_np.ndim not in (3, 4):
+        raise ValueError(
+            "delayed_samples must have shape (E, Z, X) or (B, E, Z, X); "
+            f"got shape {delayed_np.shape}"
+        )
+
+    delayed_np = delayed_np.astype(np.complex64, copy=False)
+    elem_axis = 0 if delayed_np.ndim == 3 else 1
+
+    if apodization is None:
+        weighted = delayed_np
+    else:
+        apod_np = np.asarray(apodization)
+        if apod_np.ndim != 3:
+            raise ValueError(
+                "apodization must have shape (E, Z, X); "
+                f"got shape {apod_np.shape}"
+            )
+        expected_shape = delayed_np.shape if delayed_np.ndim == 3 else delayed_np.shape[1:]
+        if apod_np.shape != expected_shape:
+            raise ValueError(
+                "apodization shape mismatch; expected "
+                f"{expected_shape}, got {apod_np.shape}"
+            )
+        weighted = delayed_np * apod_np.astype(np.complex64, copy=False)
+
+    image_complex = np.sum(weighted, axis=elem_axis)
+    if return_complex:
+        return image_complex.astype(np.complex64, copy=False)
+    return np.abs(image_complex).astype(np.float32, copy=False)
+
+
 def validate_dataset_shapes(
     delayed: np.ndarray, targets: np.ndarray, gaussian_masks: np.ndarray
 ) -> None:
@@ -493,31 +550,40 @@ def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config
 def build_gaussian_loss_weights(
     gaussian_masks_array: np.ndarray, weighting_cfg: dict
 ) -> np.ndarray | None:
-    """Build per-pixel loss weights directly from gaussian masks using ``1 + lambda * mask``.
+    """Build per-pixel loss weights directly from gaussian masks.
 
     The gaussian mask is expected to be in [0, 1], so the resulting weights are
-    in [1, 1 + lambda]. No normalization or clipping is applied.
+    in ``[1, 1 + pixel_weight_lambda]``. No normalization or clipping is applied.
 
     Args:
         gaussian_masks_array: Gaussian mask tensor with shape ``(N, Z, X)``,
             values in ``[0, 1]``.
         weighting_cfg: Configuration mapping under ``training.mask_weighting``.
-            Expected key: ``lambda`` (float, default 3.0).
+            Expected key: ``pixel_weight_lambda`` (float, default 3.0).
+            Legacy key ``lambda`` is also accepted as fallback.
 
     Returns:
         Optional weight tensor with shape ``(N, Z, X)`` and dtype float32.
         Returns ``None`` when weighting is disabled.
 
     Raises:
-        ValueError: If ``lambda`` is negative.
+        ValueError: If the resolved pixel-weight lambda is negative.
     """
     enabled = bool(weighting_cfg.get("enabled", False))
     if not enabled:
         return None
 
-    weight_lambda = float(weighting_cfg.get("lambda", 3.0))
+    weight_lambda = float(
+        weighting_cfg.get(
+            "pixel_weight_lambda",
+            weighting_cfg.get("lambda", 3.0),
+        )
+    )
     if weight_lambda < 0.0:
-        raise ValueError("training.mask_weighting.lambda must be >= 0")
+        raise ValueError(
+            "training.mask_weighting.pixel_weight_lambda must be >= 0 "
+            "(legacy key training.mask_weighting.lambda is also accepted)"
+        )
 
     masks_float = gaussian_masks_array.astype(np.float32, copy=False)
     weights = 1.0 + weight_lambda * masks_float
@@ -624,6 +690,164 @@ def plot_apodization_energy_comparison(
 # Backward-compatible exports after scatterer refactor.
 from scatterer_metrics import (  # noqa: E402
     compute_scatterer_metrics,
+    compute_validation_mae_and_scatterer_metrics,
     plot_scatterer_evaluation,
     plot_scatterer_snr_ratio,
 )
+
+
+def save_tuner_architecture_scores(
+    tuner,
+    candidate_architectures,
+    output_dir: str,
+    objective_name: str = "val_mae",
+    sort_by_best: bool = True,
+) -> None:
+    """Collect Keras Tuner trials and save per-architecture score summaries.
+
+    Args:
+        tuner: Keras Tuner instance after `.search()` has completed.
+        candidate_architectures: List of architectures (indexed by `architecture_index`).
+        output_dir: Folder where the artifacts will be saved (created if needed).
+        objective_name: Metric name used as the tuner objective (default: "val_mae").
+        sort_by_best: Whether to order the saved per-architecture summaries by
+            `best_score` ascending (best/lowest first). Defaults to ``True``.
+
+    Behavior:
+        - Writes `tuner_trials.json` with one entry per trial (hyperparameters + score).
+        - Writes `per_architecture_scores.json` mapping architecture index -> summary.
+        - Writes `per_architecture_scores.csv` for quick inspection.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    trials = getattr(getattr(tuner, "oracle", {}), "trials", {})
+    trials_info = []
+
+    # Build a lookup for architecture hidden_units when available
+    arch_lookup = {}
+    try:
+        for i, arch in enumerate(candidate_architectures):
+            arch_lookup[str(i)] = arch
+    except Exception:
+        arch_lookup = {}
+
+    for trial_id, trial in (trials.items() if isinstance(trials, dict) else []):
+        # Collect hyperparameters as a dict
+        hp_obj = getattr(trial, "hyperparameters", None)
+        hp_dict = {}
+        if hp_obj is not None:
+            if hasattr(hp_obj, "values"):
+                try:
+                    hp_dict = dict(hp_obj.values)
+                except Exception:
+                    hp_dict = {}
+            else:
+                try:
+                    hp_dict = dict(getattr(hp_obj, "get_config", lambda: {})() or {})
+                except Exception:
+                    hp_dict = {}
+
+        # Extract a sensible score from the trial (robust across Keras Tuner versions)
+        score = None
+        try:
+            if hasattr(trial, "score") and trial.score is not None:
+                score = float(trial.score)
+        except Exception:
+            score = None
+
+        if score is None:
+            metrics_obj = getattr(trial, "metrics", None)
+            if metrics_obj is not None:
+                try:
+                    if hasattr(metrics_obj, "get_last_value"):
+                        val = metrics_obj.get_last_value(objective_name)
+                        if val is not None:
+                            score = float(val)
+                except Exception:
+                    try:
+                        if hasattr(metrics_obj, "get_best_value"):
+                            val = metrics_obj.get_best_value(objective_name)
+                            if val is not None:
+                                score = float(val)
+                    except Exception:
+                        score = None
+
+        arch_index = None
+        if isinstance(hp_dict, dict) and "architecture_index" in hp_dict:
+            try:
+                arch_index = int(hp_dict.get("architecture_index"))
+            except Exception:
+                arch_index = None
+
+        # Determine hidden_units for this architecture index (if available)
+        hidden_units = None
+        try:
+            if arch_index is not None:
+                hidden_units = arch_lookup.get(str(arch_index))
+        except Exception:
+            hidden_units = None
+
+        trials_info.append({
+            "trial_id": str(trial_id),
+            "architecture_index": arch_index,
+            "hidden_units": hidden_units,
+            "hyperparameters": {k: (int(v) if isinstance(v, (np.integer,)) else (float(v) if isinstance(v, (np.floating,)) else v)) for k, v in hp_dict.items()},
+            "score": (float(score) if score is not None else None),
+        })
+
+    # Group by architecture index
+    per_arch = {}
+    for t in trials_info:
+        ai = t["architecture_index"]
+        ai_key = str(ai) if ai is not None else "None"
+        per_arch.setdefault(ai_key, {"n_trials": 0, "all_scores": [], "hidden_units": None})
+        per_arch[ai_key]["n_trials"] += 1
+        per_arch[ai_key]["all_scores"].append(t["score"])
+        # Attach canonical hidden_units when available
+        if per_arch[ai_key]["hidden_units"] is None and t.get("hidden_units") is not None:
+            per_arch[ai_key]["hidden_units"] = t.get("hidden_units")
+
+    # Compute summaries
+    for ai_key, info in per_arch.items():
+        # Filter out None scores
+        scores = [s for s in info["all_scores"] if s is not None]
+        if scores:
+            info["best_score"] = float(min(scores))
+            try:
+                info["median_score"] = float(statistics.median(scores))
+            except Exception:
+                info["median_score"] = None
+        else:
+            info["best_score"] = None
+            info["median_score"] = None
+
+    # Optionally order architectures by best score (ascending) when saving
+    if sort_by_best:
+        def _best_score_key(item):
+            info = item[1]
+            s = info.get("best_score")
+            return float(s) if s is not None else float("inf")
+
+        ordered_items = sorted(per_arch.items(), key=_best_score_key)
+    else:
+        ordered_items = sorted(per_arch.items(), key=lambda x: (x[0] if x[0] != "None" else "zz"))
+
+    ordered_per_arch = {k: v for k, v in ordered_items}
+
+    # Save files
+    trials_path = os.path.join(output_dir, "tuner_trials.json")
+    with open(trials_path, "w", encoding="utf-8") as f:
+        json.dump(trials_info, f, indent=2, default=str)
+
+    arch_path = os.path.join(output_dir, "per_architecture_scores.json")
+    with open(arch_path, "w", encoding="utf-8") as f:
+        json.dump(ordered_per_arch, f, indent=2, default=str)
+
+    csv_path = os.path.join(output_dir, "per_architecture_scores.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["architecture_index", "n_trials", "best_score", "median_score", "hidden_units", "all_scores"])
+        for ai_key, info in ordered_items:
+            writer.writerow([ai_key, info.get("n_trials", 0), info.get("best_score"), info.get("median_score"), json.dumps(info.get("hidden_units", None)), json.dumps(info.get("all_scores", []))])
+
+    return

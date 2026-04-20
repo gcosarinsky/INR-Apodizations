@@ -12,6 +12,7 @@ Workflow:
 """
 
 from pathlib import Path
+import csv
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -29,7 +30,7 @@ from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.plots import plot_lateral_reflector_profiles
-from inr_apodizations.utils import to_db
+from inr_apodizations.utils import relative_mae, to_db
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
 import sys
 
@@ -331,6 +332,55 @@ else:
 target_np = np.asarray(targets_all[example_idx]) if targets_all is not None else None
 if target_np is not None:
     target_db = to_db(target_np, ref=float(np.max(np.abs(target_np))))
+
+# --- Early baseline RelativeMAE on reference apodizations ---
+if target_np is not None:
+    relative_mae_eps = float(cfg_user.get("relative_mae_eps", 1e-12))
+    reference_methods = ["uniform", "boxcar", "hanning"]
+    target_abs = np.abs(target_np)
+    baseline_rows = []
+
+    print("\n=== Validation baseline: RelativeMAE (reference apodizations) ===")
+    print(
+        f"{'method':>10} {'mae':>14} {'rel_mae_y_pred':>16} {'rel_mae_y_true':>16}"
+    )
+    for method_name in reference_methods:
+        if method_name not in das_images_linear:
+            print(f"{method_name:>10} {'N/A':>14} {'N/A':>16} {'N/A':>16}")
+            continue
+
+        pred_abs = np.abs(das_images_linear[method_name])
+        mae_value = float(np.mean(np.abs(target_abs - pred_abs), dtype=np.float32))
+        rel_mae_y_pred = relative_mae(
+            target_abs,
+            pred_abs,
+            eps=relative_mae_eps,
+            normalize_by="y_pred",
+        )
+        rel_mae_y_true = relative_mae(
+            target_abs,
+            pred_abs,
+            eps=relative_mae_eps,
+            normalize_by="y_true",
+        )
+        baseline_rows.append((method_name, mae_value, rel_mae_y_pred, rel_mae_y_true))
+        print(
+            f"{method_name:>10} {mae_value:14.6g} "
+            f"{rel_mae_y_pred:16.6g} {rel_mae_y_true:16.6g}"
+        )
+
+    if save_outputs and baseline_rows:
+        out_baseline_csv = output_dir / f"baseline_relative_mae_example{example_idx}.csv"
+        with out_baseline_csv.open("w", encoding="utf-8", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["method", "mae", "relative_mae_y_pred", "relative_mae_y_true"])
+            for method_name, mae_value, rel_mae_y_pred, rel_mae_y_true in baseline_rows:
+                writer.writerow([method_name, mae_value, rel_mae_y_pred, rel_mae_y_true])
+        print(f"Saved {out_baseline_csv}")
+else:
+    print(
+        "Skipping RelativeMAE baseline evaluation because targets_dataset.npy is not available."
+    )
 
 if bool(cfg_user.get("save_npy", False)):
     arrays_path = output_dir / f"das_arrays_example{example_idx}.npz"

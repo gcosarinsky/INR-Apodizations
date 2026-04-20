@@ -1,0 +1,49 @@
+io:
+  dataset_folder: "data/delayed_samples_dataset/20260406_155448"
+  sandbox_output_root: "sandbox/inr_das_experiment/outputs/manual_tuning"
+
+model:
+  scaled_features: true
+  feature_chunk_size: 4096
+  physical_feature_set: "distance_depth_edge"
+  activation: "relu"
+  output_activation: "sigmoid"
+
+training:
+  seed: 42
+  train_fraction: 0.8
+  batch_size: 2
+  epochs: 20
+  early_stopping_patience: 4
+  reduce_lr_patience: 3
+  weight_decay: 0.001
+  baseline_f_number: 0.75
+  mask_weighting:
+    enabled: true
+    pixel_weight_lambda: 0.5
+
+tuning:
+  # Candidate architecture generation (kept as ranges so we can reuse generate_candidate_architectures)
+  n_layers_min: 2
+  n_layers_max: 6
+  n_layers_step: 1
+  units_min: 4
+  units_max: 32
+  units_step: 4
+  non_increasing: true
+  max_candidates: 2
+
+  # Fixed hyperparameters for manual sweep
+  reg_lambda: 0.1
+  reg_tau: 0.8
+  lr: 0.01
+  executions_per_candidate: 1
+
+plots:
+  cmap: "gray"
+  vmin_db: -60.0
+  vmax_db: 0.0
+
+scatterer_eval:
+  enabled: true
+  radius_mm: 1.5

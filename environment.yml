@@ -22,4 +22,6 @@ dependencies:
     - tensorflow==2.10
     - cupy-cuda11x
     - python-dotenv
+    #- keras-tuner[bayesian]
+    - optuna
     - -e . # Install the current package in editable mode. Make sure to run this command from the root of the project where pyproject.toml is located.

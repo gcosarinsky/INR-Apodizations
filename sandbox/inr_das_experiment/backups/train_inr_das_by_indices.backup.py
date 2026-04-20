@@ -14,7 +14,6 @@ The script keeps logic direct and sandbox-oriented. Configuration lives in
 from __future__ import annotations
 
 import json
-import csv
 import os
 import pprint
 import random
@@ -29,23 +28,14 @@ import numpy as np
 import tensorflow as tf
 
 import helpers
-from baseline_evaluation import (  # noqa: E402
-    extract_scatterer_snr,
-    find_latest_baseline_reference,
-    load_validation_scatterers,
-)
-from inr_apodizations.modeling.losses import PixelWeightedMAELoss
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
-from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
+from inr_apodizations.modeling.metrics import MaskedMAE
+from inr_apodizations.modeling.metrics import ssim_metric
+from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from inr_apodizations.utils import relative_mae
 
 import matplotlib.pyplot as plt
 
-
-# ============================================================================
-# 1) Configuration, reproducibility, and dataset loading
-# ============================================================================
 
 CONFIG_PATH = Path("configs/train_config.yml")
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
@@ -83,37 +73,17 @@ kp, cm = helpers.build_coordinate_manager(
     physical_feature_set=physical_feature_set,
 )
 
-# ============================================================================
-# 2) Dataset slicing, weighting, and memory diagnostics
-# ============================================================================
-
 delayed_dataset_bytes = int(delayed.nbytes)
 delayed_example_bytes = int(np.prod(delayed.shape[1:], dtype=np.int64) * delayed.dtype.itemsize)
 
 max_examples = cfg["training"].get("max_examples")
 if max_examples is not None:
-    max_examples = int(max_examples)
-    delayed = delayed[:max_examples]
-    targets = targets[:max_examples]
-    gaussian_masks = gaussian_masks[:max_examples]
-    if noise is not None:
-        noise = noise[:max_examples]
+    delayed = delayed[: int(max_examples)]
+    targets = targets[: int(max_examples)]
 
 mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
-pixel_weight_lambda = float(
-    mask_weighting_cfg.get(
-        "pixel_weight_lambda",
-        mask_weighting_cfg.get("lambda", 0.0),
-    )
-)
-if pixel_weight_lambda < 0.0:
-    raise ValueError(
-        "training.mask_weighting.pixel_weight_lambda must be >= 0 "
-        "(legacy key training.mask_weighting.lambda is also accepted)"
-    )
-train_loss_weights = 1.0 + pixel_weight_lambda * gaussian_masks.astype(np.float32, copy=False)
-train_loss_weights = train_loss_weights.astype(np.float32, copy=False)
-use_pixelwise_weights = True
+train_loss_weights = helpers.build_gaussian_loss_weights(gaussian_masks, mask_weighting_cfg)
+use_pixelwise_weights = train_loss_weights is not None
 
 train_idx, val_idx = helpers.split_train_validation_indices(
     n_examples=delayed.shape[0],
@@ -183,11 +153,6 @@ else:
         f"configured batch uses {helpers.bytes_to_gb(configured_batch_bytes):.3f} GiB)"
     )
 
-
-# ============================================================================
-# 3) Build tf.data pipelines and evaluation-noise policy
-# ============================================================================
-
 train_ds = helpers.build_tf_dataset_by_indices(
     delayed,
     targets,
@@ -222,11 +187,6 @@ if eval_noise_enabled:
 # Note: Do NOT modify `val_ds` used for training validation. Evaluation-time
 # noise will be applied only during post-training reconstruction/plotting.
 
-
-# ============================================================================
-# 4) Model and trainer configuration
-# ============================================================================
-
 features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]))
 output_activation = cfg["model"].get("output_activation", "sigmoid")
 hidden_units_raw = cfg["model"].get("hidden_units")
@@ -250,10 +210,6 @@ weight_reg_lambda = float(weight_reg_cfg.get("lambda", 1e-3))
 weight_reg_tau = float(weight_reg_cfg.get("tau", 0.30))
 weight_reg_epsilon = float(weight_reg_cfg.get("epsilon", 1e-8))
 weight_reg_normalize = bool(weight_reg_cfg.get("normalize_norm", True))
-weight_reg_auto_cfg = dict(weight_reg_cfg.get("auto_init", {}))
-weight_reg_auto_enabled = bool(weight_reg_auto_cfg.get("enabled", False))
-weight_reg_auto_ratio = float(weight_reg_auto_cfg.get("ratio", 0.5))
-weight_reg_auto_eps = float(weight_reg_auto_cfg.get("epsilon", 1e-12))
 
 if weight_reg_lambda < 0.0:
     raise ValueError("training.weight_regularization.lambda must be >= 0")
@@ -261,10 +217,6 @@ if weight_reg_tau < 0.0:
     raise ValueError("training.weight_regularization.tau must be >= 0")
 if weight_reg_epsilon <= 0.0:
     raise ValueError("training.weight_regularization.epsilon must be > 0")
-if weight_reg_auto_ratio < 0.0:
-    raise ValueError("training.weight_regularization.auto_init.ratio must be >= 0")
-if weight_reg_auto_eps <= 0.0:
-    raise ValueError("training.weight_regularization.auto_init.epsilon must be > 0")
 
 resolved_weight_reg_type = "hinge_low_norm" if weight_reg_type == "hinge" else weight_reg_type
 
@@ -287,21 +239,89 @@ print(
         "tau": weight_reg_tau,
         "epsilon": weight_reg_epsilon,
         "normalize_norm": weight_reg_normalize,
-        "auto_init": {
-            "enabled": weight_reg_auto_enabled,
-            "ratio": weight_reg_auto_ratio,
-            "epsilon": weight_reg_auto_eps,
-        },
     }
 )
+# Shared optional parameters for custom mae_db loss/metric.
+mae_db_ref_cfg = cfg["training"].get("mae_db_ref", None)
+mae_db_eps = float(cfg["training"].get("mae_db_eps", 1e-8))
 weight_decay = float(cfg["training"].get("weight_decay", 0.0))
-loss_obj = PixelWeightedMAELoss(name="pixel_weighted_mae_loss")
-metrics_list = []
-weighted_metrics_list = [
-    PixelWeightedMAE(name="pixel_weighted_mae"),
-    RelativeMAE(name="relative_mae_y_pred", normalize_by="y_pred"),
-    RelativeMAE(name="relative_mae_y_true", normalize_by="y_true"),
-]
+
+if mae_db_ref_cfg is None:
+    mae_db_ref = None
+else:
+    if not isinstance(mae_db_ref_cfg, (list, tuple)) or len(mae_db_ref_cfg) != 2:
+        raise ValueError("training.mae_db_ref must be a list/tuple with two values")
+    mae_db_ref = (float(mae_db_ref_cfg[0]), float(mae_db_ref_cfg[1]))
+
+
+def _resolve_custom_mae_db(item, *, name: str):
+    if isinstance(item, str) and item.lower() == "mae_db":
+        return mae_db_factory(ref=mae_db_ref, eps=mae_db_eps, name=name)
+    return item
+
+
+def _pixelwise_mae(y_true, y_pred):
+    """Return element-wise absolute error for per-pixel sample weighting."""
+    return tf.abs(tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32))
+
+
+def _pixelwise_mse(y_true, y_pred):
+    """Return element-wise squared error for per-pixel sample weighting."""
+    diff = tf.cast(y_true, tf.float32) - tf.cast(y_pred, tf.float32)
+    return tf.square(diff)
+
+
+_pixelwise_mae.__name__ = "mae"
+_pixelwise_mse.__name__ = "mse"
+
+
+# Resolve loss from config and instantiate a Keras loss object.
+# The config can contain any valid identifier accepted by `tf.keras.losses.get`,
+# fallback to MAE if resolution fails.
+loss_name = cfg["training"].get("loss", "mae")
+if isinstance(loss_name, str) and loss_name.lower() == "mae_db":
+    loss_obj = mae_db_factory(ref=mae_db_ref, eps=mae_db_eps, name="mae_db")
+else:
+    try:
+        loss_obj = tf.keras.losses.get(loss_name)
+    except Exception:
+        loss_str = str(loss_name).lower()
+        if loss_str in ("mae", "mean_absolute_error"):
+            loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+        elif loss_str in ("mse", "mean_squared_error"):
+            loss_obj = tf.keras.losses.MeanSquaredError(name="mse")
+        else:
+            loss_obj = tf.keras.losses.MeanAbsoluteError(name="mae")
+
+if use_pixelwise_weights and isinstance(loss_name, str):
+    loss_str = loss_name.lower()
+    if loss_str in ("mae", "mean_absolute_error"):
+        loss_obj = _pixelwise_mae
+    elif loss_str in ("mse", "mean_squared_error"):
+        loss_obj = _pixelwise_mse
+
+# Use the resolved loss object directly (do not apply ScaledLoss wrapper)
+
+# Resolve metrics from config with optional support for custom mae_db.
+metrics_cfg = cfg["training"].get("metric", "mae")
+def _resolve_metric(metric_item):
+    if use_pixelwise_weights and isinstance(metric_item, str):
+        metric_str = metric_item.lower()
+        if metric_str in ("mae", "mean_absolute_error"):
+            return _pixelwise_mae
+        if metric_str in ("mse", "mean_squared_error"):
+            return _pixelwise_mse
+    return _resolve_custom_mae_db(metric_item, name="mae_db")
+
+
+if isinstance(metrics_cfg, (list, tuple)):
+    metrics_list = [_resolve_metric(m) for m in metrics_cfg]
+else:
+    metrics_list = [_resolve_metric(metrics_cfg)]
+
+weighted_metrics_list = []
+if use_pixelwise_weights:
+    weighted_metrics_list.append(MaskedMAE(name="masked_mae"))
 
 trainer.compile(
     optimizer=tf.keras.optimizers.Adam(
@@ -313,63 +333,12 @@ trainer.compile(
     weighted_metrics=weighted_metrics_list,
 )
 
-
-# ============================================================================
-# 5) Pre-fit reference sample and optional regularization auto-init
-# ============================================================================
-
 # Keep a deterministic baseline prediction from random INR initialization.
 sample_delayed = tf.convert_to_tensor(delayed[val_idx[:1]].astype(np.complex64, copy=False))
 sample_target = np.expand_dims(targets[val_idx[0]].astype(np.float32, copy=False), axis=0)
 predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_delayed, training=False)
 
-mae_initial = None
-reg_loss_initial = None
-if weight_reg_enabled and weight_reg_auto_enabled:
-    first_batch = next(iter(train_ds.take(1)))
-    if not isinstance(first_batch, (tuple, list)) or len(first_batch) != 3:
-        raise ValueError(
-            "Auto-init of training.weight_regularization.lambda requires "
-            "dataset batches as (delayed, target, sample_weight)."
-        )
-
-    x_init, y_init, sample_weight_init = first_batch
-    y_pred_init, weights_grid_init = trainer.reconstruct_image(x_init, training=False)
-    mae_initial = float(
-        loss_obj(y_init, y_pred_init, sample_weight=sample_weight_init).numpy()
-    )
-
-    # Compute base regularization loss with lambda=1.0 so denominator is independent
-    # from the lambda value that will be initialized.
-    lambda_prev = float(trainer.weight_regularization_lambda)
-    trainer.weight_regularization_lambda = 1.0
-    reg_loss_initial_tensor, _, _ = trainer.compute_weight_regularization(weights_grid_init)
-    reg_loss_initial = float(reg_loss_initial_tensor.numpy())
-
-    weight_reg_lambda = float(
-        weight_reg_auto_ratio * mae_initial / max(reg_loss_initial, weight_reg_auto_eps)
-    )
-    trainer.weight_regularization_lambda = float(weight_reg_lambda)
-
-    print("Auto-initialized weight regularization lambda:")
-    print(
-        {
-            "ratio": weight_reg_auto_ratio,
-            "mae_initial": mae_initial,
-            "reg_loss_initial": reg_loss_initial,
-            "lambda_previous_config": lambda_prev,
-            "lambda_applied": weight_reg_lambda,
-        }
-    )
-
-print(f"Final weight regularization lambda used for training: {weight_reg_lambda:.6g}")
-
-
-# ============================================================================
-# 6) Pre-training baseline MAE (uniform, hanning, boxcar)
-# ============================================================================
-
-# --- Pre-training reference MAE evaluation using PixelWeightedMAE ---
+# --- Pre-training reference MAE evaluation using MaskedMAE ---
 
 scatterer_eval_cfg = cfg.get("scatterer_eval", {})
 eval_batch_size = int(scatterer_eval_cfg.get("eval_batch_size", cfg["training"].get("batch_size", 1)))
@@ -394,19 +363,21 @@ apods_b = compute_dynamic_apodizations_tf(
 )
 hanning_weights = apods_h.get("hanning")
 boxcar_weights = apods_b.get("boxcar")
-hanning_weights_np = hanning_weights.numpy() if hanning_weights is not None else None
-boxcar_weights_np = boxcar_weights.numpy() if boxcar_weights is not None else None
-if hanning_weights_np is None or boxcar_weights_np is None:
-    raise ValueError(
-        "Reference apodizations are required but were not computed for "
-        f"f_number={baseline_f_number}."
-    )
 
 # Metrics that accumulate weighted MAE across the validation set
-m_zero = PixelWeightedMAE(name="ref_zero")
-m_uniform = PixelWeightedMAE(name="ref_uniform")
-m_hanning = PixelWeightedMAE(name="ref_hanning")
-m_boxcar = PixelWeightedMAE(name="ref_boxcar")
+m_zero = MaskedMAE(name="ref_zero")
+m_uniform = MaskedMAE(name="ref_uniform")
+m_hanning = MaskedMAE(name="ref_hanning") if hanning_weights is not None else None
+m_boxcar = MaskedMAE(name="ref_boxcar") if boxcar_weights is not None else None
+
+if hanning_weights is not None:
+    hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
+else:
+    hanning_weights_b = None
+if boxcar_weights is not None:
+    boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)
+else:
+    boxcar_weights_b = None
 
 n_val = int(len(val_idx))
 for start in range(0, n_val, eval_batch_size):
@@ -421,11 +392,10 @@ for start in range(0, n_val, eval_batch_size):
             )
         sig_chunk = delayed[idx_chunk].astype(np.complex64, copy=False)
         noise_chunk = noise[idx_chunk].astype(np.complex64, copy=False)
-        val_delayed_chunk_np = sig_chunk + eval_noise_scale * noise_chunk
+        combined_chunk = sig_chunk + eval_noise_scale * noise_chunk
+        val_delayed_chunk = tf.convert_to_tensor(combined_chunk)
     else:
-        val_delayed_chunk_np = delayed[idx_chunk].astype(np.complex64, copy=False)
-
-    val_delayed_chunk = tf.convert_to_tensor(val_delayed_chunk_np)
+        val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
 
     y_true_chunk = tf.convert_to_tensor(validation_targets[local_slice])
 
@@ -433,51 +403,36 @@ for start in range(0, n_val, eval_batch_size):
     if train_loss_weights is not None:
         weights_chunk = tf.convert_to_tensor(train_loss_weights[idx_chunk].astype(np.float32, copy=False))
     else:
-        weights_chunk = tf.ones_like(y_true_chunk, dtype=tf.float32)
+        weights_chunk = tf.ones_like(tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1)), dtype=tf.float32)
 
     # zero reference (predict zeros)
     m_zero.update_state(y_true_chunk, tf.zeros_like(y_true_chunk), sample_weight=weights_chunk)
 
     # uniform (sum over elements)
-    uniform_pred = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(val_delayed_chunk_np),
-        dtype=tf.float32,
-    )
+    uniform_pred = tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1))
     m_uniform.update_state(y_true_chunk, uniform_pred, sample_weight=weights_chunk)
 
     # hanning / boxcar if available
-    hanning_pred = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=val_delayed_chunk_np,
-            apodization=hanning_weights_np,
-        ),
-        dtype=tf.float32,
-    )
-    m_hanning.update_state(y_true_chunk, hanning_pred, sample_weight=weights_chunk)
-    boxcar_pred = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=val_delayed_chunk_np,
-            apodization=boxcar_weights_np,
-        ),
-        dtype=tf.float32,
-    )
-    m_boxcar.update_state(y_true_chunk, boxcar_pred, sample_weight=weights_chunk)
+    if hanning_weights_b is not None and m_hanning is not None:
+        hanning_pred = tf.abs(tf.reduce_sum(val_delayed_chunk * tf.cast(hanning_weights_b, val_delayed_chunk.dtype), axis=1))
+        m_hanning.update_state(y_true_chunk, hanning_pred, sample_weight=weights_chunk)
+    if boxcar_weights_b is not None and m_boxcar is not None:
+        boxcar_pred = tf.abs(tf.reduce_sum(val_delayed_chunk * tf.cast(boxcar_weights_b, val_delayed_chunk.dtype), axis=1))
+        m_boxcar.update_state(y_true_chunk, boxcar_pred, sample_weight=weights_chunk)
 
 pre_training_reference_mae = {
     "zero": float(m_zero.result().numpy()),
     "uniform": float(m_uniform.result().numpy()),
 }
-pre_training_reference_mae["hanning"] = float(m_hanning.result().numpy())
-pre_training_reference_mae["boxcar"] = float(m_boxcar.result().numpy())
+if m_hanning is not None:
+    pre_training_reference_mae["hanning"] = float(m_hanning.result().numpy())
+if m_boxcar is not None:
+    pre_training_reference_mae["boxcar"] = float(m_boxcar.result().numpy())
 
-print("Pre-training reference MAE (PixelWeightedMAE):")
+print("Pre-training reference MAE (MaskedMAE):")
 for k, v in pre_training_reference_mae.items():
     print(f"  {k:>8}: {v:.6g}")
 
-
-# ============================================================================
-# 7) Output folders, callbacks, and model training
-# ============================================================================
 
 # Resolve sandbox output root and create a timestamped sandbox outputs folder.
 sandbox_root_cfg = Path(cfg["io"]["sandbox_output_root"])
@@ -512,31 +467,36 @@ history = trainer.fit(
     verbose=1,
 )
 
-
-# ============================================================================
-# 8) Post-training reconstructions for plotting (clean and noisy eval paths)
-# ============================================================================
-
 predicted_after_image, weights_after_grid = trainer.reconstruct_image(sample_delayed, training=False)
-sample_delayed_np = sample_delayed.numpy()
-uniform_image = tf.convert_to_tensor(
-    helpers.compute_das_baseline_numpy(sample_delayed_np),
-    dtype=tf.float32,
-)
-hanning_image = tf.convert_to_tensor(
-    helpers.compute_das_baseline_numpy(
-        delayed_samples=sample_delayed_np,
-        apodization=hanning_weights_np,
-    ),
-    dtype=tf.float32,
-)
-boxcar_image = tf.convert_to_tensor(
-    helpers.compute_das_baseline_numpy(
-        delayed_samples=sample_delayed_np,
-        apodization=boxcar_weights_np,
-    ),
-    dtype=tf.float32,
-)
+uniform_image = tf.abs(tf.reduce_sum(sample_delayed, axis=1))
+
+# Determine baseline f_number: allow override from config `training.baseline_f_number`.
+_cfg_f_number = cfg["training"].get("baseline_f_number", None)
+if _cfg_f_number is None:
+    baseline_f_number = kp.f_number
+else:
+    try:
+        baseline_f_number = float(_cfg_f_number)
+    except Exception:
+        baseline_f_number = kp.f_number
+
+# Compute Hanning baseline DAS image using library apodizations (single example batch)
+apods_h = compute_dynamic_apodizations_tf(
+    cm=cm, f_number=baseline_f_number, methods=("hanning",), scaled=bool(cfg["model"]["scaled_features"]))
+
+hanning_weights = apods_h["hanning"]  # shape: (E, Z, X)
+hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)  # add batch dim -> (1, E, Z, X)
+hanning_image_complex = tf.reduce_sum(sample_delayed * tf.cast(hanning_weights_b, sample_delayed.dtype), axis=1)
+hanning_image = tf.abs(hanning_image_complex)
+
+# Compute Boxcar baseline DAS image using library apodizations (single example batch)
+apods_b = compute_dynamic_apodizations_tf(
+    cm=cm, f_number=baseline_f_number, methods=("boxcar",), scaled=bool(cfg["model"]["scaled_features"]))
+
+boxcar_weights = apods_b["boxcar"]  # shape: (E, Z, X)
+boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)  # add batch dim -> (1, E, Z, X)
+boxcar_image_complex = tf.reduce_sum(sample_delayed * tf.cast(boxcar_weights_b, sample_delayed.dtype), axis=1)
+boxcar_image = tf.abs(boxcar_image_complex)
 
 # If eval-time noise is requested, build noisy samples using precomputed noise
 if eval_noise_enabled:
@@ -559,26 +519,13 @@ if eval_noise_enabled:
 
     # Compute post-training image using trained INR
     predicted_after_image_noisy, weights_after_grid_noisy = trainer.reconstruct_image(noisy_sample, training=False)
-    uniform_image_noisy = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(noisy_sample_np),
-        dtype=tf.float32,
-    )
+    uniform_image_noisy = tf.abs(tf.reduce_sum(noisy_sample, axis=1))
 
-    # Recompute baseline apodization images on noisy sample using NumPy.
-    hanning_image_noisy = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=noisy_sample_np,
-            apodization=hanning_weights_np,
-        ),
-        dtype=tf.float32,
-    )
-    boxcar_image_noisy = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=noisy_sample_np,
-            apodization=boxcar_weights_np,
-        ),
-        dtype=tf.float32,
-    )
+    # Recompute baseline apodization images on noisy sample
+    hanning_image_complex_noisy = tf.reduce_sum(noisy_sample * tf.cast(hanning_weights_b, noisy_sample.dtype), axis=1)
+    hanning_image_noisy = tf.abs(hanning_image_complex_noisy)
+    boxcar_image_complex_noisy = tf.reduce_sum(noisy_sample * tf.cast(boxcar_weights_b, noisy_sample.dtype), axis=1)
+    boxcar_image_noisy = tf.abs(boxcar_image_complex_noisy)
 
     # Select variables for plotting
     uniform_for_plot = uniform_image_noisy
@@ -593,10 +540,6 @@ else:
     hanning_for_plot = hanning_image
     boxcar_for_plot = boxcar_image
 
-
-# ============================================================================
-# 9) Persist artifacts and generate main figures
-# ============================================================================
 
 effective_cfg = {
     "config_path": str(CONFIG_PATH),
@@ -617,13 +560,6 @@ effective_cfg = {
         "tau": weight_reg_tau,
         "epsilon": weight_reg_epsilon,
         "normalize_norm": weight_reg_normalize,
-        "auto_init": {
-            "enabled": weight_reg_auto_enabled,
-            "ratio": weight_reg_auto_ratio,
-            "epsilon": weight_reg_auto_eps,
-            "mae_initial": mae_initial,
-            "reg_loss_initial": reg_loss_initial,
-        },
     },
 }
 helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
@@ -678,7 +614,7 @@ helpers.plot_das_comparison_db(
 )
 
 helpers.plot_apodization_energy_comparison(
-    hanning_apod=hanning_weights_np,
+    hanning_apod=hanning_weights.numpy(),
     inr_apod_after=weights_after_grid.numpy(),
     output_path=str(Path(sandbox_dir) / "apodization_energy_comparison_hanning_vs_inr_after.png"),
     extent=kp.get_imshow_extent(),
@@ -712,13 +648,8 @@ for x_value in x_values_apod:
         x_fixed=float(x_value),
         z_profiles=z_profiles_mm,
         cmap=str(plot_cfg.get("apod_cmap", "viridis")),
-        hanning_apod=hanning_weights_np,
+        hanning_apod=hanning_weights.numpy(),
     )
-
-
-# ============================================================================
-# 10) Full validation-set evaluation (MAE + optional scatterer metrics)
-# ============================================================================
 
 validation_targets = targets[val_idx].astype(np.float32, copy=False)
 validation_sample_weights = (
@@ -737,6 +668,9 @@ uniform_val_abs_list = []
 hanning_val_abs_list = []
 boxcar_val_abs_list = []
 
+hanning_weights_b = tf.expand_dims(hanning_weights, axis=0)
+boxcar_weights_b = tf.expand_dims(boxcar_weights, axis=0)
+
 for start in range(0, n_val, eval_batch_size):
     end = min(start + eval_batch_size, n_val)
     idx_chunk = val_idx[start:end]
@@ -749,30 +683,25 @@ for start in range(0, n_val, eval_batch_size):
             )
         sig_chunk = delayed[idx_chunk].astype(np.complex64, copy=False)
         noise_chunk = noise[idx_chunk].astype(np.complex64, copy=False)
-        val_delayed_chunk_np = sig_chunk + eval_noise_scale * noise_chunk
+        combined_chunk = sig_chunk + eval_noise_scale * noise_chunk
+        val_delayed_chunk = tf.convert_to_tensor(combined_chunk)
     else:
-        val_delayed_chunk_np = delayed[idx_chunk].astype(np.complex64, copy=False)
-
-    val_delayed_chunk = tf.convert_to_tensor(val_delayed_chunk_np)
+        val_delayed_chunk = tf.convert_to_tensor(delayed[idx_chunk].astype(np.complex64, copy=False))
 
     predicted_chunk_complex, weights_chunk = trainer.reconstruct_image(val_delayed_chunk, training=False)
     predicted_val_abs_list.append(tf.abs(predicted_chunk_complex).numpy())
 
-    uniform_val_abs_list.append(
-        helpers.compute_das_baseline_numpy(val_delayed_chunk_np)
+    uniform_val_abs_list.append(tf.abs(tf.reduce_sum(val_delayed_chunk, axis=1)).numpy())
+
+    hanning_val_complex_chunk = tf.reduce_sum(
+        val_delayed_chunk * tf.cast(hanning_weights_b, val_delayed_chunk.dtype), axis=1
     )
-    hanning_val_abs_list.append(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=val_delayed_chunk_np,
-            apodization=hanning_weights_np,
-        )
+    hanning_val_abs_list.append(tf.abs(hanning_val_complex_chunk).numpy())
+
+    boxcar_val_complex_chunk = tf.reduce_sum(
+        val_delayed_chunk * tf.cast(boxcar_weights_b, val_delayed_chunk.dtype), axis=1
     )
-    boxcar_val_abs_list.append(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=val_delayed_chunk_np,
-            apodization=boxcar_weights_np,
-        )
-    )
+    boxcar_val_abs_list.append(tf.abs(boxcar_val_complex_chunk).numpy())
 
 predicted_val_abs = np.concatenate(predicted_val_abs_list, axis=0)
 uniform_val_abs = np.concatenate(uniform_val_abs_list, axis=0)
@@ -796,27 +725,17 @@ validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
     hist_bins=hist_bins_eval,
 )
 
-
-# ============================================================================
-# 11) Optional scatterer diagnostics and SNR-ratio plots
-# ============================================================================
-
 # --- Scatterer metrics evaluation (full validation set) ---
 if bool(scatterer_eval_cfg.get("enabled", False)):
     try:
-        scatterers_batch = load_validation_scatterers(dataset_folder, val_idx)
+        scatterers_all = helpers.load_saved_scatterers(dataset_folder)
 
-        baseline_reference_summary, baseline_reference_arrays = find_latest_baseline_reference(
-            dataset_folder=dataset_folder,
-            baseline_f_number=baseline_f_number,
-            sandbox_output_root=cfg["io"]["sandbox_output_root"],
-        )
-
-        if baseline_reference_arrays is not None:
-            print(
-                "Loaded baseline scatterer references from: "
-                f"{baseline_reference_summary['output_dir']}"
-            )
+        # Build per-example scatterer lists for the validation indices (convert m -> mm)
+        scatterers_batch: list[np.ndarray] = []
+        for idx in val_idx:
+            s = np.asarray(scatterers_all[int(idx)], dtype=np.float32).copy()
+            s[:, :2] *= 1000.0
+            scatterers_batch.append(s[:, :2])
 
         validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
             images_abs=images_abs_eval,
@@ -827,110 +746,6 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             radius_mm=radius_mm_eval,
             hist_bins=hist_bins_eval,
         )
-
-        if baseline_reference_arrays is not None and "inr_after" in validation_bundle.get("scatterer_metrics", {}):
-            inr_after_metrics = validation_bundle["scatterer_metrics"]["inr_after"]
-            inr_after_snr = extract_scatterer_snr(inr_after_metrics)
-            ratio_summary: dict[str, dict[str, float]] = {}
-            ratio_rows: list[dict[str, object]] = []
-
-            for ref_name in ("uniform", "hanning", "boxcar"):
-                ref_key = f"snr_{ref_name}"
-                if ref_key not in baseline_reference_arrays:
-                    continue
-
-                ref_snr = np.asarray(baseline_reference_arrays[ref_key], dtype=np.float64)
-                if ref_snr.shape != inr_after_snr.shape:
-                    print(
-                        f"Warning: baseline SNR shape mismatch for {ref_name}: "
-                        f"{ref_snr.shape} vs {inr_after_snr.shape}"
-                    )
-                    continue
-
-                ratio = inr_after_snr / np.maximum(ref_snr, 1e-12)
-                ratio_summary[ref_name] = {
-                    "mean": float(ratio.mean()) if ratio.size > 0 else 0.0,
-                    "std": float(ratio.std()) if ratio.size > 0 else 0.0,
-                    "min": float(ratio.min()) if ratio.size > 0 else 0.0,
-                    "max": float(ratio.max()) if ratio.size > 0 else 0.0,
-                }
-
-                peak_example_indices = np.asarray(
-                    validation_bundle["scatterer_metrics"]["inr_after"]["aggregated"].get(
-                        "peak_example_indices", np.arange(ratio.size, dtype=np.int32)
-                    ),
-                    dtype=np.int32,
-                )
-                peak_scatterer_indices = np.asarray(
-                    validation_bundle["scatterer_metrics"]["inr_after"]["aggregated"].get(
-                        "peak_scatterer_indices", np.arange(ratio.size, dtype=np.int32)
-                    ),
-                    dtype=np.int32,
-                )
-
-                ratio_rows.extend(
-                    {
-                        "reference": ref_name,
-                        "point_index": int(point_idx),
-                        "example_index": int(example_idx),
-                        "scatterer_index": int(scatterer_idx),
-                        "snr_inr": float(inr_after_snr[point_idx]),
-                        "snr_ref": float(ref_snr[point_idx]),
-                        "snr_ratio": float(ratio[point_idx]),
-                    }
-                    for point_idx, (example_idx, scatterer_idx) in enumerate(
-                        zip(peak_example_indices, peak_scatterer_indices, strict=False)
-                    )
-                )
-
-                fig_ratio_hist, ax_ratio_hist = plt.subplots(1, 1, figsize=(8, 5))
-                ax_ratio_hist.hist(ratio, bins=50, color="tab:blue", alpha=0.75, edgecolor="black")
-                ax_ratio_hist.set_xlabel(f"INR / {ref_name} SNR ratio")
-                ax_ratio_hist.set_ylabel("Frequency")
-                ax_ratio_hist.set_title(
-                    f"SNR ratio histogram: INR / {ref_name} ({len(ratio)} points)"
-                )
-                ax_ratio_hist.grid(True, alpha=0.3)
-                fig_ratio_hist.tight_layout()
-                fig_ratio_hist.savefig(
-                    str(Path(sandbox_dir) / f"snr_ratio_hist_inr_vs_{ref_name}.png"),
-                    dpi=150,
-                    bbox_inches="tight",
-                )
-                plt.close(fig_ratio_hist)
-
-            if ratio_summary:
-                with open(Path(sandbox_dir) / "snr_ratio_summary.json", "w", encoding="utf-8") as handle:
-                    json.dump(ratio_summary, handle, indent=2)
-
-            if ratio_rows:
-                with open(Path(sandbox_dir) / "snr_ratio_points.csv", "w", encoding="utf-8", newline="") as csv_file:
-                    writer = csv.DictWriter(
-                        csv_file,
-                        fieldnames=[
-                            "reference",
-                            "point_index",
-                            "example_index",
-                            "scatterer_index",
-                            "snr_inr",
-                            "snr_ref",
-                            "snr_ratio",
-                        ],
-                    )
-                    writer.writeheader()
-                    writer.writerows(ratio_rows)
-
-                np.savez(
-                    Path(sandbox_dir) / "snr_ratio_points.npz",
-                    snr_inr=inr_after_snr.astype(np.float32, copy=False),
-                    **{
-                        f"snr_ref_{name}": np.asarray(
-                            baseline_reference_arrays[f"snr_{name}"], dtype=np.float32
-                        )
-                        for name in ("uniform", "hanning", "boxcar")
-                        if f"snr_{name}" in baseline_reference_arrays
-                    },
-                )
 
         helpers.plot_scatterer_evaluation(
             images_abs=images_abs_eval,
@@ -987,93 +802,38 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
         import traceback
         traceback.print_exc()
 
-
-# ============================================================================
-# 12) End-of-run summaries and optional re-plot with references
-# ============================================================================
-
 history_val_mae = history.history.get("val_mae")
 if history_val_mae is None:
     history_val_mae = history.history.get("val_mean_absolute_error")
 if history_val_mae is None:
-    history_val_mae = history.history.get("val_loss")
-if history_val_mae is None:
-    history_val_mae = history.history.get("val_pixel_weighted_mae")
-if history_val_mae is None:
-    history_val_mae = history.history.get("val_masked_mae")
-if history_val_mae is None:
-    raise ValueError(
-        "history does not contain val_mae, val_mean_absolute_error, val_loss, "
-        "val_pixel_weighted_mae, or val_masked_mae"
-    )
+    raise ValueError("history does not contain val_mae or val_mean_absolute_error")
 history_val_mae = float(history_val_mae[-1])
 
-method_order = ("uniform", "hanning", "boxcar", "inr_after")
-relative_mae_y_pred_by_method = {}
-relative_mae_y_true_by_method = {}
-for method_name in method_order:
-    pred_values = images_abs_eval.get(method_name)
-    if pred_values is None:
-        continue
-    relative_mae_y_pred_by_method[method_name] = float(
-        relative_mae(
-            y_true=validation_targets,
-            y_pred=pred_values,
-            normalize_by="y_pred",
-        )
-    )
-    relative_mae_y_true_by_method[method_name] = float(
-        relative_mae(
-            y_true=validation_targets,
-            y_pred=pred_values,
-            normalize_by="y_true",
-        )
-    )
-
-reference_mae_for_plot = validation_bundle.get("reference_mae", {})
 comparison_summary = {
     "history_val_mae": history_val_mae,
     "validation_mae": validation_bundle["mae_by_method"],
-    "validation_pixel_weighted_mae": validation_bundle.get("masked_mae_by_method", {}),
-    "validation_relative_mae": {
-        "relative_mae_y_pred": relative_mae_y_pred_by_method,
-        "relative_mae_y_true": relative_mae_y_true_by_method,
-    },
-    "delta_inr_after_vs_history": float(
-        validation_bundle["mae_by_method"]["inr_after"] - history_val_mae
-    ),
+    "validation_masked_mae": validation_bundle.get("masked_mae_by_method", {}),
+    "reference_mae": validation_bundle.get("reference_mae", {}),
+    "delta_inr_after_vs_history": float(validation_bundle["mae_by_method"]["inr_after"] - history_val_mae),
 }
 
 with open(Path(sandbox_dir) / "validation_mae_summary.json", "w", encoding="utf-8") as file:
     json.dump(comparison_summary, file, indent=2)
 
 print("Validation MAE summary:")
-for method_name in method_order:
+for method_name in ("uniform", "hanning", "boxcar", "inr_after"):
     mae_value = validation_bundle["mae_by_method"].get(method_name)
     if mae_value is not None:
         print(f"  {method_name:>10}: {mae_value:.6g}")
+    # print reference MAE if available
+for ref_name, ref_val in validation_bundle.get("reference_mae", {}).items():
+    print(f"  ref_{ref_name:>7}: {ref_val:.6g}")
 if validation_bundle.get("masked_mae_by_method"):
-    print("Validation PixelWeightedMAE summary:")
-    for method_name in method_order:
+    print("Validation MaskedMAE summary:")
+    for method_name in ("uniform", "hanning", "boxcar", "inr_after"):
         mae_value = validation_bundle["masked_mae_by_method"].get(method_name)
         if mae_value is not None:
             print(f"  {method_name:>10}: {mae_value:.6g}")
-if relative_mae_y_pred_by_method:
-    print("Validation RelativeMAE (normalize_by=y_pred) summary:")
-    for method_name in method_order:
-        rel_value = relative_mae_y_pred_by_method.get(method_name)
-        if rel_value is not None:
-            print(f"  {method_name:>10}: {rel_value:.6g}")
-if relative_mae_y_true_by_method:
-    print("Validation RelativeMAE (normalize_by=y_true) summary:")
-    for method_name in method_order:
-        rel_value = relative_mae_y_true_by_method.get(method_name)
-        if rel_value is not None:
-            print(f"  {method_name:>10}: {rel_value:.6g}")
-if reference_mae_for_plot:
-    print("Reference MAE (derived, not persisted):")
-    for ref_name, ref_val in reference_mae_for_plot.items():
-        print(f"  ref_{ref_name:>7}: {ref_val:.6g}")
 print(f"  {'history_val_mae':>10}: {history_val_mae:.6g}")
 print(
     f"  {'delta_inr_after_vs_history':>10}: "
@@ -1085,10 +845,11 @@ print("Sandbox artifacts:", sandbox_dir)
 
 # Re-plot training curves including reference MAE lines when available
 try:
+    ref_mae = validation_bundle.get("reference_mae", None) if "validation_bundle" in locals() else None
     helpers.plot_training_curves(
         history.history,
         output_path=str(Path(sandbox_dir) / "training_loss_with_refs.png"),
-        reference_mae=reference_mae_for_plot,
+        reference_mae=ref_mae,
     )
 except Exception:
-    print("Warning: failed to re-plot training curves with reference MAE lines.")
+    pass
