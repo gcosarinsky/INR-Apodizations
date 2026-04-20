@@ -34,6 +34,8 @@ from inr_apodizations.tuning.utils import (
 )
 import yaml
 import sys
+import json
+import csv
 
 print("TF GPUs:", tf.config.list_physical_devices("GPU"))
 
@@ -249,7 +251,8 @@ live_score_plot = LiveTrialScorePlot(
 # Hyperband params (from config)
 max_epochs = int(cfg["tuning"].get("hyperband_max_epochs", cfg["training"]["epochs"]))
 factor = int(cfg["tuning"].get("hyperband_factor", 3))
-print(f"Using Hyperband: max_epochs={max_epochs}, factor={factor}")
+hyperband_iterations = int(cfg["tuning"].get("hyperband_iterations", 1))
+print(f"Using Hyperband: max_epochs={max_epochs}, factor={factor}, iterations={hyperband_iterations}")
 
 with strategy.scope():
     tuner = PlottingHyperband(
@@ -260,6 +263,7 @@ with strategy.scope():
         ),
         max_epochs=max_epochs,
         factor=factor,
+        hyperband_iterations=hyperband_iterations,
         directory=str(tuning_dir),
         project_name="kt_hyperband",
         live_plot=live_score_plot,
@@ -315,6 +319,9 @@ best_config = {
     "reg_lambda": float(best_hps.get("reg_lambda")),
     "reg_tau": float(best_hps.get("reg_tau")),
     "lr": float(best_hps.get("lr")),
+    # Include architecture index and pixel-wise weight hyperparameter when available
+    "architecture_index": int(best_hps.get("architecture_index")) if best_hps.get("architecture_index") is not None else None,
+    "pixel_weight_lambda": (float(best_hps.get("pixel_weight_lambda")) if best_hps.get("pixel_weight_lambda") is not None else None),
 }
 
 with open(best_config_path, "w") as f:
@@ -327,3 +334,47 @@ with open(candidates_path, "w") as f:
 
 
 print(f"Artifacts saved in: {tuning_dir}")
+
+# --- Generate a flat CSV with all trials (one row per trial) ---
+tuner_trials_path = tuning_dir / "tuner_trials.json"
+csv_trials_path = tuning_dir / "tuner_trials.csv"
+try:
+    if tuner_trials_path.exists():
+        with open(tuner_trials_path, "r", encoding="utf-8") as f:
+            trials = json.load(f)
+
+        # Discover all hyperparameter keys across trials
+        hp_keys = set()
+        for t in trials:
+            hp = t.get("hyperparameters") or {}
+            if isinstance(hp, dict):
+                hp_keys.update(hp.keys())
+        hp_keys = sorted(hp_keys)
+
+        # CSV header: basic trial fields + discovered hyperparameters
+        header = ["trial_id", "architecture_index", "score", "hidden_units"] + hp_keys
+
+        with open(csv_trials_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for t in trials:
+                row = []
+                row.append(t.get("trial_id", ""))
+                ai = t.get("architecture_index")
+                row.append("" if ai is None else ai)
+                row.append(t.get("score", ""))
+                # hidden_units as JSON string (keeps list structure)
+                row.append(json.dumps(t.get("hidden_units", None)))
+                hp = t.get("hyperparameters") or {}
+                for k in hp_keys:
+                    v = hp.get(k, None)
+                    try:
+                        row.append(json.dumps(v))
+                    except Exception:
+                        row.append(str(v))
+                writer.writerow(row)
+        print(f"Saved trials CSV to: {csv_trials_path}")
+    else:
+        print(f"tuner_trials.json not found at: {tuner_trials_path}; skipping CSV generation")
+except Exception as e:
+    print("Warning: failed to generate tuner_trials.csv:", e)

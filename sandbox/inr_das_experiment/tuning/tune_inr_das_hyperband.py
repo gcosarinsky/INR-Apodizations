@@ -233,7 +233,8 @@ tuning_dir = Path(cfg["io"]["sandbox_output_root"]) / project_name
 # Hyperband params (from config)
 max_epochs = int(cfg["tuning"].get("hyperband_max_epochs", cfg["training"]["epochs"]))
 factor = int(cfg["tuning"].get("hyperband_factor", 3))
-print(f"Using Hyperband: max_epochs={max_epochs}, factor={factor}")
+hyperband_iterations = int(cfg["tuning"].get("hyperband_iterations", 1))
+print(f"Using Hyperband: max_epochs={max_epochs}, factor={factor}, iterations={hyperband_iterations}")
 
 with strategy.scope():
     tuner = kt.Hyperband(
@@ -241,6 +242,7 @@ with strategy.scope():
         objective=kt.Objective("val_snr_better_count", direction="max"),
         max_epochs=max_epochs,
         factor=factor,
+        hyperband_iterations=hyperband_iterations,
         directory=str(tuning_dir),
         project_name="kt_hyperband"
     )

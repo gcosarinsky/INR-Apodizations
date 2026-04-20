@@ -53,6 +53,7 @@ tuning:
   # Hyperband-specific parameters (used by tune_inr_das_hyperband.py)
   hyperband_max_epochs: 27
   hyperband_factor: 3
+  hyperband_iterations: 3
 
 plots:
   cmap: "gray"
