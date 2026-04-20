@@ -26,7 +26,7 @@ model:
   feature_chunk_size: 65536
  
 eval_noise:
-  enabled: true
+  enabled: false
   scale: 1.0
 
 training:
@@ -49,7 +49,7 @@ training:
       epsilon: 1.0e-12
   mae_db_ref: null
   mae_db_eps: 1.0e-8
-  baseline_f_number: 0.5
+  baseline_f_number: 0.75
   mask_weighting:
     enabled: true
     pixel_weight_lambda: 0.5
@@ -70,8 +70,14 @@ plots:
 
 scatterer_eval:
   enabled: true
-  radius_mm: 0.75
+  radius_mm: 1.25
   hist_bins: 50
+
+reflector_profile_comparison:
+  enabled: true
+  scatterer_selection: strongest
+  scatterer_idx: [0, 6, 12]  # Indices of scatterers to plot profiles for (if scatterer_selection is 'by_index')
+  use_db: true
 
 results_review:
   run_timestamp: ""  # Folder under sandbox_output_root that contains model.keras + train_config_info.yml

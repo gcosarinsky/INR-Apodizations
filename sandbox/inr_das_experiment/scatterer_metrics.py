@@ -95,9 +95,75 @@ def _build_scatterer_disk_context(
         "nx": nx,
         "x_coords": x_coords,
         "z_coords": z_coords,
+        "dx": dx,
+        "dz": dz,
         "disk": disk,
         "r": r,
+        "rx": rx,
+        "rz": rz,
+        "lateral_profile_offsets_mm": np.arange(-rx, rx + 1, dtype=np.float64) * dx,
+        "axial_profile_offsets_mm": np.arange(-rz, rz + 1, dtype=np.float64) * dz,
     }
+
+
+def _extract_rect_max_profiles(
+    image: np.ndarray,
+    ix: int,
+    iz: int,
+    disk_ctx: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract lateral and axial profiles inside the circle bounding rectangle.
+
+    The lateral profile keeps one value per lateral sample of the minimal
+    rectangle containing the scatterer disk and collapses the orthogonal
+    direction with a maximum. The axial profile does the analogous operation
+    along depth.
+
+    Args:
+        image: Image with shape ``(nz, nx)``.
+        ix: Lateral index of the scatterer center.
+        iz: Axial index of the scatterer center.
+        disk_ctx: Precomputed disk geometry context.
+
+    Returns:
+        Tuple ``(lateral_profile, axial_profile)`` with NaN padding when the
+        rectangle is clipped by image borders.
+    """
+    rx = int(disk_ctx["rx"])
+    rz = int(disk_ctx["rz"])
+    nz = int(disk_ctx["nz"])
+    nx = int(disk_ctx["nx"])
+
+    lateral_profile = np.full(2 * rx + 1, np.nan, dtype=np.float64)
+    axial_profile = np.full(2 * rz + 1, np.nan, dtype=np.float64)
+
+    ix0 = ix - rx
+    ix1 = ix + rx + 1
+    iz0 = iz - rz
+    iz1 = iz + rz + 1
+
+    img_x0 = max(0, ix0)
+    img_x1 = min(nx, ix1)
+    img_z0 = max(0, iz0)
+    img_z1 = min(nz, iz1)
+
+    if img_x0 >= img_x1 or img_z0 >= img_z1:
+        return lateral_profile, axial_profile
+
+    image_patch = image[img_z0:img_z1, img_x0:img_x1]
+    lateral_insert = img_x0 - ix0
+    axial_insert = img_z0 - iz0
+
+    lateral_profile[lateral_insert:lateral_insert + image_patch.shape[1]] = np.max(
+        image_patch,
+        axis=0,
+    )
+    axial_profile[axial_insert:axial_insert + image_patch.shape[0]] = np.max(
+        image_patch,
+        axis=1,
+    )
+
+    return lateral_profile, axial_profile
 
 
 def _compute_scatterer_metrics_single(
@@ -125,11 +191,15 @@ def _compute_scatterer_metrics_single(
     z_coords = disk_ctx["z_coords"]
     disk = disk_ctx["disk"]
     r = int(disk_ctx["r"])
+    lateral_offsets_mm = np.asarray(disk_ctx["lateral_profile_offsets_mm"], dtype=np.float64)
+    axial_offsets_mm = np.asarray(disk_ctx["axial_profile_offsets_mm"], dtype=np.float64)
 
     n_scatterers = scatterers.shape[0]
     union_mask = np.zeros((nz, nx), dtype=bool)
     individual_masks = np.zeros((n_scatterers, nz, nx), dtype=bool) if return_masks else None
     peak_amplitudes = np.empty(n_scatterers, dtype=np.float64)
+    lateral_profiles = np.full((n_scatterers, lateral_offsets_mm.size), np.nan, dtype=np.float64)
+    axial_profiles = np.full((n_scatterers, axial_offsets_mm.size), np.nan, dtype=np.float64)
 
     for i, (x0, z0) in enumerate(scatterers):
         ix = int(np.argmin(np.abs(x_coords - x0)))
@@ -158,6 +228,9 @@ def _compute_scatterer_metrics_single(
 
         masked_pixels = image[local_mask]
         peak_amplitudes[i] = float(masked_pixels.max()) if masked_pixels.size > 0 else 0.0
+        lateral_profile, axial_profile = _extract_rect_max_profiles(image, ix, iz, disk_ctx)
+        lateral_profiles[i] = lateral_profile
+        axial_profiles[i] = axial_profile
 
         if individual_masks is not None:
             individual_masks[i] = local_mask
@@ -171,6 +244,10 @@ def _compute_scatterer_metrics_single(
     result = {
         "peak_amplitudes": peak_amplitudes,
         "background_rms": background_rms,
+        "lateral_profiles": lateral_profiles,
+        "axial_profiles": axial_profiles,
+        "lateral_profile_offsets_mm": lateral_offsets_mm.copy(),
+        "axial_profile_offsets_mm": axial_offsets_mm.copy(),
     }
 
     if return_background_hist:
@@ -197,12 +274,18 @@ def _aggregate_scatterer_metrics_batch(
     aggregated_scatterer_indices: list[np.ndarray] = []
     point_background_rms: list[np.ndarray] = []
     point_image_maxima: list[np.ndarray] = []
+    aggregated_lateral_profiles: list[np.ndarray] = []
+    aggregated_axial_profiles: list[np.ndarray] = []
     background_rms_per_example = np.empty(len(per_example_metrics), dtype=np.float64)
+    lateral_profile_offsets_mm = np.empty(0, dtype=np.float64)
+    axial_profile_offsets_mm = np.empty(0, dtype=np.float64)
 
     for example_idx, metrics in enumerate(per_example_metrics):
         peaks = np.asarray(metrics["peak_amplitudes"], dtype=np.float64)
         n_points = peaks.shape[0]
         background_rms_value = float(metrics["background_rms"])
+        lateral_profiles = np.asarray(metrics.get("lateral_profiles", np.empty((0, 0))), dtype=np.float64)
+        axial_profiles = np.asarray(metrics.get("axial_profiles", np.empty((0, 0))), dtype=np.float64)
         background_rms_per_example[example_idx] = background_rms_value
 
         aggregated_peaks.append(peaks)
@@ -210,6 +293,18 @@ def _aggregate_scatterer_metrics_batch(
         aggregated_scatterer_indices.append(np.arange(n_points, dtype=np.int32))
         point_background_rms.append(np.full(n_points, background_rms_value, dtype=np.float64))
         point_image_maxima.append(np.full(n_points, image_maxima[example_idx], dtype=np.float64))
+        aggregated_lateral_profiles.append(lateral_profiles)
+        aggregated_axial_profiles.append(axial_profiles)
+
+        if example_idx == 0:
+            lateral_profile_offsets_mm = np.asarray(
+                metrics.get("lateral_profile_offsets_mm", np.empty(0)),
+                dtype=np.float64,
+            )
+            axial_profile_offsets_mm = np.asarray(
+                metrics.get("axial_profile_offsets_mm", np.empty(0)),
+                dtype=np.float64,
+            )
 
     if aggregated_peaks:
         peak_amplitudes = np.concatenate(aggregated_peaks)
@@ -217,12 +312,16 @@ def _aggregate_scatterer_metrics_batch(
         peak_scatterer_indices = np.concatenate(aggregated_scatterer_indices)
         point_bg_rms = np.concatenate(point_background_rms)
         point_img_max = np.concatenate(point_image_maxima)
+        lateral_profiles = np.concatenate(aggregated_lateral_profiles, axis=0)
+        axial_profiles = np.concatenate(aggregated_axial_profiles, axis=0)
     else:
         peak_amplitudes = np.empty(0, dtype=np.float64)
         peak_example_indices = np.empty(0, dtype=np.int32)
         peak_scatterer_indices = np.empty(0, dtype=np.int32)
         point_bg_rms = np.empty(0, dtype=np.float64)
         point_img_max = np.empty(0, dtype=np.float64)
+        lateral_profiles = np.empty((0, lateral_profile_offsets_mm.size), dtype=np.float64)
+        axial_profiles = np.empty((0, axial_profile_offsets_mm.size), dtype=np.float64)
 
     aggregated = {
         "peak_amplitudes": peak_amplitudes,
@@ -239,6 +338,10 @@ def _aggregate_scatterer_metrics_batch(
         "point_image_maxima": point_img_max,
         "n_examples": len(per_example_metrics),
         "n_scatterers_total": int(peak_amplitudes.size),
+        "lateral_profiles": lateral_profiles,
+        "axial_profiles": axial_profiles,
+        "lateral_profile_offsets_mm": lateral_profile_offsets_mm,
+        "axial_profile_offsets_mm": axial_profile_offsets_mm,
     }
 
     if return_background_hist:

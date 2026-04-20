@@ -215,14 +215,28 @@ def build_scatterer_reference_bundle(
     summary: dict[str, dict] = {}
     arrays: dict[str, np.ndarray] = {}
 
-    first_positions = np.vstack([np.asarray(item, dtype=np.float32)[:, :2] for item in scatterers_batch])
-    arrays["scatterer_x_mm"] = first_positions[:, 0].astype(np.float32, copy=False)
-    arrays["scatterer_z_mm"] = first_positions[:, 1].astype(np.float32, copy=False)
+    if scatterers_batch:
+        first_positions = np.vstack([np.asarray(item, dtype=np.float32)[:, :2] for item in scatterers_batch])
+        arrays["scatterer_x_mm"] = first_positions[:, 0].astype(np.float32, copy=False)
+        arrays["scatterer_z_mm"] = first_positions[:, 1].astype(np.float32, copy=False)
+    else:
+        arrays["scatterer_x_mm"] = np.empty(0, dtype=np.float32)
+        arrays["scatterer_z_mm"] = np.empty(0, dtype=np.float32)
 
     for method_name, metrics in scatterer_metrics.items():
         view = metrics.get("aggregated", metrics)
         peaks = np.asarray(view.get("peak_amplitudes", np.empty(0)), dtype=np.float64)
         bg_rms = np.asarray(view.get("point_background_rms", np.empty(0)), dtype=np.float64)
+        lateral_profiles = np.asarray(view.get("lateral_profiles", np.empty((0, 0))), dtype=np.float64)
+        axial_profiles = np.asarray(view.get("axial_profiles", np.empty((0, 0))), dtype=np.float64)
+        lateral_offsets_mm = np.asarray(
+            view.get("lateral_profile_offsets_mm", np.empty(0)),
+            dtype=np.float64,
+        )
+        axial_offsets_mm = np.asarray(
+            view.get("axial_profile_offsets_mm", np.empty(0)),
+            dtype=np.float64,
+        )
         if bg_rms.size == 0:
             bg_rms_per_example = np.asarray(
                 view.get("background_rms_per_example", np.empty(0)), dtype=np.float64
@@ -243,6 +257,13 @@ def build_scatterer_reference_bundle(
         arrays[f"peak_scatterer_indices_{method_name}"] = np.asarray(
             view.get("peak_scatterer_indices", np.empty(0)), dtype=np.int32
         )
+        arrays[f"lateral_profiles_{method_name}"] = lateral_profiles.astype(np.float32, copy=False)
+        arrays[f"axial_profiles_{method_name}"] = axial_profiles.astype(np.float32, copy=False)
+
+        if "lateral_profile_offsets_mm" not in arrays:
+            arrays["lateral_profile_offsets_mm"] = lateral_offsets_mm.astype(np.float32, copy=False)
+        if "axial_profile_offsets_mm" not in arrays:
+            arrays["axial_profile_offsets_mm"] = axial_offsets_mm.astype(np.float32, copy=False)
 
         summary[method_name] = {
             "n_points": int(peaks.size),
@@ -253,6 +274,8 @@ def build_scatterer_reference_bundle(
             "snr_mean": float(snr.mean()) if snr.size > 0 else 0.0,
             "snr_std": float(snr.std()) if snr.size > 0 else 0.0,
             "snr_max": float(snr.max()) if snr.size > 0 else 0.0,
+            "lateral_profile_points": int(lateral_profiles.shape[1]) if lateral_profiles.ndim == 2 else 0,
+            "axial_profile_points": int(axial_profiles.shape[1]) if axial_profiles.ndim == 2 else 0,
         }
 
     return summary, arrays

@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import tensorflow as tf
 
@@ -26,8 +27,6 @@ from inr_apodizations.apodizations import (
     extract_profile_for_z,
 )
 from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
-from inr_apodizations.coordinate_manager import CoordinateManager
-from inr_apodizations.modeling.metrics import PixelWeightedMAE
 from inr_apodizations.plots import plot_lateral_reflector_profiles, to_db
 from inr_apodizations.utils import relative_mae
 
@@ -82,6 +81,59 @@ def resolve_dataset_folder(cfg_user: dict) -> Path:
     return dataset_folder
 
 
+def load_validation_scatterers_full(
+    dataset_folder: str,
+    validation_indices: np.ndarray,
+) -> list[np.ndarray]:
+    """Load validation scatterers preserving reflectivity when available."""
+    scatterers_all = helpers.load_saved_scatterers(dataset_folder)
+    scatterers_batch: list[np.ndarray] = []
+    for idx in validation_indices:
+        scatterers_example = np.asarray(scatterers_all[int(idx)], dtype=np.float32).copy()
+        scatterers_example[:, :2] *= 1000.0
+        scatterers_batch.append(scatterers_example)
+    return scatterers_batch
+
+
+def select_reflector_scatterer_index(
+    scatterers_mm: np.ndarray,
+    selection: str = "strongest",
+    scatterer_idx: int | None = None,
+) -> int:
+    """Resolve the reflector index used for profile-centered plots.
+
+    Args:
+        scatterers_mm: Scatterer coordinates with columns ``[x_mm, z_mm, reflectivity]``
+            when reflectivity is available.
+        selection: Selection mode. Supported values are ``strongest`` and ``first``.
+        scatterer_idx: Optional explicit index with priority over ``selection``.
+
+    Returns:
+        Selected scatterer index.
+
+    Raises:
+        ValueError: If the array is empty, the index is invalid, or the mode is unsupported.
+    """
+    if scatterers_mm.shape[0] == 0:
+        raise ValueError("No scatterers available for reflector profile selection.")
+
+    if scatterer_idx is not None:
+        if scatterer_idx < 0 or scatterer_idx >= scatterers_mm.shape[0]:
+            raise ValueError(
+                f"scatterer_idx={scatterer_idx} is out of range [0, {scatterers_mm.shape[0] - 1}]."
+            )
+        return int(scatterer_idx)
+
+    selection_normalized = selection.strip().lower()
+    if selection_normalized == "strongest":
+        if scatterers_mm.shape[1] >= 3:
+            return int(np.argmax(np.abs(scatterers_mm[:, 2])))
+        return 0
+    if selection_normalized == "first":
+        return 0
+    raise ValueError("scatterer_selection must be 'strongest' or 'first'.")
+
+
 def select_reflector_scatterer(
     scatterers_mm: np.ndarray,
     selection: str = "strongest",
@@ -100,23 +152,11 @@ def select_reflector_scatterer(
     Raises:
         ValueError: If the array is empty, the index is invalid, or the mode is unsupported.
     """
-    if scatterers_mm.shape[0] == 0:
-        raise ValueError("No scatterers available for reflector profile selection.")
-
-    if scatterer_idx is not None:
-        if scatterer_idx < 0 or scatterer_idx >= scatterers_mm.shape[0]:
-            raise ValueError(
-                f"scatterer_idx={scatterer_idx} is out of range [0, {scatterers_mm.shape[0] - 1}]."
-            )
-        return scatterers_mm[scatterer_idx]
-
-    selection_normalized = selection.strip().lower()
-    if selection_normalized == "strongest":
-        selected_idx = int(np.argmax(np.abs(scatterers_mm[:, 2])))
-    elif selection_normalized == "first":
-        selected_idx = 0
-    else:
-        raise ValueError("scatterer_selection must be 'strongest' or 'first'.")
+    selected_idx = select_reflector_scatterer_index(
+        scatterers_mm,
+        selection=selection,
+        scatterer_idx=scatterer_idx,
+    )
     return scatterers_mm[selected_idx]
 
 
@@ -133,6 +173,106 @@ def save_csv(path: Path, rows: list[dict[str, object]], header: list[str]) -> No
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def find_scatterer_profile_row(metrics: dict, example_idx: int, scatterer_idx: int) -> int:
+    """Find the aggregated row matching one reflector in one example."""
+    view = metrics.get("aggregated", metrics)
+    example_indices = np.asarray(view.get("peak_example_indices", np.empty(0)), dtype=np.int32)
+    scatterer_indices = np.asarray(view.get("peak_scatterer_indices", np.empty(0)), dtype=np.int32)
+    matches = np.flatnonzero(
+        (example_indices == int(example_idx)) & (scatterer_indices == int(scatterer_idx))
+    )
+    if matches.size == 0:
+        raise ValueError(
+            f"Could not find profile row for example_idx={example_idx}, scatterer_idx={scatterer_idx}."
+        )
+    return int(matches[0])
+
+
+def plot_selected_scatterer_profiles(
+    profile_metrics: dict[str, dict],
+    example_idx: int,
+    scatterer_idx: int,
+    output_path: Path,
+    dpi: int,
+    use_db: bool,
+    selected_scatterer: np.ndarray,
+    db_min: float = -60.0,
+) -> None:
+    """Plot lateral and axial profiles for one reflector across all methods.
+
+    Args:
+        profile_metrics: Mapping from method name to scatterer-metric bundles.
+        example_idx: Validation-example index inside the local validation batch.
+        scatterer_idx: Reflector index inside the selected validation example.
+        output_path: Destination figure path.
+        dpi: Figure resolution.
+        use_db: If ``True``, normalize each profile by its own local maximum and
+            display it in dB.
+        selected_scatterer: Scatterer row with at least ``[x_mm, z_mm]``.
+    """
+    axis_specs = {
+        "lateral": {
+            "profiles_key": "lateral_profiles",
+            "offsets_key": "lateral_profile_offsets_mm",
+            "xlabel": "Relative x (mm)",
+            "title": "Lateral profile (max over z in reflector box)",
+        },
+        "axial": {
+            "profiles_key": "axial_profiles",
+            "offsets_key": "axial_profile_offsets_mm",
+            "xlabel": "Relative z (mm)",
+            "title": "Axial profile (max over x in reflector box)",
+        },
+    }
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharey=use_db)
+
+    for axis_idx, (axis_name, axis_cfg) in enumerate(axis_specs.items()):
+        ax = axes[axis_idx]
+        for method_name, metrics in profile_metrics.items():
+            view = metrics.get("aggregated", metrics)
+            profiles = np.asarray(view.get(axis_cfg["profiles_key"], np.empty((0, 0))), dtype=np.float64)
+            offsets = np.asarray(view.get(axis_cfg["offsets_key"], np.empty(0)), dtype=np.float64)
+            try:
+                row_idx = find_scatterer_profile_row(metrics, example_idx=example_idx, scatterer_idx=scatterer_idx)
+            except ValueError:
+                continue
+
+            if profiles.ndim != 2 or row_idx >= profiles.shape[0] or offsets.size != profiles.shape[1]:
+                continue
+
+            raw_profile = np.abs(profiles[row_idx])
+            valid = np.isfinite(raw_profile)
+            if not np.any(valid):
+                continue
+
+            plot_x = offsets[valid]
+            if use_db:
+                ref_value = float(np.nanmax(raw_profile[valid]))
+                plot_y = to_db(raw_profile[valid], ref=max(ref_value, 1e-12))
+            else:
+                plot_y = raw_profile[valid]
+
+            ax.plot(plot_x, plot_y, linewidth=2, label=method_name.capitalize())
+
+        ax.set_xlabel(axis_cfg["xlabel"])
+        ax.set_title(axis_cfg["title"])
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel("Amplitude (dB re. local peak)" if use_db else "Amplitude")
+    axes[0].legend(title="Method")
+    fig.suptitle(
+        "Reflector profiles at "
+        f"x={float(selected_scatterer[0]):.2f} mm, z={float(selected_scatterer[1]):.2f} mm"
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    if use_db:
+        for ax in axes:
+            ax.set_ylim(db_min, 0.0)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main() -> None:
@@ -249,6 +389,10 @@ def main() -> None:
     hist_bins = int(cfg_user.get("scatterer_eval", {}).get("hist_bins", 50))
 
     scatterers_batch = load_validation_scatterers(str(dataset_folder), validation_indices)
+    validation_scatterers_full = load_validation_scatterers_full(
+        str(dataset_folder),
+        validation_indices,
+    )
 
     images_abs_eval, validation_bundle, pre_training_reference_mae = (
         compute_validation_baseline_metrics(
@@ -269,16 +413,11 @@ def main() -> None:
         )
     )
 
-    weighted_mae_summary = {
-        "zero": pre_training_reference_mae["zero"],
-        "uniform": pre_training_reference_mae["uniform"],
-        "hanning": pre_training_reference_mae["hanning"],
-        "boxcar": pre_training_reference_mae["boxcar"],
-    }
+    weighted_mae_summary = {method_name: pre_training_reference_mae[method_name] for method_name in images_abs_eval}
+    zero_reference_mae = float(validation_bundle.get("reference_mae", {}).get("zero", 0.0))
+    zero_weighted_mae = float(pre_training_reference_mae.get("zero", 0.0))
 
-    reference_mae = validation_bundle.get("reference_mae", {})
     mae_by_method = validation_bundle.get("mae_by_method", {})
-    masked_mae_by_method = validation_bundle.get("masked_mae_by_method", {})
     relative_mae_y_pred = {
         method_name: float(
             relative_mae(
@@ -305,6 +444,24 @@ def main() -> None:
         scatterers_batch,
     )
 
+    target_scatterer_metrics = helpers.compute_scatterer_metrics(
+        validation_targets,
+        scatterers_batch,
+        cm,
+        radius_mm=radius_mm,
+        return_masks=False,
+        return_background_hist=False,
+    )
+    target_view = target_scatterer_metrics.get("aggregated", target_scatterer_metrics)
+    scatterer_arrays["lateral_profiles_target"] = np.asarray(
+        target_view.get("lateral_profiles", np.empty((0, 0))),
+        dtype=np.float32,
+    )
+    scatterer_arrays["axial_profiles_target"] = np.asarray(
+        target_view.get("axial_profiles", np.empty((0, 0))),
+        dtype=np.float32,
+    )
+
     summary_payload = {
         "config_path": str(CONFIG_PATH),
         "dataset_folder": str(dataset_folder),
@@ -318,10 +475,12 @@ def main() -> None:
             "enabled": eval_noise_enabled,
             "scale": eval_noise_scale,
         },
-        "reference_mae": reference_mae,
+        "reference_mae": {
+            "zero": zero_reference_mae,
+        },
+        "zero_weighted_mae": zero_weighted_mae,
         "weighted_mae_by_method": weighted_mae_summary,
         "mae_by_method": mae_by_method,
-        "masked_mae_by_method": masked_mae_by_method,
         "relative_mae": {
             "relative_mae_y_pred": relative_mae_y_pred,
             "relative_mae_y_true": relative_mae_y_true,
@@ -337,9 +496,7 @@ def main() -> None:
             {
                 "method": method_name,
                 "mae": mae_by_method.get(method_name, ""),
-                "masked_mae": masked_mae_by_method.get(method_name, ""),
-                "reference_mae": reference_mae.get(method_name, ""),
-                "weighted_reference_mae": weighted_mae_summary.get(method_name, ""),
+                "weighted_mae": weighted_mae_summary.get(method_name, ""),
                 "relative_mae_y_pred": relative_mae_y_pred.get(method_name, ""),
                 "relative_mae_y_true": relative_mae_y_true.get(method_name, ""),
             }
@@ -350,9 +507,7 @@ def main() -> None:
         [
             "method",
             "mae",
-            "masked_mae",
-            "reference_mae",
-            "weighted_reference_mae",
+            "weighted_mae",
             "relative_mae_y_pred",
             "relative_mae_y_true",
         ],
@@ -376,8 +531,15 @@ def main() -> None:
         use_db_profiles = bool(profile_cfg.get("use_db", True))
         include_target_profile = bool(profile_cfg.get("include_target", True))
 
+        selected_scatterer_idx = select_reflector_scatterer_index(
+            validation_scatterers_full[0],
+            selection=scatterer_selection,
+            scatterer_idx=scatterer_idx,
+        )
         selected_scatterer = select_reflector_scatterer(
-            scatterers_batch[0], selection=scatterer_selection, scatterer_idx=scatterer_idx
+            validation_scatterers_full[0],
+            selection=scatterer_selection,
+            scatterer_idx=selected_scatterer_idx,
         )
         x_center_mm = float(selected_scatterer[0])
         z_center_mm = float(selected_scatterer[1])
@@ -422,6 +584,57 @@ def main() -> None:
             vmin_db=float(cfg_user.get("vmin_db", -60.0)),
         )
 
+    # indices to overlay on the uniform image (default: none)
+    overlay_indices: list[int] = []
+    profile_compare_cfg = dict(cfg_user.get("reflector_profile_comparison", {}))
+    profile_compare_enabled = bool(profile_compare_cfg.get("enabled", True))
+    if profile_compare_enabled and validation_scatterers_full:
+        scatterer_selection = str(profile_compare_cfg.get("scatterer_selection", "strongest"))
+        scatterer_idx_raw = profile_compare_cfg.get("scatterer_idx")
+        # Allow list of indices or single int in config
+        if isinstance(scatterer_idx_raw, list):
+            indices_to_plot = [int(i) for i in scatterer_idx_raw]
+        elif scatterer_idx_raw is None:
+            # resolve single index by selection
+            indices_to_plot = [
+                select_reflector_scatterer_index(
+                    validation_scatterers_full[0], selection=scatterer_selection, scatterer_idx=None
+                )
+            ]
+        else:
+            indices_to_plot = [int(scatterer_idx_raw)]
+
+        use_db_profile_compare = bool(profile_compare_cfg.get("use_db", True))
+        db_min = float(profile_compare_cfg.get("db_min", -80.0))
+        profile_metrics = {
+            **validation_bundle.get("scatterer_metrics", {}),
+            "target": target_scatterer_metrics,
+        }
+
+        # expose indices for overlay use later when drawing DAS panel
+        overlay_indices = list(indices_to_plot)
+
+        for sel_idx in indices_to_plot:
+            try:
+                selected_scatterer = validation_scatterers_full[0][int(sel_idx)]
+            except Exception:
+                print(f"Warning: scatterer index {sel_idx} out of range, skipping")
+                continue
+            out_profile_compare = output_dir / (
+                f"reflector_profiles_compare_example{validation_indices[0]}_"
+                f"scatterer{sel_idx}_{'db' if use_db_profile_compare else 'linear'}.png"
+            )
+            plot_selected_scatterer_profiles(
+                profile_metrics=profile_metrics,
+                example_idx=0,
+                scatterer_idx=int(sel_idx),
+                output_path=out_profile_compare,
+                dpi=dpi,
+                use_db=use_db_profile_compare,
+                selected_scatterer=selected_scatterer,
+                db_min=db_min,
+            )
+
     for method_name, apod_tensor in apods.items():
         map_z_elem = extract_map_for_x(apod_tensor, cm, x_fixed=x_fixed, scaled=scaled_features).numpy()
         profile = extract_profile_for_z(
@@ -464,14 +677,14 @@ def main() -> None:
             fig_profile.savefig(out_profile, dpi=dpi, bbox_inches="tight")
         plt.close(fig_profile)
 
-    fig_das, axes = plt.subplots(1, 4, figsize=(21, 5), sharex=True, sharey=True)
+    fig_das, axes = plt.subplots(2, 2, figsize=(12, 10), sharex=True, sharey=True)
     vmin_db = float(cfg_user.get("vmin_db", -60.0))
     vmax_db = float(cfg_user.get("vmax_db", 0.0))
     ordered = ["uniform", "hanning", "boxcar", "target"]
 
     first_im = None
     for idx, method_name in enumerate(ordered):
-        ax = axes[idx]
+        ax = axes[idx // 2, idx % 2]
         if method_name == "target":
             image = validation_targets[0]
             image_db = to_db(image, ref=float(np.max(np.abs(image))))
@@ -485,17 +698,30 @@ def main() -> None:
             extent=extent,
             aspect="auto",
         )
+        # If this is the 'uniform' panel, overlay circles for selected scatterers
+        if method_name == "uniform" and overlay_indices:
+            for sel_idx in overlay_indices:
+                try:
+                    sc = validation_scatterers_full[0][int(sel_idx)]
+                    x_center = float(sc[0])
+                    z_center = float(sc[1])
+                    circ = mpatches.Circle(
+                        (x_center, z_center), radius=radius_mm, edgecolor="red", facecolor="none", linewidth=0.8, zorder=5
+                    )
+                    ax.add_patch(circ)
+                except Exception:
+                    print(f"Warning: could not overlay scatterer {sel_idx} on uniform image")
         if first_im is None:
             first_im = current_im
         title = method_name.capitalize() if method_name != "target" else "Target"
         ax.set_title(f"{title} (dB)")
         ax.set_xlabel("x (mm)")
-        if idx == 0:
+        if idx % 2 == 0:
             ax.set_ylabel("z (mm)")
 
     fig_das.suptitle(f"Baseline apodizations - Example {validation_indices[0]}")
-    fig_das.tight_layout(rect=[0, 0, 0.92, 1])
-    cbar_ax = fig_das.add_axes([0.93, 0.1, 0.013, 0.78])
+    fig_das.tight_layout(rect=[0, 0, 0.9, 1])
+    cbar_ax = fig_das.add_axes([0.92, 0.12, 0.018, 0.76])
     fig_das.colorbar(first_im, cax=cbar_ax, label="dB")
     if save_outputs:
         fig_das.savefig(output_dir / f"baseline_panel_example{validation_indices[0]}.png", dpi=dpi, bbox_inches="tight")
