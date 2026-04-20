@@ -14,6 +14,7 @@ The script keeps logic direct and sandbox-oriented. Configuration lives in
 from __future__ import annotations
 
 import json
+import csv
 import os
 import pprint
 import random
@@ -28,6 +29,11 @@ import numpy as np
 import tensorflow as tf
 
 import helpers
+from baseline_evaluation import (  # noqa: E402
+    extract_scatterer_snr,
+    find_latest_baseline_reference,
+    load_validation_scatterers,
+)
 from inr_apodizations.modeling.losses import PixelWeightedMAELoss
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
@@ -798,14 +804,19 @@ validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
 # --- Scatterer metrics evaluation (full validation set) ---
 if bool(scatterer_eval_cfg.get("enabled", False)):
     try:
-        scatterers_all = helpers.load_saved_scatterers(dataset_folder)
+        scatterers_batch = load_validation_scatterers(dataset_folder, val_idx)
 
-        # Build per-example scatterer lists for the validation indices (convert m -> mm)
-        scatterers_batch: list[np.ndarray] = []
-        for idx in val_idx:
-            s = np.asarray(scatterers_all[int(idx)], dtype=np.float32).copy()
-            s[:, :2] *= 1000.0
-            scatterers_batch.append(s[:, :2])
+        baseline_reference_summary, baseline_reference_arrays = find_latest_baseline_reference(
+            dataset_folder=dataset_folder,
+            baseline_f_number=baseline_f_number,
+            sandbox_output_root=cfg["io"]["sandbox_output_root"],
+        )
+
+        if baseline_reference_arrays is not None:
+            print(
+                "Loaded baseline scatterer references from: "
+                f"{baseline_reference_summary['output_dir']}"
+            )
 
         validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
             images_abs=images_abs_eval,
@@ -816,6 +827,110 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             radius_mm=radius_mm_eval,
             hist_bins=hist_bins_eval,
         )
+
+        if baseline_reference_arrays is not None and "inr_after" in validation_bundle.get("scatterer_metrics", {}):
+            inr_after_metrics = validation_bundle["scatterer_metrics"]["inr_after"]
+            inr_after_snr = extract_scatterer_snr(inr_after_metrics)
+            ratio_summary: dict[str, dict[str, float]] = {}
+            ratio_rows: list[dict[str, object]] = []
+
+            for ref_name in ("uniform", "hanning", "boxcar"):
+                ref_key = f"snr_{ref_name}"
+                if ref_key not in baseline_reference_arrays:
+                    continue
+
+                ref_snr = np.asarray(baseline_reference_arrays[ref_key], dtype=np.float64)
+                if ref_snr.shape != inr_after_snr.shape:
+                    print(
+                        f"Warning: baseline SNR shape mismatch for {ref_name}: "
+                        f"{ref_snr.shape} vs {inr_after_snr.shape}"
+                    )
+                    continue
+
+                ratio = inr_after_snr / np.maximum(ref_snr, 1e-12)
+                ratio_summary[ref_name] = {
+                    "mean": float(ratio.mean()) if ratio.size > 0 else 0.0,
+                    "std": float(ratio.std()) if ratio.size > 0 else 0.0,
+                    "min": float(ratio.min()) if ratio.size > 0 else 0.0,
+                    "max": float(ratio.max()) if ratio.size > 0 else 0.0,
+                }
+
+                peak_example_indices = np.asarray(
+                    validation_bundle["scatterer_metrics"]["inr_after"]["aggregated"].get(
+                        "peak_example_indices", np.arange(ratio.size, dtype=np.int32)
+                    ),
+                    dtype=np.int32,
+                )
+                peak_scatterer_indices = np.asarray(
+                    validation_bundle["scatterer_metrics"]["inr_after"]["aggregated"].get(
+                        "peak_scatterer_indices", np.arange(ratio.size, dtype=np.int32)
+                    ),
+                    dtype=np.int32,
+                )
+
+                ratio_rows.extend(
+                    {
+                        "reference": ref_name,
+                        "point_index": int(point_idx),
+                        "example_index": int(example_idx),
+                        "scatterer_index": int(scatterer_idx),
+                        "snr_inr": float(inr_after_snr[point_idx]),
+                        "snr_ref": float(ref_snr[point_idx]),
+                        "snr_ratio": float(ratio[point_idx]),
+                    }
+                    for point_idx, (example_idx, scatterer_idx) in enumerate(
+                        zip(peak_example_indices, peak_scatterer_indices, strict=False)
+                    )
+                )
+
+                fig_ratio_hist, ax_ratio_hist = plt.subplots(1, 1, figsize=(8, 5))
+                ax_ratio_hist.hist(ratio, bins=50, color="tab:blue", alpha=0.75, edgecolor="black")
+                ax_ratio_hist.set_xlabel(f"INR / {ref_name} SNR ratio")
+                ax_ratio_hist.set_ylabel("Frequency")
+                ax_ratio_hist.set_title(
+                    f"SNR ratio histogram: INR / {ref_name} ({len(ratio)} points)"
+                )
+                ax_ratio_hist.grid(True, alpha=0.3)
+                fig_ratio_hist.tight_layout()
+                fig_ratio_hist.savefig(
+                    str(Path(sandbox_dir) / f"snr_ratio_hist_inr_vs_{ref_name}.png"),
+                    dpi=150,
+                    bbox_inches="tight",
+                )
+                plt.close(fig_ratio_hist)
+
+            if ratio_summary:
+                with open(Path(sandbox_dir) / "snr_ratio_summary.json", "w", encoding="utf-8") as handle:
+                    json.dump(ratio_summary, handle, indent=2)
+
+            if ratio_rows:
+                with open(Path(sandbox_dir) / "snr_ratio_points.csv", "w", encoding="utf-8", newline="") as csv_file:
+                    writer = csv.DictWriter(
+                        csv_file,
+                        fieldnames=[
+                            "reference",
+                            "point_index",
+                            "example_index",
+                            "scatterer_index",
+                            "snr_inr",
+                            "snr_ref",
+                            "snr_ratio",
+                        ],
+                    )
+                    writer.writeheader()
+                    writer.writerows(ratio_rows)
+
+                np.savez(
+                    Path(sandbox_dir) / "snr_ratio_points.npz",
+                    snr_inr=inr_after_snr.astype(np.float32, copy=False),
+                    **{
+                        f"snr_ref_{name}": np.asarray(
+                            baseline_reference_arrays[f"snr_{name}"], dtype=np.float32
+                        )
+                        for name in ("uniform", "hanning", "boxcar")
+                        if f"snr_{name}" in baseline_reference_arrays
+                    },
+                )
 
         helpers.plot_scatterer_evaluation(
             images_abs=images_abs_eval,
