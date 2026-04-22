@@ -22,11 +22,11 @@ from pathlib import Path
 os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
 
 from inr_apodizations import config
+import inr_apodizations.sandbox_helpers as helpers
 
 import numpy as np
 import tensorflow as tf
 
-import helpers
 from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory

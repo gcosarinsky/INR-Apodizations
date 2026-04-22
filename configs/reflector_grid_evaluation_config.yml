@@ -1,20 +1,20 @@
 io:
-  output_root: sandbox/inr_das_experiment/model_evaluation/outputs
+  simulation_output_root: sandbox/inr_das_experiment/outputs/evaluation/delayed_samples
+  evaluation_output_root: sandbox/inr_das_experiment/outputs/evaluation/outputs
   save_plot: true
-  model_path: sandbox/inr_das_experiment/outputs/20260407_130013
-  delayed_samples_path: sandbox/inr_das_experiment/model_evaluation/outputs/20260420_122558/delayed_samples_signal.npy
+  model_path: sandbox/inr_das_experiment/outputs/train/20260407_130013
 
 phantom:
   mode: grid
   unit_amplitude: true
   seed: 42
   grid:
-    x_count: 9
+    x_count: 3
     z_count: 6
-    x_center_mm: 0.0
-    z_start_mm: 4.0
-    x_spacing_mm: 4.0
-    z_spacing_mm: 4.0
+    x_center_mm: 5.0
+    z_start_mm: 5.0
+    x_spacing_mm: 5.0
+    z_spacing_mm: 5.0
     amplitude_range: [0.4, 1.0]
   list:
     points_mm: []
@@ -30,7 +30,7 @@ simulation:
   c1: 1.54
   angles: [-5, 6, 1]
   t_start: 0.0
-  roi_simulation: [-22.0, 22.0, 1.0, 3.0]
+  roi_simulation: [-4, 22.0, 1.0, 32]
   n_samples: null
 
 beamforming:
@@ -40,7 +40,7 @@ beamforming:
   f_number: 0.5
   x_step: 0.1
   z_step: 0.1
-  roi_user: [-20.0, 20.0, 1.0, 30.0]
+  roi_user: [-2, 14.0, 1.0, 32.0]
   blocksize_img: [32, 8]
   n_batch: 0
   n_ch: 128

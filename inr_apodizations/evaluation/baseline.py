@@ -24,6 +24,28 @@ from inr_apodizations.evaluation.summary import (
     extract_snr_from_metrics,
 )
 from inr_apodizations.modeling.metrics import PixelWeightedMAE
+import inr_apodizations.sandbox_helpers as helpers
+
+
+def load_validation_scatterers(
+    dataset_folder: str, validation_indices: np.ndarray
+) -> list[np.ndarray]:
+    """Load scatterers for the requested validation indices in millimeters.
+
+    Args:
+        dataset_folder: Path string to the delayed-samples dataset folder.
+        validation_indices: Array of integer indices to load.
+
+    Returns:
+        List of ``(n_scatterers, 2)`` arrays with [x_mm, z_mm] per example.
+    """
+    scatterers_all = helpers.load_saved_scatterers(dataset_folder)
+    scatterers_batch: list[np.ndarray] = []
+    for idx in validation_indices:
+        scatterers_example = np.asarray(scatterers_all[int(idx)], dtype=np.float32).copy()
+        scatterers_example[:, :2] *= 1000.0
+        scatterers_batch.append(scatterers_example[:, :2])
+    return scatterers_batch
 
 
 def build_validation_weights(gaussian_masks: np.ndarray, cfg_user: dict) -> np.ndarray:

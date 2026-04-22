@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from inr_apodizations import config
+import inr_apodizations.sandbox_helpers as helpers
 from inr_apodizations.config import PROJ_ROOT
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
@@ -31,12 +32,6 @@ from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.plots import _prepare_comparison_images_db
 import matplotlib.pyplot as plt
 import math
-
-try:
-    import helpers
-except ImportError:
-    print("Error: helpers module not found in sandbox directory.")
-    sys.exit(1)
 
 
 def generate_inr_comparison_figure(

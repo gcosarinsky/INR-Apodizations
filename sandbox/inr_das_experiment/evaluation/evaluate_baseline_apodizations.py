@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import csv
 import json
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -32,16 +31,15 @@ from inr_apodizations.evaluation import (
     build_validation_weights,
     compute_reference_apodizations,
     compute_validation_baseline_metrics,
+    load_validation_scatterers,
     resolve_baseline_f_number,
     select_reflector_scatterer,
     select_reflector_scatterer_index,
 )
 from inr_apodizations.plots import plot_lateral_reflector_profiles, to_db
+from inr_apodizations.sandbox_helpers import build_reflector_profile_context
+import inr_apodizations.sandbox_helpers as helpers
 from inr_apodizations.utils import relative_mae
-
-sys.path.insert(0, str(PROJ_ROOT / "sandbox" / "inr_das_experiment"))
-from baseline_evaluation import load_validation_scatterers  # noqa: E402
-import helpers
 
 
 CONFIG_PATH = CONFIGS_DIR / "train_config.yml"
@@ -302,7 +300,7 @@ def main() -> None:
     else:
         output_root = output_root_cfg
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = output_root / "baseline_apodizations" / timestamp
+    output_dir = output_root / "evaluation" / "baseline" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dpi = int(cfg_user.get("dpi", 150))
@@ -460,57 +458,35 @@ def main() -> None:
     profile_cfg = dict(cfg_user.get("reflector_lateral_profile", {}))
     profile_enabled = bool(profile_cfg.get("enabled", False))
     if profile_enabled:
-        scatterer_selection = str(profile_cfg.get("scatterer_selection", "strongest"))
-        scatterer_idx_raw = profile_cfg.get("scatterer_idx")
-        scatterer_idx = None if scatterer_idx_raw is None else int(scatterer_idx_raw)
-        line_length_mm = float(profile_cfg.get("line_length_mm", 5.0))
-        overlay_profiles = bool(profile_cfg.get("overlay_profiles", True))
-        use_db_profiles = bool(profile_cfg.get("use_db", True))
-        include_target_profile = bool(profile_cfg.get("include_target", True))
-
-        selected_scatterer_idx = select_reflector_scatterer_index(
-            validation_scatterers_full[0],
-            selection=scatterer_selection,
-            scatterer_idx=scatterer_idx,
+        profile_context = build_reflector_profile_context(
+            scatterers_mm=validation_scatterers_full[0],
+            profile_cfg=profile_cfg,
+            images_linear={
+                "uniform": images_abs_eval["uniform"][0],
+                "hanning": images_abs_eval["hanning"][0],
+                "boxcar": images_abs_eval["boxcar"][0],
+            },
+            images_db={
+                "uniform": to_db(images_abs_eval["uniform"][0], ref=float(np.max(images_abs_eval["uniform"][0]))),
+                "hanning": to_db(images_abs_eval["hanning"][0], ref=float(np.max(images_abs_eval["hanning"][0]))),
+                "boxcar": to_db(images_abs_eval["boxcar"][0], ref=float(np.max(images_abs_eval["boxcar"][0]))),
+            },
+            target_image=validation_targets[0] if bool(profile_cfg.get("include_target", True)) else None,
         )
-        selected_scatterer = select_reflector_scatterer(
-            validation_scatterers_full[0],
-            selection=scatterer_selection,
-            scatterer_idx=selected_scatterer_idx,
-        )
+        selected_scatterer = np.asarray(profile_context["selected_scatterer"], dtype=np.float64)
+        line_length_mm = float(profile_context["line_length_mm"])
+        overlay_profiles = bool(profile_context["overlay_profiles"])
+        use_db_profiles = bool(profile_context["use_db_profiles"])
+        selected_profile_images = dict(profile_context["selected_profile_images"])
         x_center_mm = float(selected_scatterer[0])
         z_center_mm = float(selected_scatterer[1])
-
-        profile_image_source = {
-            "uniform": to_db(images_abs_eval["uniform"][0], ref=float(np.max(images_abs_eval["uniform"][0])))
-            if use_db_profiles
-            else images_abs_eval["uniform"][0],
-            "hanning": to_db(images_abs_eval["hanning"][0], ref=float(np.max(images_abs_eval["hanning"][0])))
-            if use_db_profiles
-            else images_abs_eval["hanning"][0],
-            "boxcar": to_db(images_abs_eval["boxcar"][0], ref=float(np.max(images_abs_eval["boxcar"][0])))
-            if use_db_profiles
-            else images_abs_eval["boxcar"][0],
-        }
-        if include_target_profile:
-            target_img = validation_targets[0]
-            profile_image_source["target"] = (
-                to_db(target_img, ref=float(np.max(np.abs(target_img))))
-                if use_db_profiles
-                else np.abs(target_img)
-            )
-
-        requested_images = profile_cfg.get("images")
-        if requested_images is not None:
-            requested = [str(item).strip().lower() for item in requested_images]
-            profile_image_source = {name: profile_image_source[name] for name in requested}
 
         out_reflector_profile = output_dir / (
             f"reflector_lateral_profile_z{z_center_mm:.2f}_x{x_center_mm:.2f}_"
             f"len{line_length_mm:.2f}_{'db' if use_db_profiles else 'linear'}_example{validation_indices[0]}.png"
         )
         plot_lateral_reflector_profiles(
-            images=profile_image_source,
+            images=selected_profile_images,
             output_path=str(out_reflector_profile),
             extent=extent,
             x_center=x_center_mm,

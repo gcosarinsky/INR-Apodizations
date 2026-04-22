@@ -14,12 +14,10 @@ Workflow:
 from pathlib import Path
 import csv
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import yaml
-import math
 
 from inr_apodizations.apodizations import (
     compute_dynamic_apodizations_tf,
@@ -28,22 +26,18 @@ from inr_apodizations.apodizations import (
 )
 from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
-from inr_apodizations.evaluation import select_reflector_scatterer
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.plots import (
     generate_das_comparison_figure,
     plot_lateral_reflector_profiles,
 )
+from inr_apodizations.sandbox_helpers import (
+    build_reflector_profile_context,
+    compute_scatterer_metrics,
+)
 from inr_apodizations.utils import relative_mae, to_db
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
-import sys
 
-# Import compute_scatterer_metrics from sandbox helpers
-sys.path.insert(0, str(PROJ_ROOT / "sandbox"))
-try:
-    from inr_das_experiment.helpers import compute_scatterer_metrics
-except ImportError:
-    compute_scatterer_metrics = None
 plt.ion()  # Enable interactive mode for better display control (can be turned off if not desired)
 CONFIG_PATH = CONFIGS_DIR / "das_standard_apodizations.yml"
 
@@ -350,62 +344,29 @@ if bool(cfg_user.get("save_npy", False)):
     print(f"Saved {arrays_path}")
 
 if reflector_profile_enabled:
-    line_length_mm = float(reflector_profile_cfg.get("line_length_mm", 5.0))
-    overlay_profiles = bool(reflector_profile_cfg.get("overlay_profiles", True))
-    use_db_profiles = bool(reflector_profile_cfg.get("use_db", True))
-    include_target_profile = bool(reflector_profile_cfg.get("include_target", True))
-    requested_profile_images = reflector_profile_cfg.get("images")
-    scatterer_selection = str(reflector_profile_cfg.get("scatterer_selection", "strongest"))
-    scatterer_idx_raw = reflector_profile_cfg.get("scatterer_idx")
-    scatterer_idx = None if scatterer_idx_raw is None else int(scatterer_idx_raw)
-
     if scatterers_mm is None:
         raise ValueError("Reflector profile plotting requires scatterers for the selected example.")
+    if build_reflector_profile_context is None:
+        raise ImportError("Could not import build_reflector_profile_context helper.")
 
-    selected_scatterer = select_reflector_scatterer(
-        scatterers_mm,
-        selection=scatterer_selection,
-        scatterer_idx=scatterer_idx,
+    profile_context = build_reflector_profile_context(
+        scatterers_mm=scatterers_mm,
+        profile_cfg=reflector_profile_cfg,
+        images_linear=das_images_linear,
+        images_db=das_images_db,
+        target_image=target_np if bool(reflector_profile_cfg.get("include_target", True)) else None,
     )
+    selected_scatterer = np.asarray(profile_context["selected_scatterer"], dtype=np.float64)
+    line_length_mm = float(profile_context["line_length_mm"])
+    overlay_profiles = bool(profile_context["overlay_profiles"])
+    use_db_profiles = bool(profile_context["use_db_profiles"])
+    selected_profile_images = dict(profile_context["selected_profile_images"])
     x_center_mm = float(selected_scatterer[0])
     z_center_mm = float(selected_scatterer[1])
     print(
         "Using scatterer for reflector profile: "
         f"x={x_center_mm:.3f} mm, z={z_center_mm:.3f} mm, reflectivity={selected_scatterer[2]:.3f}"
     )
-
-    if requested_profile_images is not None and not isinstance(requested_profile_images, list):
-        raise ValueError("`reflector_lateral_profile.images` must be a YAML list when provided.")
-
-    if use_db_profiles:
-        profile_image_source = dict(das_images_db)
-    else:
-        profile_image_source = {
-            name: np.abs(image) for name, image in das_images_linear.items()
-        }
-
-    if include_target_profile and target_np is not None:
-        profile_image_source["target"] = target_db if use_db_profiles else np.abs(target_np)
-
-    if requested_profile_images is None or len(requested_profile_images) == 0:
-        profile_image_names = list(profile_image_source.keys())
-    else:
-        profile_image_names = [str(name).strip().lower() for name in requested_profile_images]
-
-    missing_profile_images = [
-        image_name for image_name in profile_image_names if image_name not in profile_image_source
-    ]
-    if missing_profile_images:
-        raise ValueError(
-            "Unknown images requested in `reflector_lateral_profile.images`: "
-            f"{missing_profile_images}. Available images: {list(profile_image_source.keys())}"
-        )
-
-    selected_profile_images = {
-        image_name: profile_image_source[image_name] for image_name in profile_image_names
-    }
-    if len(selected_profile_images) == 0:
-        raise ValueError("No images available for `reflector_lateral_profile` plotting.")
 
     if save_outputs:
         profile_scale_suffix = "db" if use_db_profiles else "linear"

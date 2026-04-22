@@ -1,3 +1,4 @@
 {   
     "python.terminal.launchArgs": ["-m", "IPython", "-i", "--"],
+    "python.terminal.activateEnvironment": false
 }

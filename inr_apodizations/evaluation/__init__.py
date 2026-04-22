@@ -39,6 +39,7 @@ from inr_apodizations.evaluation.metrics import (
     compute_validation_mae_and_scatterer_metrics,
 )
 from inr_apodizations.evaluation.baseline import (
+    load_validation_scatterers,
     build_validation_weights,
     resolve_baseline_f_number,
     compute_reference_apodizations,
@@ -75,6 +76,7 @@ __all__ = [
     "compute_validation_and_reference_metrics",
     "compute_validation_mae_and_scatterer_metrics",
     # baseline
+    "load_validation_scatterers",
     "build_validation_weights",
     "resolve_baseline_f_number",
     "compute_reference_apodizations",

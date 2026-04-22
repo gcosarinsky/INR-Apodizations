@@ -6,7 +6,7 @@ computes apodizations (INR, Hanning, Boxcar, Uniform), applies them to
 the delayed samples to obtain DAS reconstructions, and plots the results.
 
 Design decisions:
-- The script is simple (no argparse/main). It reads `evaluation_config.yml`.
+- The script is simple (no argparse/main). It reads `configs/reflector_grid_evaluation_config.yml`.
 - Docstrings and comments in English; user-facing messages in Spanish.
 """
 from __future__ import annotations
@@ -24,9 +24,10 @@ from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from inr_apodizations.config import PROJ_ROOT
+from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
+import inr_apodizations.sandbox_helpers as helpers
 
 # Temporary path fix: ensure `sandbox/inr_das_experiment` is on sys.path
 # so the local `helpers.py` module can be imported when running this script
@@ -36,7 +37,6 @@ _helpers_dir = _Path_for_helpers(__file__).resolve().parent.parent
 if str(_helpers_dir) not in _sys.path:
     _sys.path.insert(0, str(_helpers_dir))
 
-import helpers
 plt.ion()  # interactive mode for plotting
 
 def _load_config(cfg_path: Path) -> dict[str, Any]:
@@ -50,18 +50,74 @@ def _load_delayed_samples(path: Path) -> np.ndarray:
     return arr
 
 
+def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, Path]:
+    """Resolve delayed-samples artifact from latest simulation metadata.
+
+    Returns:
+        Tuple ``(delayed_samples_file, latest_run_folder)``.
+
+    Raises:
+        FileNotFoundError: If expected folders/files are missing.
+        ValueError: If metadata format/content is invalid.
+    """
+    simulation_root_cfg = io_cfg.get(
+        "simulation_output_root", "sandbox/inr_das_experiment/evaluation/delayed_samples"
+    )
+    simulation_root = Path(PROJ_ROOT / simulation_root_cfg)
+    if not simulation_root.exists() or not simulation_root.is_dir():
+        raise FileNotFoundError(
+            "No existe `io.simulation_output_root` o no es carpeta: "
+            f"{simulation_root}"
+        )
+
+    run_folders = [path for path in simulation_root.iterdir() if path.is_dir()]
+    if len(run_folders) == 0:
+        raise FileNotFoundError(
+            "No se encontraron corridas en `io.simulation_output_root`: "
+            f"{simulation_root}"
+        )
+
+    latest_run = max(run_folders, key=lambda path: path.stat().st_mtime)
+    simulation_info_path = latest_run / "simulation_info.yml"
+    if not simulation_info_path.exists():
+        raise FileNotFoundError(
+            "No se encontro simulation_info.yml en la corrida mas reciente: "
+            f"{simulation_info_path}"
+        )
+
+    simulation_info = _load_config(simulation_info_path)
+    delayed_samples_cfg = simulation_info.get("delayed_samples_path")
+    if not isinstance(delayed_samples_cfg, str) or len(delayed_samples_cfg.strip()) == 0:
+        raise ValueError(
+            "Falta `delayed_samples_path` valido en simulation_info.yml: "
+            f"{simulation_info_path}"
+        )
+
+    delayed_samples_path = Path(delayed_samples_cfg)
+    if not delayed_samples_path.is_absolute():
+        delayed_samples_path = (PROJ_ROOT / delayed_samples_path).resolve()
+
+    if not delayed_samples_path.exists() or delayed_samples_path.is_dir():
+        raise FileNotFoundError(
+            "`delayed_samples_path` en simulation_info.yml no apunta a un archivo valido: "
+            f"{delayed_samples_path}"
+        )
+
+    return delayed_samples_path, latest_run
+
+
 def _build_grid_reflector_points(cfg: dict[str, Any]) -> np.ndarray:
     """Build reflector positions ``(N, 2)`` in mm from ``phantom.grid`` config."""
     phantom_cfg = cfg.get("phantom", {})
     mode = str(phantom_cfg.get("mode", "")).strip().lower()
     if mode != "grid":
         raise ValueError(
-            "Este flujo de perfiles por reflector requiere `phantom.mode: grid` en evaluation_config.yml."
+            "Este flujo de perfiles por reflector requiere `phantom.mode: grid` en reflector_grid_evaluation_config.yml."
         )
 
     grid_cfg = phantom_cfg.get("grid")
     if not isinstance(grid_cfg, dict):
-        raise ValueError("Falta el bloque `phantom.grid` en evaluation_config.yml.")
+        raise ValueError("Falta el bloque `phantom.grid` en reflector_grid_evaluation_config.yml.")
 
     required = (
         "x_count",
@@ -128,18 +184,17 @@ def _resolve_reflector_indices(indices_cfg: Any, n_reflectors: int) -> np.ndarra
 
 
 # ===== Load config =====
-script_dir = PROJ_ROOT / "sandbox" / "inr_das_experiment" / "model_evaluation"
-cfg = _load_config(script_dir / "evaluation_config.yml")
+script_dir = Path(__file__).resolve().parent
+cfg = _load_config(CONFIGS_DIR / "reflector_grid_evaluation_config.yml")
 
 io_cfg = cfg.get("io", {})
 sim_cfg = cfg.get("simulation", {})
 bf_cfg = cfg.get("beamforming", {})
 
 model_path = Path(PROJ_ROOT / io_cfg.get("model_path"))
-delayed_samples_path = Path(PROJ_ROOT / io_cfg.get("delayed_samples_path"))
-
-if not delayed_samples_path.exists():
-    raise FileNotFoundError(f"Delayed samples not found: {delayed_samples_path}")
+delayed_samples_path, latest_simulation_run = _resolve_latest_delayed_samples_path(io_cfg)
+print("Corrida de simulacion seleccionada:", latest_simulation_run)
+print("Usando delayed samples:", delayed_samples_path)
 
 # ===== Load delayed samples =====
 delayed = _load_delayed_samples(delayed_samples_path)
@@ -319,7 +374,7 @@ cbar_ax = fig.add_axes([0.93, 0.1, 0.013, 0.78])
 if first_im is not None:
     fig.colorbar(first_im, cax=cbar_ax, label="dB")
 
-out_root = Path(io_cfg.get("output_root", script_dir / "outputs"))
+out_root = Path(io_cfg.get("evaluation_output_root", script_dir / "outputs"))
 out_root = (Path.cwd() / out_root).resolve()
 out_root.mkdir(parents=True, exist_ok=True)
 plot_path = out_root / "evaluate_apodizations_quicklook.png"
@@ -333,7 +388,7 @@ if profiles_enabled:
     methods_cfg = profile_cfg.get("methods", ["uniform", "hanning", "boxcar", "inr"])
     if not isinstance(methods_cfg, list) or len(methods_cfg) == 0:
         raise ValueError(
-            "`reflector_lateral_profiles.methods` debe ser una lista no vacia en evaluation_config.yml."
+            "`reflector_lateral_profiles.methods` debe ser una lista no vacia en reflector_grid_evaluation_config.yml."
         )
 
     selected_method_names = [str(name).strip().lower() for name in methods_cfg]

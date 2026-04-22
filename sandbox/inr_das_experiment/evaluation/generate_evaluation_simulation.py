@@ -13,7 +13,7 @@ import pymust
 import yaml
 from scipy import signal
 
-from inr_apodizations.config import CUDA_DIR
+from inr_apodizations.config import CONFIGS_DIR, CUDA_DIR
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.utils import cfg_to_must_param, save_config_yaml, to_db
 
@@ -180,7 +180,7 @@ def estimate_n_samples(roi_mm: list[float], c1_mm_per_us: float, fs_mhz: float) 
 
 #%% ===== Load Config =====
 script_dir = Path(__file__).resolve().parent
-config_path = script_dir / "evaluation_config.yml"
+config_path = CONFIGS_DIR / "reflector_grid_evaluation_config.yml"
 
 with open(config_path, encoding="utf-8") as file:
     cfg = yaml.safe_load(file)
@@ -217,7 +217,7 @@ _require_keys(
 
 #%% ===== Output Folder =====
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_root = Path(io_cfg.get("output_root", script_dir / "outputs"))
+output_root = Path(io_cfg.get("simulation_output_root", script_dir.parent / "delayed_samples"))
 if not output_root.is_absolute():
     output_root = (Path.cwd() / output_root).resolve()
 
@@ -342,12 +342,15 @@ delayed_samples_all = delayed_samples[np.newaxis, ...]
 
 cp.cuda.Device().synchronize()
 
-np.save(run_folder / "delayed_samples_signal.npy", delayed_samples_all)
+delayed_samples_file = (run_folder / "delayed_samples_signal.npy").resolve()
+np.save(delayed_samples_file, delayed_samples_all)
 
 #%% ===== Metadata =====
 das_uniform = delayed_samples.sum(axis=0)
 meta = {
     "generated": timestamp,
+    "run_folder": str(run_folder.resolve()),
+    "delayed_samples_path": str(delayed_samples_file),
     "phantom_mode": phantom_cfg.get("mode", "grid"),
     "n_scatterers": int(scatterers.shape[0]),
     "rf_shape": list(rf_array.shape),
