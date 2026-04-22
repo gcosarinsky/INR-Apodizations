@@ -180,7 +180,7 @@ def estimate_n_samples(roi_mm: list[float], c1_mm_per_us: float, fs_mhz: float) 
 
 #%% ===== Load Config =====
 script_dir = Path(__file__).resolve().parent
-config_path = CONFIGS_DIR / "reflector_grid_evaluation_config.yml"
+config_path = CONFIGS_DIR / "numeric_phantom_evaluation_config.yml"
 
 with open(config_path, encoding="utf-8") as file:
     cfg = yaml.safe_load(file)

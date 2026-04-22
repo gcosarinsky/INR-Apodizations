@@ -13,6 +13,7 @@ def compute_reflector_snr(
     peak_amplitudes: np.ndarray,
     background_rms: np.ndarray | float,
     eps: float = 1e-12,
+    return_db: bool = False,
 ) -> np.ndarray:
     """Compute pointwise SNR as peak amplitude divided by background RMS.
 
@@ -21,9 +22,12 @@ def compute_reflector_snr(
         background_rms: Either a scalar (one background level for all points) or
             a 1D array ``(N,)`` with a per-point background RMS value.
         eps: Small value added to the denominator to avoid division by zero.
+        return_db: If ``True``, return ``20 * log10(SNR)`` in dB instead of
+            the linear amplitude ratio.
 
     Returns:
-        1D float64 array of shape ``(N,)`` with ``SNR = peak / (bg + eps)``.
+        1D float64 array of shape ``(N,)`` with linear ``SNR = peak / (bg + eps)``
+        or ``20 * log10(SNR)`` when ``return_db=True``.
 
     Raises:
         ValueError: If ``peak_amplitudes`` is not 1D or ``background_rms``
@@ -45,4 +49,7 @@ def compute_reflector_snr(
     else:
         raise ValueError("background_rms must be a scalar or 1D array")
 
-    return peaks / np.maximum(bg, eps)
+    snr_linear = peaks / np.maximum(bg, eps)
+    if return_db:
+        return 20.0 * np.log10(np.maximum(snr_linear, eps))
+    return snr_linear

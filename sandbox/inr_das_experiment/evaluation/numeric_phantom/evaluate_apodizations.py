@@ -6,7 +6,7 @@ computes apodizations (INR, Hanning, Boxcar, Uniform), applies them to
 the delayed samples to obtain DAS reconstructions, and plots the results.
 
 Design decisions:
-- The script is simple (no argparse/main). It reads `configs/reflector_grid_evaluation_config.yml`.
+- The script is simple (no argparse/main). It reads `configs/numeric_phantom_evaluation_config.yml`.
 - Docstrings and comments in English; user-facing messages in Spanish.
 """
 from __future__ import annotations
@@ -112,12 +112,12 @@ def _build_grid_reflector_points(cfg: dict[str, Any]) -> np.ndarray:
     mode = str(phantom_cfg.get("mode", "")).strip().lower()
     if mode != "grid":
         raise ValueError(
-            "Este flujo de perfiles por reflector requiere `phantom.mode: grid` en reflector_grid_evaluation_config.yml."
+            "Este flujo de perfiles por reflector requiere `phantom.mode: grid` en numeric_phantom_evaluation_config.yml."
         )
 
     grid_cfg = phantom_cfg.get("grid")
     if not isinstance(grid_cfg, dict):
-        raise ValueError("Falta el bloque `phantom.grid` en reflector_grid_evaluation_config.yml.")
+        raise ValueError("Falta el bloque `phantom.grid` en numeric_phantom_evaluation_config.yml.")
 
     required = (
         "x_count",
@@ -185,7 +185,7 @@ def _resolve_reflector_indices(indices_cfg: Any, n_reflectors: int) -> np.ndarra
 
 # ===== Load config =====
 script_dir = Path(__file__).resolve().parent
-cfg = _load_config(CONFIGS_DIR / "reflector_grid_evaluation_config.yml")
+cfg = _load_config(CONFIGS_DIR / "numeric_phantom_evaluation_config.yml")
 
 io_cfg = cfg.get("io", {})
 sim_cfg = cfg.get("simulation", {})
@@ -231,25 +231,27 @@ except FileNotFoundError:
     kp = KernelParameters2D(kp_cfg)
     cm = CoordinateManager(kp)
 
-# ===== Load model (optional) =====
+# ===== Load model (conditional on reflector_lateral_profiles.inr_enabled) =====
+inr_enabled = bool(cfg.get("reflector_lateral_profiles", {}).get("inr_enabled", True))
 model = None
-if model_path.exists():
-    try:
-        model = tf.keras.models.load_model(str(model_path))
-    except Exception:
-        # try common artifact names
-        if model_path.is_dir():
-            candidate = model_path / "model.keras"
-            if candidate.exists():
-                model = tf.keras.models.load_model(str(candidate))
-            else:
-                h5s = list(model_path.glob("*.h5"))
-                if h5s:
-                    model = tf.keras.models.load_model(str(h5s[0]))
+if inr_enabled:
+    if model_path.exists():
+        try:
+            model = tf.keras.models.load_model(str(model_path))
+        except Exception:
+            # try common artifact names
+            if model_path.is_dir():
+                candidate = model_path / "model.keras"
+                if candidate.exists():
+                    model = tf.keras.models.load_model(str(candidate))
+                else:
+                    h5s = list(model_path.glob("*.h5"))
+                    if h5s:
+                        model = tf.keras.models.load_model(str(h5s[0]))
 
-# If model still not found, exit with error (script requires a model)
-if model is None:
-    _sys.exit(f"Error: no INR model found at {model_path}. The script requires an INR model to continue.")
+    # If model still not found and INR is required, exit
+    if model is None:
+        _sys.exit(f"Error: no INR model found at {model_path}. Set inr_enabled: false in reflector_lateral_profiles to skip INR evaluation.")
 
 # ===== Compute apodizations =====
 # Classical dynamic apodizations via CoordinateManager
@@ -388,7 +390,7 @@ if profiles_enabled:
     methods_cfg = profile_cfg.get("methods", ["uniform", "hanning", "boxcar", "inr"])
     if not isinstance(methods_cfg, list) or len(methods_cfg) == 0:
         raise ValueError(
-            "`reflector_lateral_profiles.methods` debe ser una lista no vacia en reflector_grid_evaluation_config.yml."
+            "`reflector_lateral_profiles.methods` debe ser una lista no vacia en numeric_phantom_evaluation_config.yml."
         )
 
     selected_method_names = [str(name).strip().lower() for name in methods_cfg]
@@ -459,8 +461,10 @@ if profiles_enabled:
         peak_amplitudes = np.asarray(scatterer_metrics["peak_amplitudes"], dtype=np.float64)
         background_rms = float(scatterer_metrics["background_rms"])
         snr_values = compute_reflector_snr(peak_amplitudes, background_rms)
+        snr_values_db = compute_reflector_snr(peak_amplitudes, background_rms, return_db=True)
         snr_by_method[method_name] = {
             "snr": snr_values,
+            "snr_db": snr_values_db,
             "peak_amplitudes": peak_amplitudes,
             "background_rms": background_rms,
         }
@@ -472,6 +476,16 @@ if profiles_enabled:
             "axial_offsets_mm": axial_offsets_mm,
         }
 
+    # Determine which profile dimensions to plot (lateral / axial / both)
+    profile_type = str(profile_cfg.get("profile_type", "both")).strip().lower()
+    if profile_type not in ("lateral", "axial", "both"):
+        raise ValueError(
+            f"`reflector_lateral_profiles.profile_type` must be 'lateral', 'axial', or 'both'. "
+            f"Got: '{profile_type}'"
+        )
+    show_lateral = profile_type in ("lateral", "both")
+    show_axial = profile_type in ("axial", "both")
+
     # Save per-reflector figures (one figure per selected reflector)
     profiles_dir = out_root / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -479,8 +493,15 @@ if profiles_enabled:
         x_mm = float(reflector_points[refl_idx, 0])
         z_mm = float(reflector_points[refl_idx, 1])
 
-        fig_ref, axes_ref = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
-        ax_lat, ax_ax = axes_ref
+        n_subplots = int(show_lateral) + int(show_axial)
+        fig_ref, axes_ref_raw = plt.subplots(
+            1, n_subplots, figsize=(6 * n_subplots, 4), constrained_layout=True
+        )
+        axes_ref_arr = np.atleast_1d(axes_ref_raw)
+
+        # Map role → axes object
+        ax_lat = axes_ref_arr[0] if show_lateral else None
+        ax_ax = axes_ref_arr[1] if (show_lateral and show_axial) else (axes_ref_arr[0] if show_axial else None)
 
         for method_name in selected_method_names:
             lat_offsets = np.asarray(method_profiles[method_name]["lateral_offsets_mm"], dtype=np.float64)
@@ -490,23 +511,29 @@ if profiles_enabled:
 
             lat_peak = float(np.nanmax(np.abs(lat_profile))) if lat_profile.size > 0 else 1.0
             ax_peak = float(np.nanmax(np.abs(ax_profile))) if ax_profile.size > 0 else 1.0
-            lat_db = 20.0 * np.log10(np.maximum(np.abs(lat_profile), 1e-12) / max(lat_peak, 1e-12))
-            ax_db = 20.0 * np.log10(np.maximum(np.abs(ax_profile), 1e-12) / max(ax_peak, 1e-12))
+            lat_db_arr = 20.0 * np.log10(np.maximum(np.abs(lat_profile), 1e-12) / max(lat_peak, 1e-12))
+            ax_db_arr = 20.0 * np.log10(np.maximum(np.abs(ax_profile), 1e-12) / max(ax_peak, 1e-12))
 
-            ax_lat.plot(lat_offsets, lat_db, linewidth=2, label=method_name)
-            ax_ax.plot(ax_offsets, ax_db, linewidth=2, label=method_name)
+            if show_lateral:
+                ax_lat.plot(lat_offsets, lat_db_arr, linewidth=2, label=method_name)
+            if show_axial:
+                ax_ax.plot(ax_offsets, ax_db_arr, linewidth=2, label=method_name)
 
-        ax_lat.set_ylim(vmin_db, 0.0)
-        ax_ax.set_ylim(vmin_db, 0.0)
-        ax_lat.grid(True, alpha=0.3)
-        ax_ax.grid(True, alpha=0.3)
-        ax_lat.set_xlabel("Lateral offset (mm)")
-        ax_ax.set_xlabel("Axial offset (mm)")
-        ax_lat.set_ylabel("Amplitude (dB)")
-        ax_ax.set_ylabel("Amplitude (dB)")
-        ax_lat.set_title("Lateral profile")
-        ax_ax.set_title("Axial profile")
-        ax_lat.legend(ncol=min(4, len(selected_method_names)), fontsize=8)
+        if show_lateral:
+            ax_lat.set_ylim(vmin_db, 0.0)
+            ax_lat.grid(True, alpha=0.3)
+            ax_lat.set_xlabel("Lateral offset (mm)")
+            ax_lat.set_ylabel("Amplitude (dB)")
+            ax_lat.set_title("Lateral profile")
+            ax_lat.legend(ncol=min(4, len(selected_method_names)), fontsize=8)
+        if show_axial:
+            ax_ax.set_ylim(vmin_db, 0.0)
+            ax_ax.grid(True, alpha=0.3)
+            ax_ax.set_xlabel("Axial offset (mm)")
+            ax_ax.set_ylabel("Amplitude (dB)")
+            ax_ax.set_title("Axial profile")
+            if not show_lateral:
+                ax_ax.legend(ncol=min(4, len(selected_method_names)), fontsize=8)
 
         fig_ref.suptitle(
             f"Reflector {refl_idx} at x={x_mm:.2f} mm, z={z_mm:.2f} mm"
@@ -533,12 +560,14 @@ if profiles_enabled:
 
     for method_name, snr_data in snr_by_method.items():
         snr_vals = np.asarray(snr_data["snr"], dtype=np.float64)
+        snr_vals_db = np.asarray(snr_data["snr_db"], dtype=np.float64)
         peak_vals = np.asarray(snr_data["peak_amplitudes"], dtype=np.float64)
         bg_rms = float(snr_data["background_rms"])
         for local_idx, rid in enumerate(selected_indices.tolist()):
             if int(rid) not in per_reflector:
                 per_reflector[int(rid)] = {}
             per_reflector[int(rid)][f"{method_name}_snr"] = float(snr_vals[local_idx])
+            per_reflector[int(rid)][f"{method_name}_snr_db"] = float(snr_vals_db[local_idx])
             per_reflector[int(rid)][f"{method_name}_peak_amplitude"] = float(peak_vals[local_idx])
             per_reflector[int(rid)][f"{method_name}_background_rms"] = bg_rms
 
@@ -548,6 +577,7 @@ if profiles_enabled:
         header.append(f"{m}_fwhm_lateral_mm")
         header.append(f"{m}_fwhm_axial_mm")
         header.append(f"{m}_snr")
+        header.append(f"{m}_snr_db")
         header.append(f"{m}_peak_amplitude")
         header.append(f"{m}_background_rms")
 
@@ -570,16 +600,53 @@ if profiles_enabled:
                 lat_key = f"{m}_fwhm_lateral_mm"
                 ax_key = f"{m}_fwhm_axial_mm"
                 snr_key = f"{m}_snr"
+                snr_db_key = f"{m}_snr_db"
                 peak_key = f"{m}_peak_amplitude"
                 bg_key = f"{m}_background_rms"
                 row_vals.append(_format_or_empty(vals.get(lat_key, None)))
                 row_vals.append(_format_or_empty(vals.get(ax_key, None)))
                 row_vals.append(_format_or_empty(vals.get(snr_key, None)))
+                row_vals.append(_format_or_empty(vals.get(snr_db_key, None)))
                 row_vals.append(_format_or_empty(vals.get(peak_key, None)))
                 row_vals.append(_format_or_empty(vals.get(bg_key, None)))
             writer.writerow(row_vals)
 
+    # ===== Summary plots: FWHM lateral and SNR vs reflector index =====
+    summary_fig, (ax_fwhm, ax_snr) = plt.subplots(
+        1, 2, figsize=(13, 5), constrained_layout=True
+    )
+    refl_ids_ordered = selected_indices.tolist()
+
+    for method_name in selected_method_names:
+        fwhm_lat_vals = [
+            float(per_reflector.get(int(rid), {}).get(f"{method_name}_fwhm_lateral_mm", float("nan")))
+            for rid in refl_ids_ordered
+        ]
+        snr_db_vals = [
+            float(per_reflector.get(int(rid), {}).get(f"{method_name}_snr_db", float("nan")))
+            for rid in refl_ids_ordered
+        ]
+        ax_fwhm.plot(refl_ids_ordered, fwhm_lat_vals, marker="o", linewidth=2, label=method_name)
+        ax_snr.plot(refl_ids_ordered, snr_db_vals, marker="o", linewidth=2, label=method_name)
+
+    ax_fwhm.set_xlabel("Reflector index")
+    ax_fwhm.set_ylabel("FWHM lateral (mm)")
+    ax_fwhm.set_title("Lateral resolution vs reflector index")
+    ax_fwhm.legend(fontsize=8)
+    ax_fwhm.grid(True, alpha=0.3)
+
+    ax_snr.set_xlabel("Reflector index")
+    ax_snr.set_ylabel("SNR (dB)")
+    ax_snr.set_title("SNR vs reflector index")
+    ax_snr.legend(fontsize=8)
+    ax_snr.grid(True, alpha=0.3)
+
+    summary_fig_path = out_root / "resolution_and_snr_summary.png"
+    summary_fig.savefig(summary_fig_path, dpi=150)
+    plt.close(summary_fig)
+
 print("Evaluate complete. Plot saved to:", plot_path)
 if profiles_enabled:
-    print("Per-reflector profiles saved in:", out_root)
+    print("Per-reflector profiles saved in:", profiles_dir)
     print("FWHM + SNR summary saved to:", fwhm_csv_path)
+    print("Resolution and SNR summary plot saved to:", summary_fig_path)
