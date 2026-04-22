@@ -27,18 +27,20 @@ from inr_apodizations.apodizations import (
     extract_profile_for_z,
 )
 from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
-from inr_apodizations.plots import plot_lateral_reflector_profiles, to_db
-from inr_apodizations.utils import relative_mae
-
-sys.path.insert(0, str(PROJ_ROOT / "sandbox" / "inr_das_experiment"))
-from baseline_evaluation import (  # noqa: E402
+from inr_apodizations.evaluation import (
     build_scatterer_reference_bundle,
     build_validation_weights,
     compute_reference_apodizations,
     compute_validation_baseline_metrics,
-    load_validation_scatterers,
     resolve_baseline_f_number,
+    select_reflector_scatterer,
+    select_reflector_scatterer_index,
 )
+from inr_apodizations.plots import plot_lateral_reflector_profiles, to_db
+from inr_apodizations.utils import relative_mae
+
+sys.path.insert(0, str(PROJ_ROOT / "sandbox" / "inr_das_experiment"))
+from baseline_evaluation import load_validation_scatterers  # noqa: E402
 import helpers
 
 
@@ -93,71 +95,6 @@ def load_validation_scatterers_full(
         scatterers_example[:, :2] *= 1000.0
         scatterers_batch.append(scatterers_example)
     return scatterers_batch
-
-
-def select_reflector_scatterer_index(
-    scatterers_mm: np.ndarray,
-    selection: str = "strongest",
-    scatterer_idx: int | None = None,
-) -> int:
-    """Resolve the reflector index used for profile-centered plots.
-
-    Args:
-        scatterers_mm: Scatterer coordinates with columns ``[x_mm, z_mm, reflectivity]``
-            when reflectivity is available.
-        selection: Selection mode. Supported values are ``strongest`` and ``first``.
-        scatterer_idx: Optional explicit index with priority over ``selection``.
-
-    Returns:
-        Selected scatterer index.
-
-    Raises:
-        ValueError: If the array is empty, the index is invalid, or the mode is unsupported.
-    """
-    if scatterers_mm.shape[0] == 0:
-        raise ValueError("No scatterers available for reflector profile selection.")
-
-    if scatterer_idx is not None:
-        if scatterer_idx < 0 or scatterer_idx >= scatterers_mm.shape[0]:
-            raise ValueError(
-                f"scatterer_idx={scatterer_idx} is out of range [0, {scatterers_mm.shape[0] - 1}]."
-            )
-        return int(scatterer_idx)
-
-    selection_normalized = selection.strip().lower()
-    if selection_normalized == "strongest":
-        if scatterers_mm.shape[1] >= 3:
-            return int(np.argmax(np.abs(scatterers_mm[:, 2])))
-        return 0
-    if selection_normalized == "first":
-        return 0
-    raise ValueError("scatterer_selection must be 'strongest' or 'first'.")
-
-
-def select_reflector_scatterer(
-    scatterers_mm: np.ndarray,
-    selection: str = "strongest",
-    scatterer_idx: int | None = None,
-) -> np.ndarray:
-    """Select a single scatterer to center reflector profile plots.
-
-    Args:
-        scatterers_mm: Scatterer coordinates with columns [x_mm, z_mm, reflectivity].
-        selection: Selection mode. Supported values are ``strongest`` and ``first``.
-        scatterer_idx: Optional explicit index with priority over ``selection``.
-
-    Returns:
-        Selected scatterer row.
-
-    Raises:
-        ValueError: If the array is empty, the index is invalid, or the mode is unsupported.
-    """
-    selected_idx = select_reflector_scatterer_index(
-        scatterers_mm,
-        selection=selection,
-        scatterer_idx=scatterer_idx,
-    )
-    return scatterers_mm[selected_idx]
 
 
 def save_json(path: Path, payload: dict) -> None:

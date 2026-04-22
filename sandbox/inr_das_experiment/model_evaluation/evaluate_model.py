@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import csv
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,7 +25,8 @@ from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.config import PROJ_ROOT
-from inr_apodizations.plots import plot_lateral_reflector_profiles
+from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
+from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
 
 # Temporary path fix: ensure `sandbox/inr_das_experiment` is on sys.path
 # so the local `helpers.py` module can be imported when running this script
@@ -48,24 +50,13 @@ def _load_delayed_samples(path: Path) -> np.ndarray:
     return arr
 
 
-def _build_grid_row_definitions(cfg: dict[str, Any], line_length_margin_mm: float) -> list[dict[str, float]]:
-    """Derive horizontal reflector-row definitions from phantom grid config.
-
-    Args:
-        cfg: Full evaluation config dictionary.
-        line_length_margin_mm: Extra lateral margin added to the row span.
-
-    Returns:
-        List of dictionaries with keys ``z_center``, ``x_center`` and ``line_length``.
-
-    Raises:
-        ValueError: If phantom mode/config is invalid or inconsistent.
-    """
+def _build_grid_reflector_points(cfg: dict[str, Any]) -> np.ndarray:
+    """Build reflector positions ``(N, 2)`` in mm from ``phantom.grid`` config."""
     phantom_cfg = cfg.get("phantom", {})
     mode = str(phantom_cfg.get("mode", "")).strip().lower()
     if mode != "grid":
         raise ValueError(
-            "Este flujo de perfiles laterales requiere `phantom.mode: grid` en evaluation_config.yml."
+            "Este flujo de perfiles por reflector requiere `phantom.mode: grid` en evaluation_config.yml."
         )
 
     grid_cfg = phantom_cfg.get("grid")
@@ -95,28 +86,41 @@ def _build_grid_row_definitions(cfg: dict[str, Any], line_length_margin_mm: floa
         raise ValueError("`x_count` y `z_count` deben ser enteros positivos en `phantom.grid`.")
     if x_spacing_mm <= 0.0 or z_spacing_mm <= 0.0:
         raise ValueError("`x_spacing_mm` y `z_spacing_mm` deben ser > 0 en `phantom.grid`.")
-    if line_length_margin_mm < 0.0:
-        raise ValueError("`line_length_margin_mm` debe ser >= 0.")
 
-    x_indices = np.arange(x_count, dtype=np.float32)
+    x_indices = np.arange(x_count, dtype=np.float64)
     x_offsets = (x_indices - (x_count - 1) / 2.0) * x_spacing_mm
     x_positions = x_center_mm + x_offsets
 
-    x_row_center = float(np.mean(x_positions))
-    x_row_span = float(np.max(x_positions) - np.min(x_positions)) if x_count > 1 else float(x_spacing_mm)
-    line_length = x_row_span + float(line_length_margin_mm)
-
-    rows = []
+    points: list[list[float]] = []
     for z_idx in range(z_count):
-        z_center = z_start_mm + z_idx * z_spacing_mm
-        rows.append(
-            {
-                "z_center": float(z_center),
-                "x_center": x_row_center,
-                "line_length": float(line_length),
-            }
+        z_pos = z_start_mm + z_idx * z_spacing_mm
+        for x_pos in x_positions:
+            points.append([float(x_pos), float(z_pos)])
+
+    return np.asarray(points, dtype=np.float64)
+
+
+def _resolve_reflector_indices(indices_cfg: Any, n_reflectors: int) -> np.ndarray:
+    """Resolve user-selected reflector indices from YAML.
+
+    Accepted values are ``"all"`` (default), or a list of integer indices.
+    """
+    if isinstance(indices_cfg, str) and indices_cfg.strip().lower() == "all":
+        return np.arange(n_reflectors, dtype=np.int32)
+    if indices_cfg is None:
+        return np.arange(n_reflectors, dtype=np.int32)
+    if not isinstance(indices_cfg, list) or len(indices_cfg) == 0:
+        raise ValueError(
+            "`reflector_lateral_profiles.reflector_indices` debe ser 'all' o una lista no vacia de enteros."
         )
-    return rows
+
+    resolved = np.asarray(indices_cfg, dtype=np.int32)
+    if np.any(resolved < 0) or np.any(resolved >= n_reflectors):
+        raise ValueError(
+            "`reflector_lateral_profiles.reflector_indices` contiene indices fuera de rango. "
+            f"Rango valido: [0, {n_reflectors - 1}]"
+        )
+    return np.unique(resolved)
 
 
 # Note: apodization helpers removed — use compute_dynamic_apodizations_tf and
@@ -274,26 +278,47 @@ for k, v in images.items():
 # Plot grid (force a 2x2 layout)
 labels = list(images_db.keys())
 rows, cols = 2, 2
-num = len(labels)
-fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows))
-axes = np.atleast_2d(axes)
+extent = kp.get_imshow_extent()
+vmin_db = -60.0
+vmax_db = 0.0
+
+fig, axes = plt.subplots(
+    rows,
+    cols,
+    figsize=(5 * cols, 4 * rows),
+    sharex=True,
+    sharey=True,
+)
+axes_flat = np.asarray(axes).ravel()
+first_im = None
 
 for idx, label in enumerate(labels):
-    r = idx // cols
-    c = idx % cols
-    ax = axes[r, c]
-    im = ax.imshow(images_db[label], aspect="auto", cmap="gray", vmin=-60, vmax=0)
+    ax = axes_flat[idx]
+    im = ax.imshow(
+        images_db[label],
+        aspect="auto",
+        cmap="gray",
+        vmin=vmin_db,
+        vmax=vmax_db,
+        extent=extent,
+    )
+    if first_im is None:
+        first_im = im
     ax.set_title(label)
-    ax.axis("off")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_xlabel("x (mm)")
+    if idx % cols == 0:
+        ax.set_ylabel("z (mm)")
 
 # Hide unused axes (if fewer than 4 images)
 for j in range(len(labels), rows * cols):
-    r = j // cols
-    c = j % cols
-    axes[r, c].axis("off")
+    axes_flat[j].axis("off")
 
-plt.tight_layout()
+fig.suptitle("DAS comparison")
+fig.tight_layout(rect=[0, 0, 0.92, 1])
+cbar_ax = fig.add_axes([0.93, 0.1, 0.013, 0.78])
+if first_im is not None:
+    fig.colorbar(first_im, cax=cbar_ax, label="dB")
+
 out_root = Path(io_cfg.get("output_root", script_dir / "outputs"))
 out_root = (Path.cwd() / out_root).resolve()
 out_root.mkdir(parents=True, exist_ok=True)
@@ -301,7 +326,7 @@ plot_path = out_root / "evaluate_apodizations_quicklook.png"
 fig.savefig(plot_path, dpi=150)
 plt.show()
 
-# ===== Reflector lateral profiles by row (from phantom.grid) =====
+# ===== Reflector profiles and FWHM (per reflector) =====
 profile_cfg = cfg.get("reflector_lateral_profiles", {})
 profiles_enabled = bool(profile_cfg.get("enabled", True))
 if profiles_enabled:
@@ -318,67 +343,188 @@ if profiles_enabled:
     missing_methods = [name for name in selected_method_names if name not in images_db]
     if missing_methods:
         raise RuntimeError(
-            "No se pueden generar perfiles laterales: faltan metodos en images_db: "
+            "No se pueden generar perfiles por reflector: faltan metodos en images_db: "
             f"{missing_methods}"
         )
 
-    selected_images_db = {name: np.asarray(images_db[name]) for name in selected_method_names}
-    line_length_margin_mm = float(profile_cfg.get("line_length_margin_mm", 1.0))
-    thickness_mm = float(profile_cfg.get("thickness_mm", 0.0))
+    selected_images_abs = {name: np.asarray(images[name], dtype=np.float64) for name in selected_method_names}
+
+    half_width_lateral_mm = float(profile_cfg.get("half_width_lateral_mm", 1.5))
+    half_width_axial_mm = float(profile_cfg.get("half_width_axial_mm", 1.0))
     vmin_db = float(profile_cfg.get("vmin_db", -60.0))
-    save_individual_rows = bool(profile_cfg.get("save_individual_rows", False))
-    row_defs = _build_grid_row_definitions(cfg, line_length_margin_mm=line_length_margin_mm)
+    snr_radius_mm = float(profile_cfg.get("snr_radius_mm", 1.5))
 
-    nrows = len(row_defs)
-    fig_rows, axes_rows = plt.subplots(
-        nrows,
-        1,
-        figsize=(10, max(4.0, 2.9 * nrows)),
-        sharex=False,
-        constrained_layout=True,
+    reflector_points = _build_grid_reflector_points(cfg)
+    selected_indices = _resolve_reflector_indices(
+        profile_cfg.get("reflector_indices", "all"),
+        n_reflectors=int(reflector_points.shape[0]),
     )
-    axes_rows = np.atleast_1d(axes_rows)
+    selected_points = reflector_points[selected_indices]
 
-    tmp_rows_dir = out_root / "_tmp_reflector_rows"
-    tmp_rows_dir.mkdir(parents=True, exist_ok=True)
+    method_profiles: dict[str, dict[str, np.ndarray | int]] = {}
+    fwhm_rows: list[dict[str, float | int | str]] = []
+    snr_by_method: dict[str, dict[str, np.ndarray | float]] = {}
 
-    for row_idx, row_def in enumerate(row_defs):
-        row_png = tmp_rows_dir / f"row_{row_idx:02d}.png"
-        sampled_x, profiles = plot_lateral_reflector_profiles(
-            images=selected_images_db,
-            output_path=str(row_png),
-            extent=kp.get_imshow_extent(),
-            x_center=float(row_def["x_center"]),
-            z_center=float(row_def["z_center"]),
-            line_length=float(row_def["line_length"]),
-            thickness_mm=thickness_mm,
-            overlay_profiles=True,
+    for method_name in selected_method_names:
+        extracted = extract_reflector_profiles(
+            image=selected_images_abs[method_name],
+            scatterers=selected_points,
             cm=cm,
-            vmin_db=vmin_db,
+            half_width_lateral_mm=half_width_lateral_mm,
+            half_width_axial_mm=half_width_axial_mm,
         )
+        lateral_profiles = np.asarray(extracted["lateral_profiles"], dtype=np.float64)
+        axial_profiles = np.asarray(extracted["axial_profiles"], dtype=np.float64)
+        lateral_offsets_mm = np.asarray(extracted["lateral_offsets_mm"], dtype=np.float64)
+        axial_offsets_mm = np.asarray(extracted["axial_offsets_mm"], dtype=np.float64)
 
-        ax = axes_rows[row_idx]
+        fwhm_lat = compute_fwhm_batch(lateral_profiles, lateral_offsets_mm)
+        fwhm_ax = compute_fwhm_batch(axial_profiles, axial_offsets_mm)
+
+        for local_idx, refl_idx in enumerate(selected_indices.tolist()):
+            fwhm_rows.append(
+                {
+                    "reflector_index": int(refl_idx),
+                    "method": method_name,
+                    "fwhm_lateral_mm": float(fwhm_lat["fwhm_mm"][local_idx]),
+                    "fwhm_axial_mm": float(fwhm_ax["fwhm_mm"][local_idx]),
+                }
+            )
+
+        scatterer_metrics = compute_scatterer_metrics(
+            image=selected_images_abs[method_name],
+            scatterers=selected_points,
+            cm=cm,
+            radius_mm=snr_radius_mm,
+            profile_half_lateral_mm=None,
+            profile_half_axial_mm=None,
+            return_masks=False,
+            return_background_hist=False,
+        )
+        peak_amplitudes = np.asarray(scatterer_metrics["peak_amplitudes"], dtype=np.float64)
+        background_rms = float(scatterer_metrics["background_rms"])
+        snr_values = compute_reflector_snr(peak_amplitudes, background_rms)
+        snr_by_method[method_name] = {
+            "snr": snr_values,
+            "peak_amplitudes": peak_amplitudes,
+            "background_rms": background_rms,
+        }
+
+        method_profiles[method_name] = {
+            "lateral_profiles": lateral_profiles,
+            "axial_profiles": axial_profiles,
+            "lateral_offsets_mm": lateral_offsets_mm,
+            "axial_offsets_mm": axial_offsets_mm,
+        }
+
+    # Save per-reflector figures (one figure per selected reflector)
+    profiles_dir = out_root / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    for local_idx, refl_idx in enumerate(selected_indices.tolist()):
+        x_mm = float(reflector_points[refl_idx, 0])
+        z_mm = float(reflector_points[refl_idx, 1])
+
+        fig_ref, axes_ref = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+        ax_lat, ax_ax = axes_ref
+
         for method_name in selected_method_names:
-            ax.plot(sampled_x, profiles[method_name], linewidth=2, label=method_name)
-        ax.set_ylim(vmin_db, 0.0)
-        ax.grid(True, alpha=0.3)
-        ax.axvline(float(row_def["x_center"]), color="black", linestyle=":", linewidth=1.2)
-        ax.set_ylabel("Amplitude (dB)")
-        ax.set_title(
-            "Reflector row profile "
-            f"z={float(row_def['z_center']):.2f} mm, len={float(row_def['line_length']):.2f} mm"
+            lat_offsets = np.asarray(method_profiles[method_name]["lateral_offsets_mm"], dtype=np.float64)
+            ax_offsets = np.asarray(method_profiles[method_name]["axial_offsets_mm"], dtype=np.float64)
+            lat_profile = np.asarray(method_profiles[method_name]["lateral_profiles"], dtype=np.float64)[local_idx]
+            ax_profile = np.asarray(method_profiles[method_name]["axial_profiles"], dtype=np.float64)[local_idx]
+
+            lat_peak = float(np.nanmax(np.abs(lat_profile))) if lat_profile.size > 0 else 1.0
+            ax_peak = float(np.nanmax(np.abs(ax_profile))) if ax_profile.size > 0 else 1.0
+            lat_db = 20.0 * np.log10(np.maximum(np.abs(lat_profile), 1e-12) / max(lat_peak, 1e-12))
+            ax_db = 20.0 * np.log10(np.maximum(np.abs(ax_profile), 1e-12) / max(ax_peak, 1e-12))
+
+            ax_lat.plot(lat_offsets, lat_db, linewidth=2, label=method_name)
+            ax_ax.plot(ax_offsets, ax_db, linewidth=2, label=method_name)
+
+        ax_lat.set_ylim(vmin_db, 0.0)
+        ax_ax.set_ylim(vmin_db, 0.0)
+        ax_lat.grid(True, alpha=0.3)
+        ax_ax.grid(True, alpha=0.3)
+        ax_lat.set_xlabel("Lateral offset (mm)")
+        ax_ax.set_xlabel("Axial offset (mm)")
+        ax_lat.set_ylabel("Amplitude (dB)")
+        ax_ax.set_ylabel("Amplitude (dB)")
+        ax_lat.set_title("Lateral profile")
+        ax_ax.set_title("Axial profile")
+        ax_lat.legend(ncol=min(4, len(selected_method_names)), fontsize=8)
+
+        fig_ref.suptitle(
+            f"Reflector {refl_idx} at x={x_mm:.2f} mm, z={z_mm:.2f} mm"
         )
-        if row_idx == 0:
-            legend_cols = min(4, max(1, len(selected_method_names)))
-            ax.legend(ncol=legend_cols, fontsize=9)
+        fig_ref.savefig(
+            profiles_dir / f"reflector_{refl_idx:03d}_profiles_db.png",
+            dpi=150,
+        )
+        plt.close(fig_ref)
+    # Persist FWHM summary as CSV in wide format: one row per reflector,
+    # with two columns per method (lateral and axial).
+    fwhm_csv_path = out_root / "reflector_fwhm_summary.csv"
+    # Pivot rows into a mapping reflector_index -> {colname: value}
+    per_reflector: dict[int, dict[str, float]] = {}
+    for row in fwhm_rows:
+        rid = int(row["reflector_index"])
+        method = str(row["method"])
+        lat_key = f"{method}_fwhm_lateral_mm"
+        ax_key = f"{method}_fwhm_axial_mm"
+        if rid not in per_reflector:
+            per_reflector[rid] = {}
+        per_reflector[rid][lat_key] = float(row.get("fwhm_lateral_mm", float("nan")))
+        per_reflector[rid][ax_key] = float(row.get("fwhm_axial_mm", float("nan")))
 
-        if not save_individual_rows and row_png.exists():
-            row_png.unlink()
+    for method_name, snr_data in snr_by_method.items():
+        snr_vals = np.asarray(snr_data["snr"], dtype=np.float64)
+        peak_vals = np.asarray(snr_data["peak_amplitudes"], dtype=np.float64)
+        bg_rms = float(snr_data["background_rms"])
+        for local_idx, rid in enumerate(selected_indices.tolist()):
+            if int(rid) not in per_reflector:
+                per_reflector[int(rid)] = {}
+            per_reflector[int(rid)][f"{method_name}_snr"] = float(snr_vals[local_idx])
+            per_reflector[int(rid)][f"{method_name}_peak_amplitude"] = float(peak_vals[local_idx])
+            per_reflector[int(rid)][f"{method_name}_background_rms"] = bg_rms
 
-    axes_rows[-1].set_xlabel("x (mm)")
-    profiles_plot_path = out_root / "evaluate_reflector_row_profiles_db.png"
-    fig_rows.savefig(profiles_plot_path, dpi=150)
+    # Build header: reflector_index, then for each method FWHM and SNR values.
+    header = ["reflector_index"]
+    for m in selected_method_names:
+        header.append(f"{m}_fwhm_lateral_mm")
+        header.append(f"{m}_fwhm_axial_mm")
+        header.append(f"{m}_snr")
+        header.append(f"{m}_peak_amplitude")
+        header.append(f"{m}_background_rms")
+
+    with open(fwhm_csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        # Write rows in the same order as selected_indices
+        for rid in selected_indices.tolist():
+            row_vals = [int(rid)]
+            vals = per_reflector.get(int(rid), {})
+
+            def _format_or_empty(value: object) -> str:
+                if value is None:
+                    return ""
+                if isinstance(value, (float, np.floating)):
+                    return "" if np.isnan(float(value)) else f"{float(value):.6f}"
+                return ""
+
+            for m in selected_method_names:
+                lat_key = f"{m}_fwhm_lateral_mm"
+                ax_key = f"{m}_fwhm_axial_mm"
+                snr_key = f"{m}_snr"
+                peak_key = f"{m}_peak_amplitude"
+                bg_key = f"{m}_background_rms"
+                row_vals.append(_format_or_empty(vals.get(lat_key, None)))
+                row_vals.append(_format_or_empty(vals.get(ax_key, None)))
+                row_vals.append(_format_or_empty(vals.get(snr_key, None)))
+                row_vals.append(_format_or_empty(vals.get(peak_key, None)))
+                row_vals.append(_format_or_empty(vals.get(bg_key, None)))
+            writer.writerow(row_vals)
 
 print("Evaluate complete. Plot saved to:", plot_path)
 if profiles_enabled:
-    print("Row profiles plot saved to:", profiles_plot_path)
+    print("Per-reflector profiles saved in:", out_root)
+    print("FWHM + SNR summary saved to:", fwhm_csv_path)

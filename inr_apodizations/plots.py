@@ -59,6 +59,147 @@ def _prepare_comparison_images_db(
         return {name: to_db(image, ref=shared_ref) for name, image in images_linear.items()}
 
 
+def _order_das_panel_names(images: dict[str, np.ndarray]) -> list[str]:
+    """Return panel names with 'uniform' first and 'target' last when present."""
+    ordered: list[str] = []
+    if "uniform" in images:
+        ordered.append("uniform")
+
+    for name in images.keys():
+        if name not in {"uniform", "target"}:
+            ordered.append(name)
+
+    if "target" in images:
+        ordered.append("target")
+    return ordered
+
+
+def _render_das_comparison_panels(
+    fig: plt.Figure,
+    images_db: dict[str, np.ndarray],
+    extent: tuple[float, float, float, float],
+    cmap: str,
+    vmin_db: float,
+    vmax_db: float,
+) -> plt.Axes | None:
+    """Render DAS panels and return the first imshow artist for a shared colorbar."""
+    ordered_names = _order_das_panel_names(images_db)
+    n_panels = len(ordered_names)
+    ncols = 2 if n_panels > 1 else 1
+    nrows = math.ceil(n_panels / ncols)
+
+    axes: list[plt.Axes] = []
+    for idx in range(nrows * ncols):
+        axes.append(fig.add_subplot(nrows, ncols, idx + 1))
+
+    first_im = None
+    for idx, image_name in enumerate(ordered_names):
+        ax = axes[idx]
+        current_im = ax.imshow(
+            images_db[image_name],
+            cmap=cmap,
+            vmin=vmin_db,
+            vmax=vmax_db,
+            extent=extent,
+            aspect="auto",
+        )
+        if first_im is None:
+            first_im = current_im
+
+        title_name = "Uniform" if image_name == "uniform" else image_name.capitalize()
+        ax.set_title(f"DAS {title_name} (dB)")
+        ax.set_xlabel("x (mm)")
+        if idx % ncols == 0:
+            ax.set_ylabel("z (mm)")
+
+    for idx in range(n_panels, len(axes)):
+        axes[idx].axis("off")
+
+    return first_im
+
+
+def generate_das_comparison_figure(
+    images_linear: dict[str, np.ndarray],
+    extent: tuple[float, float, float, float],
+    target_image: np.ndarray | None = None,
+    title: str = "DAS comparison",
+    existing_figure: plt.Figure | None = None,
+    cmap: str = "gray",
+    vmin_db: float = -60.0,
+    vmax_db: float = 0.0,
+    normalize_per_image: bool = True,
+) -> tuple[plt.Figure, dict]:
+    """Generate a DAS comparison figure from already reduced images.
+
+    Args:
+        images_linear: Dictionary mapping method names to reduced linear-domain
+            images ``(nz, nx)``.
+        extent: Matplotlib imshow extent as ``(xmin, xmax, zmax, zmin)`` in mm.
+        target_image: Optional reduced target image in linear domain.
+        title: Figure title.
+        existing_figure: Optional pre-existing figure to render into.
+        cmap: Matplotlib colormap name.
+        vmin_db: Lower dB display bound.
+        vmax_db: Upper dB display bound.
+        normalize_per_image: If True, normalize each panel independently.
+
+    Returns:
+        Tuple of ``(figure, metadata_dict)`` with generated DAS images and target.
+    """
+    das_images_linear = {
+        name: np.asarray(image)
+        for name, image in images_linear.items()
+    }
+
+    target_np = np.asarray(target_image) if target_image is not None else None
+
+    das_images_db = _prepare_comparison_images_db(
+        das_images_linear,
+        normalize_each=normalize_per_image,
+    )
+
+    target_db = None
+    if target_np is not None:
+        target_db = to_db(target_np, ref=float(np.max(np.abs(target_np))))
+        das_images_db["target"] = target_db
+
+    ordered_names = _order_das_panel_names(das_images_db)
+    n_panels = max(1, len(ordered_names))
+    ncols = 2 if n_panels > 1 else 1
+    nrows = math.ceil(n_panels / ncols)
+    if existing_figure is None:
+        fig = plt.figure(figsize=(5 * ncols, 5 * nrows))
+    else:
+        fig = existing_figure
+        fig.clear()
+        fig.set_size_inches(5 * ncols, 5 * nrows)
+
+    first_im = _render_das_comparison_panels(
+        fig=fig,
+        images_db=das_images_db,
+        extent=extent,
+        cmap=cmap,
+        vmin_db=vmin_db,
+        vmax_db=vmax_db,
+    )
+
+    fig.suptitle(title, fontsize=12, y=0.98)
+    fig.tight_layout(rect=[0, 0, 0.92, 0.96])
+
+    if first_im is not None:
+        cbar_ax = fig.add_axes([0.93, 0.1, 0.013, 0.8])
+        fig.colorbar(first_im, cax=cbar_ax, label="dB")
+
+    metadata = {
+        "das_images_db": das_images_db,
+        "das_images_linear": das_images_linear,
+        "target_db": target_db,
+        "target_np": target_np,
+    }
+
+    return fig, metadata
+
+
 def plot_training_curves(
     history: dict,
     output_path: str,
@@ -268,75 +409,26 @@ def plot_das_comparison_db(
     """
     images_linear = {
         str(baseline_name): np.asarray(uniform_image),
-        "INR before": np.asarray(inr_before_image),
-        "INR after": np.asarray(inr_after_image),
-        "Target": np.asarray(target_image),
+        "inr before": np.asarray(inr_before_image),
+        "inr after": np.asarray(inr_after_image),
     }
-    if normalize_each_image:
-        images_db = {
-            name: to_db(image, ref=float(np.max(np.abs(image))))
-            for name, image in images_linear.items()
-        }
-    else:
-        shared_ref = max(float(np.max(np.abs(image))) for image in images_linear.values())
-        images_db = {
-            name: to_db(image, ref=shared_ref) for name, image in images_linear.items()
-        }
 
-    # Dynamic layout: prefer a compact grid (up to 2 columns) to avoid excessively
-    # wide horizontal figures. Each panel kept near square by default.
-    n_panels = len(images_db)
-    ncols = 2 if n_panels > 1 else 1
-    nrows = math.ceil(n_panels / ncols)
-    width_per_panel = 5
-    height_per_panel = 5
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(width_per_panel * ncols, height_per_panel * nrows),
-        sharex=True,
-        sharey=True,
+    fig, _ = generate_das_comparison_figure(
+        images_linear=images_linear,
+        extent=extent,
+        target_image=np.asarray(target_image),
+        title="DAS comparison",
+        cmap=cmap,
+        vmin_db=vmin_db,
+        vmax_db=vmax_db,
+        normalize_per_image=normalize_each_image,
     )
 
-    axes_flat = (
-        np.array(axes).ravel()
-        if isinstance(axes, (list, tuple, np.ndarray))
-        else np.array([axes])
-    )
-    first_im = None
-    for idx, (title, image_db) in enumerate(images_db.items()):
-        ax = axes_flat[idx]
-        current_im = ax.imshow(
-            image_db,
-            cmap=cmap,
-            vmin=vmin_db,
-            vmax=vmax_db,
-            extent=extent,
-            aspect="auto",
-        )
-        if first_im is None:
-            first_im = current_im
-        ax.set_title(f"DAS {title} (dB)")
-        ax.set_xlabel("x (mm)")
-        if idx % ncols == 0:
-            ax.set_ylabel("z (mm)")
-
-    # Hide any unused subplots.
-    for j in range(n_panels, axes_flat.size):
-        try:
-            axes_flat[j].axis("off")
-        except Exception:
-            pass
-
-    fig.suptitle("DAS comparison")
-    # Leave room on the right for a single colorbar.
-    fig.tight_layout(rect=[0, 0, 0.9, 1])
-    cbar_ax = fig.add_axes([0.92, 0.13, 0.02, 0.74])
-    if first_im is not None:
-        fig.colorbar(first_im, cax=cbar_ax, label="dB")
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     fig.savefig(output_path, dpi=150)
+    plt.close(fig)
 
 
 def plot_lateral_reflector_profiles(

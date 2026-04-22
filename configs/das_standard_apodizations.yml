@@ -1,5 +1,3 @@
-# Copy this file to configs/das_apodizations.yml and edit values as needed.
-
 delayed_samples_dataset: "20260326_102630"   # name of the delayed samples dataset to use as input
 example_idx: 0                               # single example to process (legacy, used if interactive_mode=false)
 methods: [boxcar, hanning]

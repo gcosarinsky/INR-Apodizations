@@ -52,6 +52,9 @@ visualization:
 reflector_lateral_profiles:
   enabled: true
   methods: [uniform, boxcar, hanning]
+  reflector_indices: all
+  half_width_lateral_mm: 1.5
+  half_width_axial_mm: 1.0
   line_length_margin_mm: 1.0
   thickness_mm: 0.5
   vmin_db: -60.0
