@@ -14,12 +14,10 @@ Workflow:
 from pathlib import Path
 import csv
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import yaml
-import math
 
 from inr_apodizations.apodizations import (
     compute_dynamic_apodizations_tf,
@@ -29,22 +27,17 @@ from inr_apodizations.apodizations import (
 from inr_apodizations.config import PROJ_ROOT, DATA_DIR, CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
-from inr_apodizations.plots import plot_lateral_reflector_profiles
+from inr_apodizations.plots import (
+    generate_das_comparison_figure,
+    plot_lateral_reflector_profiles,
+)
+from inr_apodizations.sandbox_helpers import (
+    build_reflector_profile_context,
+    compute_scatterer_metrics,
+)
 from inr_apodizations.utils import relative_mae, to_db
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
-import sys
 
-# Import compute_scatterer_metrics from sandbox helpers
-sys.path.insert(0, str(PROJ_ROOT / "sandbox"))
-sys.path.insert(0, str(PROJ_ROOT / "scripts"))
-try:
-    from inr_das_experiment.helpers import compute_scatterer_metrics
-except ImportError:
-    compute_scatterer_metrics = None
-try:
-    from das_standard_apodizations_helpers import generate_das_comparison_figure
-except ImportError:
-    generate_das_comparison_figure = None
 plt.ion()  # Enable interactive mode for better display control (can be turned off if not desired)
 CONFIG_PATH = CONFIGS_DIR / "das_standard_apodizations.yml"
 
@@ -88,47 +81,6 @@ def load_scatterers_for_example(cfg_dataset: dict, example_idx: int) -> np.ndarr
     scatterers_mm = scatterers_example.copy()
     scatterers_mm[:, :2] *= 1000.0
     return scatterers_mm
-
-
-def select_reflector_scatterer(
-    scatterers_mm: np.ndarray,
-    selection: str = "strongest",
-    scatterer_idx: int | None = None,
-) -> np.ndarray:
-    """Select one scatterer to center the reflector lateral profile.
-
-    Args:
-        scatterers_mm: Array with columns ``[x_mm, z_mm, reflectivity]``.
-        selection: Selection mode. Supported values are ``strongest`` and ``first``.
-        scatterer_idx: Optional explicit scatterer index. When provided, it has priority.
-
-    Returns:
-        Selected scatterer row as ``[x_mm, z_mm, reflectivity]``.
-
-    Raises:
-        ValueError: If the array is empty, the selection mode is unsupported,
-            or the explicit index is out of bounds.
-    """
-    if scatterers_mm.shape[0] == 0:
-        raise ValueError("No scatterers available for reflector profile selection.")
-
-    if scatterer_idx is not None:
-        if scatterer_idx < 0 or scatterer_idx >= scatterers_mm.shape[0]:
-            raise ValueError(
-                f"scatterer_idx={scatterer_idx} is out of range [0, {scatterers_mm.shape[0] - 1}]."
-            )
-        return scatterers_mm[scatterer_idx]
-
-    selection_normalized = selection.strip().lower()
-    if selection_normalized == "strongest":
-        selected_idx = int(np.argmax(np.abs(scatterers_mm[:, 2])))
-    elif selection_normalized == "first":
-        selected_idx = 0
-    else:
-        raise ValueError(
-            "`reflector_lateral_profile.scatterer_selection` must be 'strongest' or 'first'."
-        )
-    return scatterers_mm[selected_idx]
 
 
 def load_yaml_config(config_path: Path) -> dict:
@@ -392,62 +344,29 @@ if bool(cfg_user.get("save_npy", False)):
     print(f"Saved {arrays_path}")
 
 if reflector_profile_enabled:
-    line_length_mm = float(reflector_profile_cfg.get("line_length_mm", 5.0))
-    overlay_profiles = bool(reflector_profile_cfg.get("overlay_profiles", True))
-    use_db_profiles = bool(reflector_profile_cfg.get("use_db", True))
-    include_target_profile = bool(reflector_profile_cfg.get("include_target", True))
-    requested_profile_images = reflector_profile_cfg.get("images")
-    scatterer_selection = str(reflector_profile_cfg.get("scatterer_selection", "strongest"))
-    scatterer_idx_raw = reflector_profile_cfg.get("scatterer_idx")
-    scatterer_idx = None if scatterer_idx_raw is None else int(scatterer_idx_raw)
-
     if scatterers_mm is None:
         raise ValueError("Reflector profile plotting requires scatterers for the selected example.")
+    if build_reflector_profile_context is None:
+        raise ImportError("Could not import build_reflector_profile_context helper.")
 
-    selected_scatterer = select_reflector_scatterer(
-        scatterers_mm,
-        selection=scatterer_selection,
-        scatterer_idx=scatterer_idx,
+    profile_context = build_reflector_profile_context(
+        scatterers_mm=scatterers_mm,
+        profile_cfg=reflector_profile_cfg,
+        images_linear=das_images_linear,
+        images_db=das_images_db,
+        target_image=target_np if bool(reflector_profile_cfg.get("include_target", True)) else None,
     )
+    selected_scatterer = np.asarray(profile_context["selected_scatterer"], dtype=np.float64)
+    line_length_mm = float(profile_context["line_length_mm"])
+    overlay_profiles = bool(profile_context["overlay_profiles"])
+    use_db_profiles = bool(profile_context["use_db_profiles"])
+    selected_profile_images = dict(profile_context["selected_profile_images"])
     x_center_mm = float(selected_scatterer[0])
     z_center_mm = float(selected_scatterer[1])
     print(
         "Using scatterer for reflector profile: "
         f"x={x_center_mm:.3f} mm, z={z_center_mm:.3f} mm, reflectivity={selected_scatterer[2]:.3f}"
     )
-
-    if requested_profile_images is not None and not isinstance(requested_profile_images, list):
-        raise ValueError("`reflector_lateral_profile.images` must be a YAML list when provided.")
-
-    if use_db_profiles:
-        profile_image_source = dict(das_images_db)
-    else:
-        profile_image_source = {
-            name: np.abs(image) for name, image in das_images_linear.items()
-        }
-
-    if include_target_profile and target_np is not None:
-        profile_image_source["target"] = target_db if use_db_profiles else np.abs(target_np)
-
-    if requested_profile_images is None or len(requested_profile_images) == 0:
-        profile_image_names = list(profile_image_source.keys())
-    else:
-        profile_image_names = [str(name).strip().lower() for name in requested_profile_images]
-
-    missing_profile_images = [
-        image_name for image_name in profile_image_names if image_name not in profile_image_source
-    ]
-    if missing_profile_images:
-        raise ValueError(
-            "Unknown images requested in `reflector_lateral_profile.images`: "
-            f"{missing_profile_images}. Available images: {list(profile_image_source.keys())}"
-        )
-
-    selected_profile_images = {
-        image_name: profile_image_source[image_name] for image_name in profile_image_names
-    }
-    if len(selected_profile_images) == 0:
-        raise ValueError("No images available for `reflector_lateral_profile` plotting.")
 
     if save_outputs:
         profile_scale_suffix = "db" if use_db_profiles else "linear"
@@ -807,11 +726,6 @@ if scatterer_metrics is not None and len(scatterer_metrics) > 0:
 interactive_mode = bool(cfg_user.get("interactive_mode", False))
 
 if interactive_mode:
-    if generate_das_comparison_figure is None:
-        print("Error: das_standard_apodizations_helpers could not be imported.")
-        print("Interactive mode requires the helper module.")
-        sys.exit(1)
-
     # Determine which examples to process
     example_indices_cfg = cfg_user.get("example_indices")
     if example_indices_cfg is None:
@@ -841,27 +755,9 @@ if interactive_mode:
         
         This is a closure that has access to the outer scope variables.
         """
-        # Clear previous content
-        fig.clear()
+        _ = ax
 
-        # Recreate subplots
-        ordered_names = ["uniform"] + [name for name in das_images_db.keys()
-                                        if name != "uniform" and name != "target"]
-        if target_np is not None:
-            ordered_names.append("target")
-
-        n_panels = len(ordered_names)
-        ncols = 2 if n_panels > 1 else 1
-        nrows = math.ceil(n_panels / ncols)
-        width_per_panel = 5
-        height_per_panel = 5
-
-        axes_list = []
-        for idx, image_name in enumerate(ordered_names):
-            ax_panel = fig.add_subplot(nrows, ncols, idx + 1)
-            axes_list.append(ax_panel)
-
-        # Generate DAS images for this example
+        # Generate reduced DAS images for this example.
         delayed_samples_np = np.asarray(delayed_samples_all[example_idx])
         delayed_samples_tf = tf.convert_to_tensor(delayed_samples_np, dtype=tf.complex64)
 
@@ -870,57 +766,19 @@ if interactive_mode:
             weighted = delayed_samples_tf * tf.cast(apod_tensor, tf.complex64)
             das_images_linear_ex[method_name] = tf.reduce_sum(weighted, axis=0).numpy()
 
-        # Convert to dB
-        if normalize_per_image:
-            das_images_db_ex = {
-                name: to_db(image, ref=float(np.max(np.abs(image))))
-                for name, image in das_images_linear_ex.items()
-            }
-        else:
-            shared_ref = max(float(np.max(np.abs(image))) for image in das_images_linear_ex.values())
-            das_images_db_ex = {
-                name: to_db(image, ref=shared_ref) for name, image in das_images_linear_ex.items()
-            }
-
         target_np_ex = np.asarray(targets_all[example_idx]) if targets_all is not None else None
-        if target_np_ex is not None:
-            target_db_ex = to_db(target_np_ex, ref=float(np.max(np.abs(target_np_ex))))
-            das_images_db_ex["target"] = target_db_ex
 
-        # Plot DAS images
-        extent = kp.get_imshow_extent()
-        first_im = None
-
-        for idx, image_name in enumerate(ordered_names):
-            ax_panel = axes_list[idx]
-            im = ax_panel.imshow(
-                das_images_db_ex[image_name],
-                cmap=cmap,
-                vmin=vmin_db,
-                vmax=vmax_db,
-                extent=extent,
-                aspect="auto",
-            )
-            if first_im is None:
-                first_im = im
-
-            title_name = "Uniform" if image_name == "uniform" else image_name.capitalize()
-            ax_panel.set_title(f"DAS {title_name} (dB)")
-            ax_panel.set_xlabel("x (mm)")
-            if idx % ncols == 0:
-                ax_panel.set_ylabel("z (mm)")
-
-        # Hide unused subplots
-        for idx in range(n_panels, len(axes_list)):
-            axes_list[idx].set_visible(False)
-
-        # Add colorbar
-        if first_im is not None:
-            cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-            fig.colorbar(first_im, cax=cbar_ax, label="dB")
-
-        fig.suptitle(f"DAS Comparison - Example {example_idx}", fontsize=12, y=0.98)
-        fig.tight_layout(rect=[0, 0, 0.91, 0.96])
+        generate_das_comparison_figure(
+            images_linear=das_images_linear_ex,
+            extent=kp.get_imshow_extent(),
+            target_image=target_np_ex,
+            title=f"DAS Comparison - Example {example_idx}",
+            existing_figure=fig,
+            cmap=cmap,
+            vmin_db=vmin_db,
+            vmax_db=vmax_db,
+            normalize_per_image=normalize_per_image,
+        )
 
     # Launch interactive navigator
     nav = InteractiveImageNavigator(

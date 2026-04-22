@@ -24,12 +24,12 @@ from pathlib import Path
 os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
 
 from inr_apodizations import config
+import inr_apodizations.sandbox_helpers as helpers
 
 import numpy as np
 import tensorflow as tf
 
-import helpers
-from baseline_evaluation import (  # noqa: E402
+from inr_apodizations.evaluation import (
     extract_scatterer_snr,
     find_latest_baseline_reference,
     load_validation_scatterers,

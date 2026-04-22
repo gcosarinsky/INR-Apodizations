@@ -99,8 +99,64 @@ def extract_profile_for_z(apod_tensor, cm, z_fixed, x_fixed=0.0, scaled=False):
     return tf.cast(slice_nelem, tf.float32)
 
 
+def compute_das_baseline_numpy(
+    delayed_samples: np.ndarray,
+    apodization: np.ndarray | None = None,
+    return_complex: bool = False,
+) -> np.ndarray:
+    """Compute baseline DAS reconstruction in NumPy.
+
+    Args:
+        delayed_samples: Delayed samples with shape ``(E, Z, X)`` or
+            ``(B, E, Z, X)`` and complex dtype.
+        apodization: Optional apodization map with shape ``(E, Z, X)``.
+            If ``None``, the baseline is uniform (all-ones weights).
+        return_complex: If ``True``, return the complex DAS image.
+            Otherwise return ``abs(image)`` as ``float32``.
+
+    Returns:
+        Reconstructed DAS image with shape ``(Z, X)`` for 3D input or
+        ``(B, Z, X)`` for 4D input.
+
+    Raises:
+        ValueError: If input shapes are invalid or incompatible.
+    """
+    delayed_np = np.asarray(delayed_samples)
+    if delayed_np.ndim not in (3, 4):
+        raise ValueError(
+            "delayed_samples must have shape (E, Z, X) or (B, E, Z, X); "
+            f"got shape {delayed_np.shape}"
+        )
+
+    delayed_np = delayed_np.astype(np.complex64, copy=False)
+    elem_axis = 0 if delayed_np.ndim == 3 else 1
+
+    if apodization is None:
+        weighted = delayed_np
+    else:
+        apod_np = np.asarray(apodization)
+        if apod_np.ndim != 3:
+            raise ValueError(
+                "apodization must have shape (E, Z, X); "
+                f"got shape {apod_np.shape}"
+            )
+        expected_shape = delayed_np.shape if delayed_np.ndim == 3 else delayed_np.shape[1:]
+        if apod_np.shape != expected_shape:
+            raise ValueError(
+                "apodization shape mismatch; expected "
+                f"{expected_shape}, got {apod_np.shape}"
+            )
+        weighted = delayed_np * apod_np.astype(np.complex64, copy=False)
+
+    image_complex = np.sum(weighted, axis=elem_axis)
+    if return_complex:
+        return image_complex.astype(np.complex64, copy=False)
+    return np.abs(image_complex).astype(np.float32, copy=False)
+
+
 __all__ = [
     "compute_dynamic_apodizations_tf",
     "extract_map_for_x",
     "extract_profile_for_z",
+    "compute_das_baseline_numpy",
 ]

@@ -37,7 +37,7 @@ scripts/create_delayed_samples_dataset.py  ──►  data/delayed_samples_datas
    (INR training — in progress)
          │
          ▼
-scripts/das_standard_apodizations.py    ──►  Baseline DAS + classical apodizations
+sandbox/inr_das_experiment/evaluation/das_standard_apodizations.py    ──►  Baseline DAS + classical apodizations
 ```
 
 **Step 1 — RF simulation** (`generate_rf_dataset_simus.py`):  
@@ -49,7 +49,7 @@ Applies per-angle, per-element time delays using a custom CUDA kernel, producing
 **Step 3 — INR training** *(in progress)*:  
 A TensorFlow MLP is trained on the delayed samples to predict apodization weights as a function of imaging coordinates (`CoordinateManager` provides the input features).
 
-**Step 4 — Evaluation** (`das_standard_apodizations.py`):  
+**Step 4 — Evaluation** (`sandbox/inr_das_experiment/evaluation/das_standard_apodizations.py`):  
 Reconstructs images using uniform DAS and several classical apodization windows (Hanning, Tukey, …) as baselines for comparison.
 
 ---
@@ -149,7 +149,7 @@ Output is saved to `data/delayed_samples_dataset/<timestamp>/`.
 ### 3. Baseline DAS visualisation
 
 ```bash
-python scripts/das_standard_apodizations.py
+python sandbox/inr_das_experiment/evaluation/das_standard_apodizations.py
 ```
 
 Reads the latest delayed-samples dataset and produces comparison figures for uniform DAS and classical apodizations.
