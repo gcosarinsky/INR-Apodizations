@@ -62,5 +62,10 @@ reflector_lateral_profiles:
   vmin_db: -60.0
   save_individual_rows: false
   # Profile display mode for per-reflector figures: "lateral", "axial", or "both".
-  profile_type: both
+  profile_type: lateral
   snr_radius_mm: 1.5
+
+plots:
+  legend_fontsize: 10      # Tamaño de fuente para legendas (default: 8)
+  title_fontsize: 12      # Tamaño de fuente para títulos (default: 10)
+  axis_fontsize: 12       # Tamaño de fuente para etiquetas de ejes (default: 10)

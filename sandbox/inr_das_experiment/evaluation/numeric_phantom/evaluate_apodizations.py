@@ -29,14 +29,6 @@ from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_ref
 from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
 import inr_apodizations.sandbox_helpers as helpers
 
-# Temporary path fix: ensure `sandbox/inr_das_experiment` is on sys.path
-# so the local `helpers.py` module can be imported when running this script
-import sys as _sys
-from pathlib import Path as _Path_for_helpers
-_helpers_dir = _Path_for_helpers(__file__).resolve().parent.parent
-if str(_helpers_dir) not in _sys.path:
-    _sys.path.insert(0, str(_helpers_dir))
-
 plt.ion()  # interactive mode for plotting
 
 def _load_config(cfg_path: Path) -> dict[str, Any]:
@@ -190,6 +182,11 @@ cfg = _load_config(CONFIGS_DIR / "numeric_phantom_evaluation_config.yml")
 io_cfg = cfg.get("io", {})
 sim_cfg = cfg.get("simulation", {})
 bf_cfg = cfg.get("beamforming", {})
+
+plot_cfg = cfg.get("plots", {})
+fontsize_legend = int(plot_cfg.get("legend_fontsize", 8))
+fontsize_title = int(plot_cfg.get("title_fontsize", 10))
+fontsize_axis = int(plot_cfg.get("axis_fontsize", 10))
 
 model_path = Path(PROJ_ROOT / io_cfg.get("model_path"))
 delayed_samples_path, latest_simulation_run = _resolve_latest_delayed_samples_path(io_cfg)
@@ -525,7 +522,7 @@ if profiles_enabled:
             ax_lat.set_xlabel("Lateral offset (mm)")
             ax_lat.set_ylabel("Amplitude (dB)")
             ax_lat.set_title("Lateral profile")
-            ax_lat.legend(ncol=min(4, len(selected_method_names)), fontsize=8)
+            ax_lat.legend(ncol=min(4, len(selected_method_names)), fontsize=fontsize_legend)
         if show_axial:
             ax_ax.set_ylim(vmin_db, 0.0)
             ax_ax.grid(True, alpha=0.3)
@@ -533,7 +530,7 @@ if profiles_enabled:
             ax_ax.set_ylabel("Amplitude (dB)")
             ax_ax.set_title("Axial profile")
             if not show_lateral:
-                ax_ax.legend(ncol=min(4, len(selected_method_names)), fontsize=8)
+                ax_ax.legend(ncol=min(4, len(selected_method_names)), fontsize=fontsize_legend)
 
         fig_ref.suptitle(
             f"Reflector {refl_idx} at x={x_mm:.2f} mm, z={z_mm:.2f} mm"
@@ -632,13 +629,13 @@ if profiles_enabled:
     ax_fwhm.set_xlabel("Reflector index")
     ax_fwhm.set_ylabel("FWHM lateral (mm)")
     ax_fwhm.set_title("Lateral resolution vs reflector index")
-    ax_fwhm.legend(fontsize=8)
+    ax_fwhm.legend(fontsize=fontsize_legend)
     ax_fwhm.grid(True, alpha=0.3)
 
     ax_snr.set_xlabel("Reflector index")
     ax_snr.set_ylabel("SNR (dB)")
     ax_snr.set_title("SNR vs reflector index")
-    ax_snr.legend(fontsize=8)
+    ax_snr.legend(fontsize=fontsize_legend)
     ax_snr.grid(True, alpha=0.3)
 
     summary_fig_path = out_root / "resolution_and_snr_summary.png"
