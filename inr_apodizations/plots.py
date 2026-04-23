@@ -204,30 +204,48 @@ def plot_training_curves(
     history: dict,
     output_path: str,
     reference_mae: dict | None = None,
+    reference_relative_y_pred: dict | None = None,
+    reference_relative_y_true: dict | None = None,
 ) -> None:
-    """Save a grouped training-curve figure from a Keras history dictionary.
+    """Save split training-curve figures from a Keras history dictionary.
 
     Args:
         history: Mapping with metric lists, typically ``history.history``.
-        output_path: Path to the output PNG file.
-        reference_mae: Optional baseline MAE values to overlay on the absolute
-            reconstruction metrics panel.
+        output_path: Anchor output PNG path. This function writes multiple PNG
+            files in the same directory using this filename stem as prefix.
+        reference_mae: Optional dict of baseline PixelWeightedMAE values to
+            overlay as horizontal lines on the absolute reconstruction metrics
+            figure. Allowed keys: ``hanning``.
+        reference_relative_y_pred: Optional dict of baseline RelativeMAE values
+            (normalize_by=y_pred) to overlay on the relative_mae_y_pred figure.
+            Allowed keys: ``hanning``.
+        reference_relative_y_true: Optional dict of baseline RelativeMAE values
+            (normalize_by=y_true) to overlay on the relative_mae_y_true figure.
+            Allowed keys: ``hanning``.
 
-    The figure groups metrics into dedicated panels for loss, absolute
-    reconstruction errors, relative reconstruction errors, SSIM,
-    regularization metrics, and any remaining tracked values. This keeps the
-    plot compact while still exposing metrics such as ``reg_loss`` and
-    ``reg_active_rate`` that were previously omitted.
+        Output policy:
+        - Loss metrics are plotted without ``reg_loss``.
+        - ``reg_loss`` is plotted in its own figure.
+        - Relative MAE metrics are split into separate figures for
+            ``normalize_by=y_pred`` and ``normalize_by=y_true``.
+        - Regularization metrics are saved in separate figures, one metric per
+            figure, to avoid mixed scales.
+        - "Other metrics" figures are not generated.
+        - A single output file is produced per figure type (no duplicate
+            versions without references).
     """
 
     if not history:
         raise ValueError("history must not be empty")
 
+    def _base_metric_name(metric_name: str) -> str:
+        return metric_name[4:] if metric_name.startswith("val_") else metric_name
+
     def _is_regularization_metric(metric_name: str) -> bool:
         return (
-            metric_name == "reg_loss"
-            or metric_name.startswith("reg_")
-            or "w_norm" in metric_name
+            _base_metric_name(metric_name) == "reg_loss"
+            or _base_metric_name(metric_name).startswith("reg_")
+            or "w_norm" in _base_metric_name(metric_name)
         )
 
     def _is_loss_metric(metric_name: str) -> bool:
@@ -259,65 +277,27 @@ def plot_training_curves(
         return "relative" in metric_name
 
     ordered_keys = [name for name in history.keys() if len(history[name]) > 0]
-    used_keys: set[str] = set()
-    panels: list[tuple[str, list[str], str]] = []
-
-    loss_keys = [name for name in ordered_keys if _is_loss_metric(name)]
-    if loss_keys:
-        panels.append(("Loss", loss_keys, "Loss"))
-        used_keys.update(loss_keys)
-
-    absolute_reconstruction_keys = [
-        name
-        for name in ordered_keys
-        if name not in used_keys and _is_absolute_reconstruction_metric(name)
-    ]
-    if absolute_reconstruction_keys:
-        panels.append(
-            ("Absolute reconstruction metrics", absolute_reconstruction_keys, "Metric value")
-        )
-        used_keys.update(absolute_reconstruction_keys)
-
-    relative_reconstruction_keys = [
-        name
-        for name in ordered_keys
-        if name not in used_keys and _is_relative_reconstruction_metric(name)
-    ]
-    if relative_reconstruction_keys:
-        panels.append(
-            ("Relative reconstruction metrics", relative_reconstruction_keys, "Metric value")
-        )
-        used_keys.update(relative_reconstruction_keys)
-
-    ssim_keys = [name for name in ordered_keys if name not in used_keys and _is_ssim_metric(name)]
-    if ssim_keys:
-        panels.append(("SSIM metrics", ssim_keys, "SSIM"))
-        used_keys.update(ssim_keys)
-
-    regularization_keys = [
-        name for name in ordered_keys if name not in used_keys and _is_regularization_metric(name)
-    ]
-    if regularization_keys:
-        panels.append(("Regularization metrics", regularization_keys, "Metric value"))
-        used_keys.update(regularization_keys)
-
-    other_keys = [name for name in ordered_keys if name not in used_keys]
-    if other_keys:
-        panels.append(("Other metrics", other_keys, "Metric value"))
-
-    if not panels:
+    if not ordered_keys:
         raise ValueError("history does not contain plottable metrics")
-
-    fig_height = max(3.0, 2.8 * len(panels))
-    fig, axes = plt.subplots(len(panels), 1, figsize=(12, fig_height), constrained_layout=True)
-    if len(panels) == 1:
-        axes = np.array([axes])
 
     palette = list(plt.rcParams["axes.prop_cycle"].by_key().get("color", []))
     if not palette:
         palette = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown"]
 
-    def _plot_panel(axis, metric_names: list[str], title: str, ylabel: str, include_reference: bool = False) -> None:
+    ref_color_map = {
+        "uniform": "gray",
+        "boxcar": "tab:orange",
+        "hanning": "tab:green",
+        "zero": "tab:brown",
+    }
+
+    def _plot_panel(
+        axis,
+        metric_names: list[str],
+        title: str,
+        ylabel: str,
+        ref_dict: dict | None = None,
+    ) -> None:
         base_colors: dict[str, str] = {}
         color_index = 0
 
@@ -331,14 +311,15 @@ def plot_training_curves(
             line_style = "--" if metric_name.startswith("val_") else "-"
             axis.plot(series, label=metric_name, color=base_colors[base_name], linestyle=line_style)
 
-        if include_reference and reference_mae:
-            ref_colors = ["gray", "tab:purple", "tab:green", "tab:brown"]
-            for idx, (ref_name, ref_value) in enumerate(reference_mae.items()):
+        if ref_dict:
+            for ref_name, ref_value in ref_dict.items():
+                if ref_value is None:
+                    continue
                 try:
                     ref_y = float(ref_value)
                 except Exception:
                     continue
-                ref_color = ref_colors[idx % len(ref_colors)]
+                ref_color = ref_color_map.get(ref_name, "gray")
                 axis.axhline(
                     y=ref_y,
                     color=ref_color,
@@ -367,15 +348,111 @@ def plot_training_curves(
         if lines:
             axis.legend(lines, labels, fontsize=9)
 
-    for axis, (title, metric_names, ylabel) in zip(axes, panels, strict=False):
-        include_reference = title == "Absolute reconstruction metrics"
-        _plot_panel(axis, metric_names, title, ylabel, include_reference=include_reference)
-
     output_dir = os.path.dirname(output_path)
+    output_stem = os.path.splitext(os.path.basename(output_path))[0]
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+
+    def _save_single_figure(
+        metric_names: list[str],
+        title: str,
+        ylabel: str,
+        file_suffix: str,
+        ref_dict: dict | None = None,
+    ) -> bool:
+        if not metric_names:
+            return False
+        fig, axis = plt.subplots(1, 1, figsize=(12, 3.8), constrained_layout=True)
+        _plot_panel(
+            axis=axis,
+            metric_names=metric_names,
+            title=title,
+            ylabel=ylabel,
+            ref_dict=ref_dict,
+        )
+        fig.savefig(os.path.join(output_dir, f"{output_stem}_{file_suffix}.png"), dpi=150)
+        plt.close(fig)
+        return True
+
+    reg_loss_keys = [name for name in ordered_keys if _base_metric_name(name) == "reg_loss"]
+
+    loss_keys = [
+        name for name in ordered_keys if _is_loss_metric(name) and _base_metric_name(name) != "reg_loss"
+    ]
+    absolute_reconstruction_keys = [
+        name for name in ordered_keys if _is_absolute_reconstruction_metric(name)
+    ]
+
+    relative_reconstruction_keys = [
+        name for name in ordered_keys if _is_relative_reconstruction_metric(name)
+    ]
+    relative_y_pred_keys = [name for name in relative_reconstruction_keys if "y_pred" in name]
+    relative_y_true_keys = [name for name in relative_reconstruction_keys if "y_true" in name]
+
+    ssim_keys = [name for name in ordered_keys if _is_ssim_metric(name)]
+
+    regularization_non_loss_keys = [
+        name
+        for name in ordered_keys
+        if _is_regularization_metric(name) and _base_metric_name(name) != "reg_loss"
+    ]
+
+    n_saved = 0
+    n_saved += int(_save_single_figure(loss_keys, "Loss", "Loss", "losses"))
+    n_saved += int(_save_single_figure(reg_loss_keys, "Regularization loss", "Loss", "reg_loss"))
+    n_saved += int(
+        _save_single_figure(
+            absolute_reconstruction_keys,
+            "Absolute reconstruction metrics",
+            "Metric value",
+            "absolute_metrics",
+            ref_dict=reference_mae,
+        )
+    )
+    n_saved += int(
+        _save_single_figure(
+            relative_y_pred_keys,
+            "Relative reconstruction metrics (normalize_by=y_pred)",
+            "Metric value",
+            "relative_mae_y_pred",
+            ref_dict=reference_relative_y_pred,
+        )
+    )
+    n_saved += int(
+        _save_single_figure(
+            relative_y_true_keys,
+            "Relative reconstruction metrics (normalize_by=y_true)",
+            "Metric value",
+            "relative_mae_y_true",
+            ref_dict=reference_relative_y_true,
+        )
+    )
+    n_saved += int(_save_single_figure(ssim_keys, "SSIM metrics", "SSIM", "ssim"))
+
+    regularization_base_names = []
+    for metric_name in regularization_non_loss_keys:
+        base_name = _base_metric_name(metric_name)
+        if base_name not in regularization_base_names:
+            regularization_base_names.append(base_name)
+
+    for base_name in regularization_base_names:
+        metric_group = [
+            metric_name
+            for metric_name in regularization_non_loss_keys
+            if _base_metric_name(metric_name) == base_name
+        ]
+        safe_base_name = base_name.replace("/", "_")
+        n_saved += int(
+            _save_single_figure(
+                metric_group,
+                f"Regularization metric: {base_name}",
+                "Metric value",
+                f"reg_metric_{safe_base_name}",
+            )
+        )
+
+    if n_saved == 0:
+        raise ValueError("history does not contain plottable metrics")
 
 
 def plot_das_comparison_db(

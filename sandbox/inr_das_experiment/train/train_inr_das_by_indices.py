@@ -366,16 +366,10 @@ print(f"Final weight regularization lambda used for training: {weight_reg_lambda
 
 
 # ============================================================================
-# 6) Pre-training baseline MAE (uniform, hanning, boxcar)
+# 6) Baseline apodization weights
 # ============================================================================
 
-# --- Pre-training reference MAE evaluation using PixelWeightedMAE ---
-
-scatterer_eval_cfg = cfg.get("scatterer_eval", {})
-eval_batch_size = int(scatterer_eval_cfg.get("eval_batch_size", cfg["training"].get("batch_size", 1)))
-validation_targets = targets[val_idx].astype(np.float32, copy=False)
-
-# Baseline f-number resolution (same logic used later)
+# Baseline f-number resolution (used in post-training eval and plotting)
 _cfg_f_number = cfg["training"].get("baseline_f_number", None)
 if _cfg_f_number is None:
     baseline_f_number = kp.f_number
@@ -401,78 +395,6 @@ if hanning_weights_np is None or boxcar_weights_np is None:
         "Reference apodizations are required but were not computed for "
         f"f_number={baseline_f_number}."
     )
-
-# Metrics that accumulate weighted MAE across the validation set
-m_zero = PixelWeightedMAE(name="ref_zero")
-m_uniform = PixelWeightedMAE(name="ref_uniform")
-m_hanning = PixelWeightedMAE(name="ref_hanning")
-m_boxcar = PixelWeightedMAE(name="ref_boxcar")
-
-n_val = int(len(val_idx))
-for start in range(0, n_val, eval_batch_size):
-    end = min(start + eval_batch_size, n_val)
-    idx_chunk = val_idx[start:end]
-    local_slice = slice(start, end)
-
-    if eval_noise_enabled:
-        if noise is None:
-            raise ValueError(
-                "Eval noise requested but dataset does not contain precomputed noise."
-            )
-        sig_chunk = delayed[idx_chunk].astype(np.complex64, copy=False)
-        noise_chunk = noise[idx_chunk].astype(np.complex64, copy=False)
-        val_delayed_chunk_np = sig_chunk + eval_noise_scale * noise_chunk
-    else:
-        val_delayed_chunk_np = delayed[idx_chunk].astype(np.complex64, copy=False)
-
-    val_delayed_chunk = tf.convert_to_tensor(val_delayed_chunk_np)
-
-    y_true_chunk = tf.convert_to_tensor(validation_targets[local_slice])
-
-    # determine per-pixel weights for this chunk
-    if train_loss_weights is not None:
-        weights_chunk = tf.convert_to_tensor(train_loss_weights[idx_chunk].astype(np.float32, copy=False))
-    else:
-        weights_chunk = tf.ones_like(y_true_chunk, dtype=tf.float32)
-
-    # zero reference (predict zeros)
-    m_zero.update_state(y_true_chunk, tf.zeros_like(y_true_chunk), sample_weight=weights_chunk)
-
-    # uniform (sum over elements)
-    uniform_pred = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(val_delayed_chunk_np),
-        dtype=tf.float32,
-    )
-    m_uniform.update_state(y_true_chunk, uniform_pred, sample_weight=weights_chunk)
-
-    # hanning / boxcar if available
-    hanning_pred = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=val_delayed_chunk_np,
-            apodization=hanning_weights_np,
-        ),
-        dtype=tf.float32,
-    )
-    m_hanning.update_state(y_true_chunk, hanning_pred, sample_weight=weights_chunk)
-    boxcar_pred = tf.convert_to_tensor(
-        helpers.compute_das_baseline_numpy(
-            delayed_samples=val_delayed_chunk_np,
-            apodization=boxcar_weights_np,
-        ),
-        dtype=tf.float32,
-    )
-    m_boxcar.update_state(y_true_chunk, boxcar_pred, sample_weight=weights_chunk)
-
-pre_training_reference_mae = {
-    "zero": float(m_zero.result().numpy()),
-    "uniform": float(m_uniform.result().numpy()),
-}
-pre_training_reference_mae["hanning"] = float(m_hanning.result().numpy())
-pre_training_reference_mae["boxcar"] = float(m_boxcar.result().numpy())
-
-print("Pre-training reference MAE (PixelWeightedMAE):")
-for k, v in pre_training_reference_mae.items():
-    print(f"  {k:>8}: {v:.6g}")
 
 
 # ============================================================================
@@ -630,11 +552,9 @@ helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effectiv
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))
+history_dir = Path(sandbox_dir) / "history"
+history_dir.mkdir(parents=True, exist_ok=True)
 
-helpers.plot_training_curves(
-    history.history,
-    output_path=str(Path(sandbox_dir) / "training_loss.png"),
-)
 helpers.plot_das_comparison_db(
     uniform_image=uniform_for_plot.numpy()[0],
     inr_before_image=inr_before_for_plot.numpy()[0],
@@ -1085,12 +1005,11 @@ print(
 print("Training finished.")
 print("Sandbox artifacts:", sandbox_dir)
 
-# Re-plot training curves including reference MAE lines when available
-try:
-    helpers.plot_training_curves(
-        history.history,
-        output_path=str(Path(sandbox_dir) / "training_loss_with_refs.png"),
-        reference_mae=reference_pixel_weighted_mae_for_plot,
-    )
-except Exception:
-    print("Warning: failed to re-plot training curves with reference MAE lines.")
+# Save training curves with hanning reference lines (absolute and relative metrics)
+helpers.plot_training_curves(
+    history.history,
+    output_path=str(history_dir / "training_history.png"),
+    reference_mae={"hanning": validation_bundle.get("masked_mae_by_method", {}).get("hanning")},
+    reference_relative_y_pred={"hanning": relative_mae_y_pred_by_method.get("hanning")},
+    reference_relative_y_true={"hanning": relative_mae_y_true_by_method.get("hanning")},
+)

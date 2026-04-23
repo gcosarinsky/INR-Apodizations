@@ -32,7 +32,7 @@ eval_noise:
 
 training:
   batch_size: 2
-  epochs: 30
+  epochs: 40
   learning_rate: 0.001
   loss: mae
   metric: mae
@@ -40,7 +40,7 @@ training:
   weight_regularization:
     enabled: true
     type: hinge_low_norm
-    lambda: 0.126
+    lambda: 0.1
     tau: 0.7
     epsilon: 1.0e-8
     normalize_norm: true
