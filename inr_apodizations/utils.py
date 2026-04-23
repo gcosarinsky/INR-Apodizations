@@ -53,15 +53,19 @@ def relative_mae(
     y_pred: np.ndarray,
     eps: float = 1e-12,
     normalize_by: str = "y_pred",
+    sample_weights: np.ndarray | None = None,
 ) -> float:
     """Compute RelativeMAE with configurable normalization reference.
 
     Formula:
-        RelativeMAE(y_true, y_pred) = MAE(y_true, y_pred) / (mean(abs(reference)) + eps)
+        RelativeMAE(y_true, y_pred) = sum(abs_error * w) / (sum(abs(reference) * w) + eps)
 
     where ``reference`` is selected by ``normalize_by``:
         - ``"y_pred"`` -> reference is ``y_pred``
         - ``"y_true"`` -> reference is ``y_true``
+
+    When ``sample_weights`` is not provided, unit weights are used, which
+    preserves the previous unweighted behavior.
 
     Args:
         y_true: Ground-truth image array.
@@ -69,6 +73,8 @@ def relative_mae(
         eps: Small positive value to stabilize the denominator.
         normalize_by: Denominator reference selector. Allowed values are
             ``"y_pred"`` and ``"y_true"``.
+        sample_weights: Optional per-pixel weights with the same shape as
+            ``y_true``/``y_pred``.
 
     Returns:
         Relative MAE as a Python float.
@@ -92,10 +98,21 @@ def relative_mae(
     if normalize_key not in ("y_pred", "y_true"):
         raise ValueError("normalize_by must be either 'y_pred' or 'y_true'")
 
-    mae_value = np.mean(np.abs(y_true_arr - y_pred_arr), dtype=np.float32)
+    if sample_weights is None:
+        weights_arr = np.ones_like(y_true_arr, dtype=np.float32)
+    else:
+        weights_arr = np.asarray(sample_weights, dtype=np.float32)
+        if weights_arr.shape != y_true_arr.shape:
+            raise ValueError(
+                "relative_mae requires matching sample_weights shape: "
+                f"sample_weights.shape={weights_arr.shape}, expected {y_true_arr.shape}"
+            )
+
+    abs_error = np.abs(y_true_arr - y_pred_arr)
     reference = y_pred_arr if normalize_key == "y_pred" else y_true_arr
-    reference_abs_mean = np.mean(np.abs(reference), dtype=np.float32)
-    return float(mae_value / (reference_abs_mean + np.float32(eps)))
+    weighted_abs_error = np.sum(abs_error * weights_arr, dtype=np.float32)
+    weighted_reference_abs = np.sum(np.abs(reference) * weights_arr, dtype=np.float32)
+    return float(weighted_abs_error / (weighted_reference_abs + np.float32(eps)))
 
 
 def cfg_to_must_param(cfg):

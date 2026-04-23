@@ -18,7 +18,7 @@ from inr_apodizations.apodizations import (
     compute_das_baseline_numpy,
     compute_dynamic_apodizations_tf,
 )
-from inr_apodizations.evaluation.metrics import compute_validation_mae_and_scatterer_metrics
+from inr_apodizations.evaluation.metrics import compute_validation_and_reference_metrics
 from inr_apodizations.evaluation.summary import (
     build_snr_persistence_bundle,
     extract_snr_from_metrics,
@@ -181,7 +181,7 @@ def compute_validation_baseline_metrics(
         - ``images_abs_eval``: dict mapping method names to ``(n_val, Z, X)``
           absolute-value images.
         - ``validation_bundle``: output of
-          :func:`~metrics.compute_validation_mae_and_scatterer_metrics`.
+                    :func:`~metrics.compute_validation_and_reference_metrics`.
         - ``pre_training_reference_mae``: dict with keys ``"zero"``,
           ``"uniform"``, ``"hanning"``, ``"boxcar"``.
 
@@ -257,7 +257,7 @@ def compute_validation_baseline_metrics(
         "boxcar": np.concatenate(boxcar_val_abs_list, axis=0),
     }
 
-    validation_bundle = compute_validation_mae_and_scatterer_metrics(
+    validation_bundle = compute_validation_and_reference_metrics(
         images_abs=images_abs_eval,
         targets=validation_targets,
         scatterers_xy=scatterers_batch,
@@ -312,34 +312,51 @@ def extract_scatterer_snr(metrics: dict) -> np.ndarray:
 def find_latest_baseline_reference(
     dataset_folder: str,
     baseline_f_number: float,
-    sandbox_output_root: str | Path,
+    baseline_output_root: str | Path,
 ) -> tuple[dict | None, dict | None]:
     """Find the most recent matching baseline summary and its SNR arrays.
 
-    Scans ``<sandbox_output_root>/baseline_apodizations/`` for
-    ``baseline_summary.json`` files that match ``dataset_folder`` and
-    ``baseline_f_number``, ordered by modification time (most recent first).
+    Scans the baseline output root for ``baseline_summary.json`` files that
+    match ``dataset_folder`` and ``baseline_f_number``, ordered by
+    modification time (most recent first).
+
+    Search is backward compatible with historical layouts:
+    1) ``<baseline_output_root>/`` (current default)
+    2) ``<baseline_output_root>/baseline_apodizations/`` (legacy)
+    3) ``<baseline_output_root>/evaluation/baseline/`` (legacy)
 
     Args:
         dataset_folder: Absolute path to the delayed-samples dataset used
             during the baseline run.
         baseline_f_number: F-number that must match the candidate summary.
-        sandbox_output_root: Root folder where baseline outputs are stored.
+        baseline_output_root: Root folder where baseline outputs are stored.
 
     Returns:
         Tuple ``(summary_dict, arrays_dict)`` for the best matching run, or
         ``(None, None)`` if no match is found.
     """
-    sandbox_output_root = Path(sandbox_output_root)
-    baseline_search_root = sandbox_output_root / "baseline_apodizations"
-    if not baseline_search_root.exists():
+    baseline_output_root = Path(baseline_output_root)
+    candidate_roots = [
+        baseline_output_root,
+        baseline_output_root / "baseline_apodizations",
+        baseline_output_root / "evaluation" / "baseline",
+    ]
+
+    existing_roots: list[Path] = []
+    seen: set[Path] = set()
+    for root in candidate_roots:
+        if root.exists() and root not in seen:
+            existing_roots.append(root)
+            seen.add(root)
+
+    if not existing_roots:
         return None, None
 
-    summary_candidates = sorted(
-        baseline_search_root.rglob("baseline_summary.json"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
+    summary_candidates: list[Path] = []
+    for root in existing_roots:
+        summary_candidates.extend(root.rglob("baseline_summary.json"))
+
+    summary_candidates = sorted(summary_candidates, key=lambda path: path.stat().st_mtime, reverse=True)
     for summary_path in summary_candidates:
         try:
             with summary_path.open("r", encoding="utf-8") as handle:

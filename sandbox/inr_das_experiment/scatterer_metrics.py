@@ -2,7 +2,7 @@
 
 Computation functions (``compute_scatterer_metrics``,
 ``compute_validation_and_reference_metrics``,
-``compute_validation_mae_and_scatterer_metrics``) are provided by
+``compute_validation_and_reference_metrics``) are provided by
 ``inr_apodizations.evaluation`` and re-exported here for backward compatibility.
 Plotting utilities (``plot_scatterer_evaluation``, ``plot_scatterer_snr_ratio``)
 remain local.
@@ -20,14 +20,12 @@ from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.evaluation import (
     compute_scatterer_metrics,
     compute_validation_and_reference_metrics,
-    compute_validation_mae_and_scatterer_metrics,
     normalize_scatterer_batch,
 )
 
 __all__ = [
     "compute_scatterer_metrics",
     "compute_validation_and_reference_metrics",
-    "compute_validation_mae_and_scatterer_metrics",
     "plot_scatterer_evaluation",
     "plot_scatterer_snr_ratio",
 ]

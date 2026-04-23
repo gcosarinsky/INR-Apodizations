@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import sys
 from datetime import datetime
 from typing import Sequence
 
@@ -30,11 +29,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
-
-import helpers  # type: ignore
+import inr_apodizations.sandbox_helpers as helpers
 
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 

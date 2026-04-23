@@ -38,14 +38,7 @@ print("TF GPUs:", tf.config.list_physical_devices("GPU"))
 strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
 print(f"Using distribution strategy: {strategy}")
 
-# Make `helpers.py` importable when running this script from the project root.
-# This inserts the parent folder (`sandbox/inr_das_experiment`) into `sys.path`.
-script_dir = Path(__file__).resolve().parent
-sandbox_pkg_dir = script_dir.parent
-if str(sandbox_pkg_dir) not in sys.path:
-    sys.path.insert(0, str(sandbox_pkg_dir))
-
-import helpers
+import inr_apodizations.sandbox_helpers as helpers
 from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.losses import ScaledLoss

@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import csv
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -248,7 +249,7 @@ if inr_enabled:
 
     # If model still not found and INR is required, exit
     if model is None:
-        _sys.exit(f"Error: no INR model found at {model_path}. Set inr_enabled: false in reflector_lateral_profiles to skip INR evaluation.")
+        sys.exit(f"Error: no INR model found at {model_path}. Set inr_enabled: false in reflector_lateral_profiles to skip INR evaluation.")
 
 # ===== Compute apodizations =====
 # Classical dynamic apodizations via CoordinateManager
@@ -290,7 +291,7 @@ if model is not None:
             train_info = None
 
         if train_info is None or not train_info.exists():
-            _sys.exit(
+            sys.exit(
                 f"Error: `scaled_features` must be specified in train_config_info.yml next to the model. Not found: {train_info or model_path}"
             )
 
@@ -298,16 +299,16 @@ if model is not None:
             train_info_dict = yaml.safe_load(_f) or {}
 
         if not isinstance(train_info_dict, dict):
-            _sys.exit(f"Error: invalid format in {train_info}; expected a YAML mapping.")
+            sys.exit(f"Error: invalid format in {train_info}; expected a YAML mapping.")
 
         scaled_features = bool(train_info_dict["experiment"]["model"].get("scaled_features"))
         
         if not scaled_features:
-            _sys.exit(
+            sys.exit(
                 f"Error: `scaled_features` not found in {train_info}; it must be defined at top-level or under 'model'."
             )
     except Exception as _e:
-        _sys.exit(f"Error reading {train_info}: {_e}")
+        sys.exit(f"Error reading {train_info}: {_e}")
 
     features_grid = cm.get_features_grid(scaled=scaled_features)
     feature_chunk_size = int(65536)
@@ -376,6 +377,10 @@ if first_im is not None:
 out_root = Path(io_cfg.get("evaluation_output_root", script_dir / "outputs"))
 out_root = (Path.cwd() / out_root).resolve()
 out_root.mkdir(parents=True, exist_ok=True)
+
+with (out_root / "numeric_phantom_evaluation_config_info.yml").open("w", encoding="utf-8") as _f:
+    yaml.safe_dump(cfg, _f, sort_keys=False)
+
 plot_path = out_root / "evaluate_apodizations_quicklook.png"
 fig.savefig(plot_path, dpi=150)
 plt.show()

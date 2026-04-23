@@ -413,9 +413,11 @@ helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effectiv
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))
+history_dir = Path(sandbox_dir) / "history"
+history_dir.mkdir(parents=True, exist_ok=True)
 helpers.plot_training_curves(
     history.history,
-    output_path=str(Path(sandbox_dir) / "training_loss.png"),
+    output_path=str(history_dir / "training_history.png"),
 )
 helpers.plot_das_comparison_db(
     uniform_image=uniform_image.numpy()[0],

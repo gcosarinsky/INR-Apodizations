@@ -1,6 +1,7 @@
 io:
   dataset_folder: data/delayed_samples_dataset/20260406_155448
-  sandbox_output_root: sandbox/inr_das_experiment/outputs
+  sandbox_output_root: sandbox/inr_das_experiment/outputs/train
+  baseline_output: sandbox/inr_das_experiment/evaluation/baseline
   review_output_root: sandbox/inr_das_experiment/review_outputs
   # dataset_noise removed: noise must be provided as precomputed files in the dataset folder
 
@@ -15,7 +16,7 @@ model:
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
-  hidden_units: [8, 8, 4]
+  hidden_units: [8, 8, 8]
   n_hidden_layers: 4
   # Example Mode 2 (per-layer hidden sizes):
   # hidden_units: [8, 16, 8]
@@ -31,7 +32,7 @@ eval_noise:
 
 training:
   batch_size: 2
-  epochs: 30
+  epochs: 40
   learning_rate: 0.001
   loss: mae
   metric: mae
@@ -39,8 +40,8 @@ training:
   weight_regularization:
     enabled: true
     type: hinge_low_norm
-    lambda: 0.126
-    tau: 0.5
+    lambda: 0.1
+    tau: 0.7
     epsilon: 1.0e-8
     normalize_norm: true
     auto_init:
@@ -49,10 +50,10 @@ training:
       epsilon: 1.0e-12
   mae_db_ref: null
   mae_db_eps: 1.0e-8
-  baseline_f_number: 0.75
+  baseline_f_number: 0.5
   mask_weighting:
     enabled: true
-    pixel_weight_lambda: 1.96
+    pixel_weight_lambda: 1.
   train_fraction: 0.8
   seed: 42
   max_examples: null

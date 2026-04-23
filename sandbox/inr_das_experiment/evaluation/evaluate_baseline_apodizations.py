@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
+import yaml
 from datetime import datetime
 from pathlib import Path
 
@@ -29,7 +30,6 @@ from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
 from inr_apodizations.evaluation import (
     build_scatterer_reference_bundle,
     build_validation_weights,
-    compute_reference_apodizations,
     compute_validation_baseline_metrics,
     load_validation_scatterers,
     resolve_baseline_f_number,
@@ -79,6 +79,23 @@ def resolve_dataset_folder(cfg_user: dict) -> Path:
     if not dataset_folder.is_absolute():
         dataset_folder = PROJ_ROOT / dataset_folder
     return dataset_folder
+
+
+def resolve_baseline_output_root(cfg_user: dict) -> Path:
+    """Resolve the baseline output root folder from config.
+
+    Preferred key is ``io.baseline_output``. Legacy typo ``io.baseline_ouput``
+    is accepted for compatibility.
+    """
+    io_cfg = cfg_user.get("io", {})
+    baseline_output_cfg = io_cfg.get("baseline_output", io_cfg.get("baseline_ouput"))
+    if baseline_output_cfg is None:
+        baseline_output_cfg = "sandbox/inr_das_experiment/evaluation/baseline"
+
+    baseline_output = Path(str(baseline_output_cfg).strip())
+    if not baseline_output.is_absolute():
+        baseline_output = PROJ_ROOT / baseline_output
+    return baseline_output
 
 
 def load_validation_scatterers_full(
@@ -288,20 +305,16 @@ def main() -> None:
         scaled=scaled_features,
     )
 
-    hanning_weights_np, boxcar_weights_np = compute_reference_apodizations(
-        cm=cm,
-        baseline_f_number=baseline_f_number,
-        scaled_features=scaled_features,
-    )
+    hanning_weights_np = apods["hanning"].numpy()
+    boxcar_weights_np = apods["boxcar"].numpy()
 
-    output_root_cfg = Path(cfg_user["io"]["sandbox_output_root"])
-    if not output_root_cfg.is_absolute():
-        output_root = PROJ_ROOT / output_root_cfg
-    else:
-        output_root = output_root_cfg
+    output_root = resolve_baseline_output_root(cfg_user)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = output_root / "evaluation" / "baseline" / timestamp
+    output_dir = output_root / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    with (output_dir / "train_config_info.yml").open("w", encoding="utf-8") as _f:
+        yaml.safe_dump(cfg_user, _f, sort_keys=False)
 
     dpi = int(cfg_user.get("dpi", 150))
     cmap = str(cfg_user.get("cmap", "gray"))
@@ -359,6 +372,7 @@ def main() -> None:
                 y_true=validation_targets,
                 y_pred=images_abs_eval[method_name],
                 normalize_by="y_pred",
+                sample_weights=validation_sample_weights,
             )
         )
         for method_name in images_abs_eval
@@ -369,6 +383,7 @@ def main() -> None:
                 y_true=validation_targets,
                 y_pred=images_abs_eval[method_name],
                 normalize_by="y_true",
+                sample_weights=validation_sample_weights,
             )
         )
         for method_name in images_abs_eval

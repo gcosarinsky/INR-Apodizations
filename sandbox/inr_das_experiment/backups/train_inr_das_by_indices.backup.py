@@ -27,7 +27,7 @@ from inr_apodizations import config
 import numpy as np
 import tensorflow as tf
 
-import helpers
+import inr_apodizations.sandbox_helpers as helpers
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.metrics import MaskedMAE
 from inr_apodizations.modeling.metrics import ssim_metric
@@ -715,7 +715,7 @@ images_abs_eval = {
     "boxcar": boxcar_val_abs,
 }
 
-validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
+validation_bundle = helpers.compute_validation_and_reference_metrics(
     images_abs=images_abs_eval,
     targets=validation_targets,
     scatterers_xy=None,
@@ -737,7 +737,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             s[:, :2] *= 1000.0
             scatterers_batch.append(s[:, :2])
 
-        validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
+        validation_bundle = helpers.compute_validation_and_reference_metrics(
             images_abs=images_abs_eval,
             targets=validation_targets,
             scatterers_xy=scatterers_batch,
