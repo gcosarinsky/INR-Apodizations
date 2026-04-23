@@ -52,8 +52,8 @@ visualization:
 reflector_lateral_profiles:
   enabled: true
   # Set inr_enabled to false to skip INR model loading and evaluate only reference apodizations.
-  inr_enabled: true
-  methods: [uniform, boxcar, hanning, inr]
+  inr_enabled: false
+  methods: [uniform, boxcar, hanning]
   reflector_indices: all
   half_width_lateral_mm: 1.5
   half_width_axial_mm: 1.0

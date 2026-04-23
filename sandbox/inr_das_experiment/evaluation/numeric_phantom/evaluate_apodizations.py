@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import csv
+from datetime import datetime
 import sys
 
 import matplotlib.pyplot as plt
@@ -359,16 +360,16 @@ for idx, label in enumerate(labels):
     )
     if first_im is None:
         first_im = im
-    ax.set_title(label)
-    ax.set_xlabel("x (mm)")
+    ax.set_title(label, fontsize=fontsize_title)
+    ax.set_xlabel("x (mm)", fontsize=fontsize_axis)
     if idx % cols == 0:
-        ax.set_ylabel("z (mm)")
+        ax.set_ylabel("z (mm)", fontsize=fontsize_axis)
 
 # Hide unused axes (if fewer than 4 images)
 for j in range(len(labels), rows * cols):
     axes_flat[j].axis("off")
 
-fig.suptitle("DAS comparison")
+fig.suptitle("DAS comparison", fontsize=fontsize_title)
 fig.tight_layout(rect=[0, 0, 0.92, 1])
 cbar_ax = fig.add_axes([0.93, 0.1, 0.013, 0.78])
 if first_im is not None:
@@ -378,10 +379,15 @@ out_root = Path(io_cfg.get("evaluation_output_root", script_dir / "outputs"))
 out_root = (Path.cwd() / out_root).resolve()
 out_root.mkdir(parents=True, exist_ok=True)
 
-with (out_root / "numeric_phantom_evaluation_config_info.yml").open("w", encoding="utf-8") as _f:
+# Save each evaluation run under a timestamped subfolder.
+run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+run_out_dir = out_root / run_timestamp
+run_out_dir.mkdir(parents=True, exist_ok=False)
+
+with (run_out_dir / "numeric_phantom_evaluation_config_info.yml").open("w", encoding="utf-8") as _f:
     yaml.safe_dump(cfg, _f, sort_keys=False)
 
-plot_path = out_root / "evaluate_apodizations_quicklook.png"
+plot_path = run_out_dir / "evaluate_apodizations_quicklook.png"
 fig.savefig(plot_path, dpi=150)
 plt.show()
 
@@ -489,7 +495,7 @@ if profiles_enabled:
     show_axial = profile_type in ("axial", "both")
 
     # Save per-reflector figures (one figure per selected reflector)
-    profiles_dir = out_root / "profiles"
+    profiles_dir = run_out_dir / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
     for local_idx, refl_idx in enumerate(selected_indices.tolist()):
         x_mm = float(reflector_points[refl_idx, 0])
@@ -547,7 +553,7 @@ if profiles_enabled:
         plt.close(fig_ref)
     # Persist FWHM summary as CSV in wide format: one row per reflector,
     # with two columns per method (lateral and axial).
-    fwhm_csv_path = out_root / "reflector_fwhm_summary.csv"
+    fwhm_csv_path = run_out_dir / "reflector_fwhm_summary.csv"
     # Pivot rows into a mapping reflector_index -> {colname: value}
     per_reflector: dict[int, dict[str, float]] = {}
     for row in fwhm_rows:
@@ -643,7 +649,7 @@ if profiles_enabled:
     ax_snr.legend(fontsize=fontsize_legend)
     ax_snr.grid(True, alpha=0.3)
 
-    summary_fig_path = out_root / "resolution_and_snr_summary.png"
+    summary_fig_path = run_out_dir / "resolution_and_snr_summary.png"
     summary_fig.savefig(summary_fig_path, dpi=150)
     plt.close(summary_fig)
 
