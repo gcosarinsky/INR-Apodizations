@@ -809,7 +809,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
         baseline_reference_summary, baseline_reference_arrays = find_latest_baseline_reference(
             dataset_folder=dataset_folder,
             baseline_f_number=baseline_f_number,
-            sandbox_output_root=cfg["io"]["sandbox_output_root"],
+            baseline_output_root=cfg["io"].get("baseline_output", cfg["io"]["sandbox_output_root"]),
         )
 
         if baseline_reference_arrays is not None:
@@ -1020,6 +1020,7 @@ for method_name in method_order:
             y_true=validation_targets,
             y_pred=pred_values,
             normalize_by="y_pred",
+            sample_weights=validation_sample_weights,
         )
     )
     relative_mae_y_true_by_method[method_name] = float(
@@ -1027,10 +1028,11 @@ for method_name in method_order:
             y_true=validation_targets,
             y_pred=pred_values,
             normalize_by="y_true",
+            sample_weights=validation_sample_weights,
         )
     )
 
-reference_mae_for_plot = validation_bundle.get("reference_mae", {})
+reference_pixel_weighted_mae_for_plot = validation_bundle.get("masked_mae_by_method", {})
 comparison_summary = {
     "history_val_mae": history_val_mae,
     "validation_mae": validation_bundle["mae_by_method"],
@@ -1070,9 +1072,9 @@ if relative_mae_y_true_by_method:
         rel_value = relative_mae_y_true_by_method.get(method_name)
         if rel_value is not None:
             print(f"  {method_name:>10}: {rel_value:.6g}")
-if reference_mae_for_plot:
-    print("Reference MAE (derived, not persisted):")
-    for ref_name, ref_val in reference_mae_for_plot.items():
+if reference_pixel_weighted_mae_for_plot:
+    print("Reference PixelWeightedMAE (derived, not persisted):")
+    for ref_name, ref_val in reference_pixel_weighted_mae_for_plot.items():
         print(f"  ref_{ref_name:>7}: {ref_val:.6g}")
 print(f"  {'history_val_mae':>10}: {history_val_mae:.6g}")
 print(
@@ -1088,7 +1090,7 @@ try:
     helpers.plot_training_curves(
         history.history,
         output_path=str(Path(sandbox_dir) / "training_loss_with_refs.png"),
-        reference_mae=reference_mae_for_plot,
+        reference_mae=reference_pixel_weighted_mae_for_plot,
     )
 except Exception:
     print("Warning: failed to re-plot training curves with reference MAE lines.")
