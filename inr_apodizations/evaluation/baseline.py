@@ -18,7 +18,7 @@ from inr_apodizations.apodizations import (
     compute_das_baseline_numpy,
     compute_dynamic_apodizations_tf,
 )
-from inr_apodizations.evaluation.metrics import compute_validation_mae_and_scatterer_metrics
+from inr_apodizations.evaluation.metrics import compute_validation_and_reference_metrics
 from inr_apodizations.evaluation.summary import (
     build_snr_persistence_bundle,
     extract_snr_from_metrics,
@@ -181,7 +181,7 @@ def compute_validation_baseline_metrics(
         - ``images_abs_eval``: dict mapping method names to ``(n_val, Z, X)``
           absolute-value images.
         - ``validation_bundle``: output of
-          :func:`~metrics.compute_validation_mae_and_scatterer_metrics`.
+                    :func:`~metrics.compute_validation_and_reference_metrics`.
         - ``pre_training_reference_mae``: dict with keys ``"zero"``,
           ``"uniform"``, ``"hanning"``, ``"boxcar"``.
 
@@ -257,7 +257,7 @@ def compute_validation_baseline_metrics(
         "boxcar": np.concatenate(boxcar_val_abs_list, axis=0),
     }
 
-    validation_bundle = compute_validation_mae_and_scatterer_metrics(
+    validation_bundle = compute_validation_and_reference_metrics(
         images_abs=images_abs_eval,
         targets=validation_targets,
         scatterers_xy=scatterers_batch,

@@ -36,7 +36,6 @@ from inr_apodizations.evaluation.summary import (
 from inr_apodizations.evaluation.metrics import (
     compute_scatterer_metrics,
     compute_validation_and_reference_metrics,
-    compute_validation_mae_and_scatterer_metrics,
 )
 from inr_apodizations.evaluation.baseline import (
     load_validation_scatterers,
@@ -74,7 +73,6 @@ __all__ = [
     # high-level
     "compute_scatterer_metrics",
     "compute_validation_and_reference_metrics",
-    "compute_validation_mae_and_scatterer_metrics",
     # baseline
     "load_validation_scatterers",
     "build_validation_weights",
@@ -87,5 +85,4 @@ __all__ = [
     # scatterers
     "select_reflector_scatterer_index",
     "select_reflector_scatterer",
-    "compute_validation_mae_and_scatterer_metrics",
 ]

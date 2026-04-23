@@ -342,8 +342,3 @@ def compute_validation_and_reference_metrics(
         "scatterer_metrics": scatterer_metrics,
         "reference_mae": reference_mae,
     }
-
-
-def compute_validation_mae_and_scatterer_metrics(*args, **kwargs) -> dict:
-    """Backward-compatible alias for :func:`compute_validation_and_reference_metrics`."""
-    return compute_validation_and_reference_metrics(*args, **kwargs)

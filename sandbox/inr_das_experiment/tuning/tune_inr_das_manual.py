@@ -10,7 +10,6 @@ import random
 from datetime import datetime
 from pathlib import Path
 import os
-import sys
 import yaml
 import csv
 
@@ -24,13 +23,7 @@ if conda_prefix:
 
 import tensorflow as tf
 
-# Make `helpers.py` importable when running from repo root.
-script_dir = Path(__file__).resolve().parent
-sandbox_pkg_dir = script_dir.parent
-if str(sandbox_pkg_dir) not in sys.path:
-    sys.path.insert(0, str(sandbox_pkg_dir))
-
-import helpers
+import inr_apodizations.sandbox_helpers as helpers
 from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.tuning.utils import generate_candidate_architectures

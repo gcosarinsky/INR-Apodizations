@@ -706,7 +706,7 @@ images_abs_eval = {
     "boxcar": boxcar_val_abs,
 }
 
-validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
+validation_bundle = helpers.compute_validation_and_reference_metrics(
     images_abs=images_abs_eval,
     targets=validation_targets,
     scatterers_xy=None,
@@ -738,7 +738,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
                 f"{baseline_reference_summary['output_dir']}"
             )
 
-        validation_bundle = helpers.compute_validation_mae_and_scatterer_metrics(
+        validation_bundle = helpers.compute_validation_and_reference_metrics(
             images_abs=images_abs_eval,
             targets=validation_targets,
             scatterers_xy=scatterers_batch,

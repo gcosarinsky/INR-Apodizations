@@ -33,13 +33,7 @@ print(f"Effective XLA env: XLA_FLAGS={os.environ.get('XLA_FLAGS', '(unset)')}")
 import tensorflow as tf
 import optuna
 
-# Make `helpers.py` importable when running from project root
-script_dir = Path(__file__).resolve().parent
-sandbox_pkg_dir = script_dir.parent
-if str(sandbox_pkg_dir) not in sys.path:
-    sys.path.insert(0, str(sandbox_pkg_dir))
-
-import helpers
+import inr_apodizations.sandbox_helpers as helpers
 from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.losses import ScaledLoss

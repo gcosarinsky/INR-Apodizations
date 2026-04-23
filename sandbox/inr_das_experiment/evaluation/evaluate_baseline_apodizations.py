@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
+import yaml
 from datetime import datetime
 from pathlib import Path
 
@@ -311,6 +312,9 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = output_root / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    with (output_dir / "train_config_info.yml").open("w", encoding="utf-8") as _f:
+        yaml.safe_dump(cfg_user, _f, sort_keys=False)
 
     dpi = int(cfg_user.get("dpi", 150))
     cmap = str(cfg_user.get("cmap", "gray"))

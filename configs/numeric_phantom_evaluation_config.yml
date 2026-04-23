@@ -2,7 +2,7 @@ io:
   simulation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/delayed_samples
   evaluation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/
   save_plot: true
-  model_path: sandbox/inr_das_experiment/outputs/train/20260407_130013
+  model_path: sandbox/inr_das_experiment/outputs/train/20260423_113629
 
 phantom:
   mode: grid
@@ -52,8 +52,8 @@ visualization:
 reflector_lateral_profiles:
   enabled: true
   # Set inr_enabled to false to skip INR model loading and evaluate only reference apodizations.
-  inr_enabled: false
-  methods: [uniform, boxcar, hanning]
+  inr_enabled: true
+  methods: [uniform, boxcar, hanning, inr]
   reflector_indices: all
   half_width_lateral_mm: 1.5
   half_width_axial_mm: 1.0
