@@ -27,6 +27,7 @@ from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.modeling.trainer import DasInrTrainer
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
+from inr_apodizations.dataset import generate_das_modulated_target
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
 import inr_apodizations.sandbox_helpers as helpers
@@ -190,6 +191,19 @@ fontsize_legend = int(plot_cfg.get("legend_fontsize", 8))
 fontsize_title = int(plot_cfg.get("title_fontsize", 10))
 fontsize_axis = int(plot_cfg.get("axis_fontsize", 10))
 
+target_train_cfg = cfg.get("training_target", {})
+target_train_enabled = bool(target_train_cfg.get("enabled", False))
+target_train_sigma_x = float(target_train_cfg.get("sigma_x_mm", 0.5))
+target_train_sigma_z = float(target_train_cfg.get("sigma_z_mm", 0.5))
+target_train_alpha = float(target_train_cfg.get("alpha", 0.0))
+target_train_include_in_profiles = bool(target_train_cfg.get("include_in_profiles", True))
+target_train_label = str(target_train_cfg.get("display_label", "target"))
+if target_train_enabled:
+    if not (0.0 <= target_train_alpha < 1.0):
+        raise ValueError("`training_target.alpha` must be in [0, 1).")
+    if target_train_sigma_x <= 0.0 or target_train_sigma_z <= 0.0:
+        raise ValueError("`training_target.sigma_x_mm` and `sigma_z_mm` must be > 0.")
+
 model_path = Path(PROJ_ROOT / io_cfg.get("model_path"))
 delayed_samples_path, latest_simulation_run = _resolve_latest_delayed_samples_path(io_cfg)
 print("Corrida de simulacion seleccionada:", latest_simulation_run)
@@ -229,6 +243,11 @@ except FileNotFoundError:
     }
     kp = KernelParameters2D(kp_cfg)
     cm = CoordinateManager(kp)
+
+# Build spatial grids in mm for target image computation
+_x_coords = np.linspace(kp.roi_effective[0], kp.roi_effective[1], kp.nx)
+_z_coords = np.linspace(kp.roi_effective[2], kp.roi_effective[3], kp.nz)
+x_grid, z_grid = np.meshgrid(_x_coords, _z_coords)
 
 # ===== Load model (conditional on reflector_lateral_profiles.inr_enabled) =====
 inr_enabled = bool(cfg.get("reflector_lateral_profiles", {}).get("inr_enabled", True))
@@ -323,6 +342,20 @@ if model is not None:
     inr_img = (delayed0 * weights_grid).sum(axis=0)
     images["inr"] = inr_img
 
+# Training target: Gaussian-modulated uniform DAS (mirrors the dataset creation pipeline)
+if target_train_enabled:
+    _reflector_points_for_target = _build_grid_reflector_points(cfg)
+    target_img = generate_das_modulated_target(
+        images["uniform"],
+        _reflector_points_for_target,
+        x_grid,
+        z_grid,
+        sigma_x=target_train_sigma_x,
+        sigma_z=target_train_sigma_z,
+        alpha=target_train_alpha,
+    )
+    images[target_train_label] = target_img
+
 # ===== Produce DAS images and plot =====
 
 # Convert to dB for plotting (use per-image maximum rather than shared reference)
@@ -331,8 +364,14 @@ for k, v in images.items():
     ref = np.max(np.abs(v))
     images_db[k] = 20.0 * np.log10(np.abs(v) / (ref + 1e-12) + 1e-12)
 
-# Plot grid (force a 2x2 layout)
-labels = list(images_db.keys())
+# Build display list: target always last; if 5 images total, drop boxcar to keep 2x2
+display_labels = list(images_db.keys())
+if target_train_enabled and target_train_label in display_labels:
+    display_labels.remove(target_train_label)
+    display_labels.append(target_train_label)
+    if len(display_labels) == 5 and "boxcar" in display_labels:
+        display_labels.remove("boxcar")
+labels = display_labels
 rows, cols = 2, 2
 extent = kp.get_imshow_extent()
 vmin_db = -60.0
@@ -404,6 +443,10 @@ if profiles_enabled:
     selected_method_names = [str(name).strip().lower() for name in methods_cfg]
     # Preserve order while removing duplicates.
     selected_method_names = list(dict.fromkeys(selected_method_names))
+
+    # Append training target to profiles if enabled and requested
+    if target_train_enabled and target_train_include_in_profiles and target_train_label not in selected_method_names:
+        selected_method_names.append(target_train_label)
 
     missing_methods = [name for name in selected_method_names if name not in images_db]
     if missing_methods:

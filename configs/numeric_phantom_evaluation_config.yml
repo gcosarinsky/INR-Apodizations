@@ -69,3 +69,14 @@ plots:
   legend_fontsize: 10      # Tamaño de fuente para legendas (default: 8)
   title_fontsize: 12      # Tamaño de fuente para títulos (default: 10)
   axis_fontsize: 12       # Tamaño de fuente para etiquetas de ejes (default: 10)
+
+training_target:
+  # When enabled, computes the training target (Gaussian-modulated uniform DAS) and
+  # shows it as the last panel in the 2x2 comparison plot.
+  # If the total number of images exceeds 4, 'boxcar' is dropped to preserve the 2x2 layout.
+  enabled: true
+  sigma_x_mm: 0.2          # Lateral Gaussian std dev for the mask (mm)
+  sigma_z_mm: 0.2          # Axial Gaussian std dev for the mask (mm)
+  alpha: 0.0               # Relaxation factor in [0, 1): 0 = pure mask, >0 adds constant background
+  include_in_profiles: true  # Also include target in reflector profile / FWHM / SNR analysis
+  display_label: target    # Key used in plots, CSV headers, and profile legends
