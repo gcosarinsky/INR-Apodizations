@@ -27,7 +27,7 @@ BATCH_SIZE = 8192
 LEARNING_RATE = 1e-3
 SCALED_FEATURES = True
 TRAIN_SUBSET_FRACTION = 0.1  # Set to None to use the full dataset for training
-FIGURE_PATH = Path("sandbox/figures/inr_hanning_fit.png")
+FIGURE_PATH = Path("sandbox/figures/INR_hanning_fit/")
 RANDOM_SEED = 42
 
 
@@ -139,6 +139,89 @@ def select_training_subset(
     return features_train, target_train
 
 
+def _plot_state_figure(
+    pred_map: np.ndarray,
+    target_map: np.ndarray,
+    diff_map: np.ndarray,
+    x_elem: np.ndarray,
+    z: np.ndarray,
+    profiles: dict[str, np.ndarray],
+    z_idx_1: int,
+    z_idx_2: int,
+    extent: list,
+    map_vmin: float,
+    map_vmax: float,
+    diff_vmax: float,
+    title: str,
+) -> plt.Figure:
+    """Create a 2x2 figure with prediction map, target map, difference map, and profiles.
+
+    Args:
+        pred_map: Predicted apodization map with shape (nz, n_elem).
+        target_map: Reference Hanning map with shape (nz, n_elem).
+        diff_map: Absolute difference map with shape (nz, n_elem).
+        x_elem: Element lateral positions in mm, shape (n_elem,).
+        z: Depth positions in mm, shape (nz,).
+        profiles: Dict with keys 'target_z1', 'pred_z1', 'target_z2', 'pred_z2'.
+        z_idx_1: First depth index (25% of nz).
+        z_idx_2: Second depth index (75% of nz).
+        extent: Imshow extent as [xmin, xmax, zmax, zmin].
+        map_vmin: Colormap minimum for apodization maps.
+        map_vmax: Colormap maximum for apodization maps.
+        diff_vmax: Colormap maximum for difference map.
+        title: Figure suptitle.
+
+    Returns:
+        Matplotlib Figure with a 2x2 subplot grid.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
+
+    im0 = axes[0, 0].imshow(
+        pred_map, aspect="auto", extent=extent, cmap="viridis", vmin=map_vmin, vmax=map_vmax
+    )
+    axes[0, 0].set_title("MLP prediction")
+    axes[0, 0].set_xlabel("Element lateral position [mm]")
+    axes[0, 0].set_ylabel("Depth [mm]")
+    fig.colorbar(im0, ax=axes[0, 0])
+
+    im1 = axes[0, 1].imshow(
+        target_map, aspect="auto", extent=extent, cmap="viridis", vmin=map_vmin, vmax=map_vmax
+    )
+    axes[0, 1].set_title("Hanning target")
+    axes[0, 1].set_xlabel("Element lateral position [mm]")
+    axes[0, 1].set_ylabel("Depth [mm]")
+    fig.colorbar(im1, ax=axes[0, 1])
+
+    im2 = axes[1, 0].imshow(
+        diff_map, aspect="auto", extent=extent, cmap="viridis", vmin=0.0, vmax=diff_vmax
+    )
+    axes[1, 0].set_title("|difference|")
+    axes[1, 0].set_xlabel("Element lateral position [mm]")
+    axes[1, 0].set_ylabel("Depth [mm]")
+    fig.colorbar(im2, ax=axes[1, 0])
+
+    z_val_1 = float(z[z_idx_1])
+    z_val_2 = float(z[z_idx_2])
+    ax_prof = axes[1, 1]
+    ax_prof.plot(x_elem, profiles["target_z1"], color="C0", linewidth=2,
+                 label=f"Hanning z={z_val_1:.2f} mm")
+    ax_prof.plot(x_elem, profiles["pred_z1"], color="C0", linewidth=1.5, linestyle="--",
+                 label=f"MLP z={z_val_1:.2f} mm")
+    ax_prof.plot(x_elem, profiles["target_z2"], color="C1", linewidth=2,
+                 label=f"Hanning z={z_val_2:.2f} mm")
+    ax_prof.plot(x_elem, profiles["pred_z2"], color="C1", linewidth=1.5, linestyle="--",
+                 label=f"MLP z={z_val_2:.2f} mm")
+    ax_prof.set_title("Profiles at two depths")
+    ax_prof.set_xlabel("Element lateral position [mm]")
+    ax_prof.set_ylabel("Apodization weight")
+    ax_prof.set_xlim(-6, 6)
+    ax_prof.grid(True, alpha=0.3)
+    ax_prof.legend(fontsize=10)
+
+    fig.suptitle(title, fontsize=14)
+    return fig
+
+
 def plot_results(
     cm: CoordinateManager,
     target_hanning: tf.Tensor,
@@ -147,11 +230,10 @@ def plot_results(
     coords: dict[str, np.ndarray],
     x_fixed: float,
     x_idx: int,
-    z_idx: int,
     history: tf.keras.callbacks.History,
-    figure_path: Path,
-) -> None:
-    """Create the requested maps and profiles before and after training.
+    figure_dir: Path,
+) -> tuple[Path, Path, Path]:
+    """Create three separate figures: before training, after training, and training history.
 
     Args:
         cm: Coordinate manager used to extract the x=0 map.
@@ -160,81 +242,95 @@ def plot_results(
         pred_after: Model prediction after training.
         coords: Coordinate dictionary from CoordinateManager.
         x_fixed: Lateral position used for the 2D map extraction.
-        x_idx: Lateral index used for the profile extraction.
-        z_idx: Depth index used for the profile extraction.
+        x_idx: Lateral index used for profile extraction.
         history: Keras training history.
-        figure_path: Output path for the saved figure.
+        figure_dir: Output directory; three PNG files are saved inside it.
+
+    Returns:
+        Tuple of paths (path_before, path_after, path_history).
     """
     x_elem = np.asarray(coords["x_elem"])
     z = np.asarray(coords["z"])
 
+    # Compute all maps once so scales are consistent across both figures
     map_target = extract_map_for_x(target_hanning, cm, x_fixed=x_fixed).numpy()
     map_before = extract_map_for_x(pred_before, cm, x_fixed=x_fixed).numpy()
     map_after = extract_map_for_x(pred_after, cm, x_fixed=x_fixed).numpy()
     diff_before = np.abs(map_before - map_target)
     diff_after = np.abs(map_after - map_target)
 
-    profile_target = extract_center_profile(target_hanning, x_idx=x_idx, z_idx=z_idx)
-    profile_before = extract_center_profile(pred_before, x_idx=x_idx, z_idx=z_idx)
-    profile_after = extract_center_profile(pred_after, x_idx=x_idx, z_idx=z_idx)
-
-    extent = [x_elem.min(), x_elem.max(), z.max(), z.min()]
-    map_vmin = 0.0
-    map_vmax = 1.0
+    map_vmin, map_vmax = 0.0, 1.0
     diff_vmax = max(float(diff_before.max()), float(diff_after.max()), 1e-8)
+    extent = [x_elem.min(), x_elem.max(), z.max(), z.min()]
 
-    fig, axes = plt.subplots(3, 3, figsize=(16, 12), constrained_layout=True)
+    # Depth indices: 25% and 75% of the z axis
+    z_idx_1 = cm.nz // 4
+    z_idx_2 = (3 * cm.nz) // 4
 
-    map_specs = [
-        (axes[0, 0], map_before, "MLP before training"),
-        (axes[0, 1], map_target, "Hanning target"),
-        (axes[0, 2], diff_before, "|difference| before"),
-        (axes[1, 0], map_after, "MLP after training"),
-        (axes[1, 1], map_target, "Hanning target"),
-        (axes[1, 2], diff_after, "|difference| after"),
-    ]
-    for axis, image_data, title in map_specs:
-        is_diff = "difference" in title
-        im = axis.imshow(
-            image_data,
-            aspect="auto",
-            extent=extent,
-            cmap="viridis",
-            vmin=0.0 if is_diff else map_vmin,
-            vmax=diff_vmax if is_diff else map_vmax,
-        )
-        axis.set_title(title)
-        axis.set_xlabel("Element lateral position [mm]")
-        axis.set_ylabel("Depth [mm]")
-        fig.colorbar(im, ax=axis)
+    profiles_before = {
+        "target_z1": extract_center_profile(target_hanning, x_idx=x_idx, z_idx=z_idx_1),
+        "pred_z1": extract_center_profile(pred_before, x_idx=x_idx, z_idx=z_idx_1),
+        "target_z2": extract_center_profile(target_hanning, x_idx=x_idx, z_idx=z_idx_2),
+        "pred_z2": extract_center_profile(pred_before, x_idx=x_idx, z_idx=z_idx_2),
+    }
+    profiles_after = {
+        "target_z1": extract_center_profile(target_hanning, x_idx=x_idx, z_idx=z_idx_1),
+        "pred_z1": extract_center_profile(pred_after, x_idx=x_idx, z_idx=z_idx_1),
+        "target_z2": extract_center_profile(target_hanning, x_idx=x_idx, z_idx=z_idx_2),
+        "pred_z2": extract_center_profile(pred_after, x_idx=x_idx, z_idx=z_idx_2),
+    }
 
-    z_value = float(z[z_idx])
-    axes[2, 0].plot(x_elem, profile_target, label="Hanning", linewidth=2)
-    axes[2, 0].plot(x_elem, profile_before, label="MLP before", linestyle="--")
-    axes[2, 0].set_title(f"Profile before at z={z_value:.2f} mm, x=0")
-    axes[2, 0].set_xlabel("Element lateral position [mm]")
-    axes[2, 0].set_ylabel("Apodization weight")
-    axes[2, 0].grid(True, alpha=0.3)
-    axes[2, 0].legend()
+    fig_before = _plot_state_figure(
+        pred_map=map_before,
+        target_map=map_target,
+        diff_map=diff_before,
+        x_elem=x_elem,
+        z=z,
+        profiles=profiles_before,
+        z_idx_1=z_idx_1,
+        z_idx_2=z_idx_2,
+        extent=extent,
+        map_vmin=map_vmin,
+        map_vmax=map_vmax,
+        diff_vmax=diff_vmax,
+        title="INR before training – dynamic Hanning apodization",
+    )
+    fig_after = _plot_state_figure(
+        pred_map=map_after,
+        target_map=map_target,
+        diff_map=diff_after,
+        x_elem=x_elem,
+        z=z,
+        profiles=profiles_after,
+        z_idx_1=z_idx_1,
+        z_idx_2=z_idx_2,
+        extent=extent,
+        map_vmin=map_vmin,
+        map_vmax=map_vmax,
+        diff_vmax=diff_vmax,
+        title="INR after training – dynamic Hanning apodization",
+    )
 
-    axes[2, 1].plot(x_elem, profile_target, label="Hanning", linewidth=2)
-    axes[2, 1].plot(x_elem, profile_after, label="MLP after", linestyle="--")
-    axes[2, 1].set_title(f"Profile after at z={z_value:.2f} mm, x=0")
-    axes[2, 1].set_xlabel("Element lateral position [mm]")
-    axes[2, 1].set_ylabel("Apodization weight")
-    axes[2, 1].grid(True, alpha=0.3)
-    axes[2, 1].legend()
+    fig_history, ax_hist = plt.subplots(figsize=(8, 4), constrained_layout=True)
+    ax_hist.plot(history.history["loss"], color="black", linewidth=1.5)
+    ax_hist.set_title("Training loss")
+    ax_hist.set_xlabel("Epoch")
+    ax_hist.set_ylabel("MSE")
+    ax_hist.grid(True, alpha=0.3)
+    fig_history.suptitle("INR training history", fontsize=14)
 
-    axes[2, 2].plot(history.history["loss"], color="black")
-    axes[2, 2].set_title("Training loss")
-    axes[2, 2].set_xlabel("Epoch")
-    axes[2, 2].set_ylabel("MSE")
-    axes[2, 2].grid(True, alpha=0.3)
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    run_suffix = f"_H{HIDDEN_UNITS}"
+    path_before = figure_dir / f"before{run_suffix}.png"
+    path_after = figure_dir / f"after{run_suffix}.png"
+    path_history = figure_dir / f"history{run_suffix}.png"
 
-    fig.suptitle("INR fit to dynamic Hanning apodization", fontsize=14)
-    figure_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(figure_path, dpi=150)
+    fig_before.savefig(path_before, dpi=150)
+    fig_after.savefig(path_after, dpi=150)
+    fig_history.savefig(path_history, dpi=150)
+
     plt.show()
+    return path_before, path_after, path_history
 
 
 tf.random.set_seed(RANDOM_SEED)
@@ -250,7 +346,6 @@ x_coords = np.asarray(coords["x"])
 z_coords = np.asarray(coords["z"])
 x_fixed = 0.0
 x_idx = int(np.argmin(np.abs(x_coords - x_fixed)))
-z_idx = cm.nz // 2
 
 target_hanning = compute_dynamic_apodizations_tf(
     cm,
@@ -270,8 +365,10 @@ print(f"Features flat shape: {features_flat.shape}, scaled={SCALED_FEATURES}")
 print(f"Target flat shape: {target_flat.shape}")
 print(f"Training features shape: {features_train.shape}")
 print(f"Using {features_train.shape[0]} of {features_flat.shape[0]} points for training")
+z_idx_1 = cm.nz // 4
+z_idx_2 = (3 * cm.nz) // 4
 print(f"Map extraction at x={x_coords[x_idx]:.4f} mm")
-print(f"Profile extraction at z={z_coords[z_idx]:.4f} mm, x={x_coords[x_idx]:.4f} mm")
+print(f"Profile extraction at z={z_coords[z_idx_1]:.4f} mm (25%) and z={z_coords[z_idx_2]:.4f} mm (75%), x={x_coords[x_idx]:.4f} mm")
 
 model = build_mlp()
 model.summary()
@@ -290,7 +387,7 @@ history = model.fit(dataset, epochs=N_EPOCHS, verbose=1)
 
 pred_after = predict_grid(model, features_flat, cm.shape)
 
-plot_results(
+path_before, path_after, path_history = plot_results(
     cm=cm,
     target_hanning=target_hanning,
     pred_before=pred_before,
@@ -298,9 +395,11 @@ plot_results(
     coords=coords,
     x_fixed=x_fixed,
     x_idx=x_idx,
-    z_idx=z_idx,
     history=history,
-    figure_path=FIGURE_PATH,
+    figure_dir=FIGURE_PATH,
 )
 
-print(f"Saved figure to: {FIGURE_PATH}")
+print(f"Saved figures to:")
+print(f"  before:  {path_before}")
+print(f"  after:   {path_after}")
+print(f"  history: {path_history}")
