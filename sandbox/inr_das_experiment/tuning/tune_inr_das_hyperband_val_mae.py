@@ -109,6 +109,28 @@ mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
 use_pixelwise_weights = bool(mask_weighting_cfg.get("enabled", False))
 pixel_weight_lambda_min = float(cfg["tuning"].get("pixel_weight_lambda_min", 0.1))
 pixel_weight_lambda_max = float(cfg["tuning"].get("pixel_weight_lambda_max", 2.0))
+autoinit_cfg = dict(cfg["tuning"].get("weight_regularization_autoinit", {}))
+autoinit_enabled = bool(autoinit_cfg.get("enabled", False))
+autoinit_ratio = float(autoinit_cfg.get("ratio", 0.5))
+autoinit_epsilon = float(autoinit_cfg.get("epsilon", 1e-12))
+autoinit_norm_fraction = float(autoinit_cfg.get("norm_fraction", 0.9))
+
+if autoinit_ratio < 0.0:
+    raise ValueError("tuning.weight_regularization_autoinit.ratio must be >= 0")
+if autoinit_epsilon <= 0.0:
+    raise ValueError("tuning.weight_regularization_autoinit.epsilon must be > 0")
+if autoinit_norm_fraction <= 0.0:
+    raise ValueError("tuning.weight_regularization_autoinit.norm_fraction must be > 0")
+
+print(
+    "Weight-regularization lambda tuning mode:",
+    {
+        "autoinit_enabled": autoinit_enabled,
+        "ratio": autoinit_ratio,
+        "epsilon": autoinit_epsilon,
+        "norm_fraction": autoinit_norm_fraction,
+    },
+)
 
 
 def _build_trial_loss_weights(pixel_weight_lambda: float | None) -> np.ndarray | None:
@@ -186,15 +208,23 @@ def build_model(hp):
     )
     
     # 2. Physical Trainer with Tunable Regularization
+    if autoinit_enabled:
+        # Placeholder value that will be overwritten per trial by tuner callback.
+        reg_lambda = float(cfg["tuning"].get("reg_lambda_min", 1e-3))
+    else:
+        reg_lambda = hp.Float(
+            "reg_lambda",
+            cfg["tuning"]["reg_lambda_min"],
+            cfg["tuning"]["reg_lambda_max"],
+            sampling="log",
+        )
+
     trainer = DasInrTrainer(
         apodization_model=inr_mlp,
         features_grid=cm.get_features_grid(scaled=cfg["model"]["scaled_features"]),
         feature_chunk_size=cfg["model"]["feature_chunk_size"],
         weight_regularization_enabled=True,
-        weight_regularization_lambda=hp.Float("reg_lambda", 
-                                              cfg["tuning"]["reg_lambda_min"], 
-                                              cfg["tuning"]["reg_lambda_max"], 
-                                              sampling="log"),
+        weight_regularization_lambda=reg_lambda,
         weight_regularization_tau=hp.Float("reg_tau", 
                                            cfg["tuning"]["reg_tau_min"], 
                                            cfg["tuning"]["reg_tau_max"]) 
@@ -261,6 +291,11 @@ with strategy.scope():
         project_name="kt_hyperband",
         live_plot=live_score_plot,
         trial_data_builder=build_trial_datasets,
+        weight_regularization_autoinit_enabled=autoinit_enabled,
+        weight_regularization_autoinit_ratio=autoinit_ratio,
+        weight_regularization_autoinit_epsilon=autoinit_epsilon,
+        weight_regularization_autoinit_norm_fraction=autoinit_norm_fraction,
+        autoinit_log_path=tuning_dir / "trial_autoinit_log.json",
     )
 
 # Prepare datasets for fit
@@ -296,22 +331,55 @@ try:
     print(f"Per-architecture scores saved to: {tuning_dir}")
 except Exception as e:
     print("Warning: failed to save per-architecture scores:", e)
+
+trial_autoinit_log = dict(getattr(tuner, "trial_autoinit_log", {}))
+if trial_autoinit_log:
+    autoinit_log_path = tuning_dir / "trial_autoinit_log.json"
+    with open(autoinit_log_path, "w", encoding="utf-8") as file:
+        json.dump(trial_autoinit_log, file, indent=2)
+    print(f"Saved trial auto-init diagnostics to: {autoinit_log_path}")
+
 best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+best_trial = tuner.oracle.get_best_trials(num_trials=1)[0]
+best_trial_id = str(best_trial.trial_id)
 best_arch_index = int(best_hps.get("architecture_index"))
 best_hidden_units = candidate_architectures[best_arch_index]
+best_trial_autoinit = trial_autoinit_log.get(best_trial_id, {})
 
 print("Best Hyperparameters:")
 for key in best_hps.values:
     print(f"  {key}: {best_hps.get(key)}")
 print(f"  hidden_units: {best_hidden_units}")
+if best_trial_autoinit:
+    print(
+        "  reg_lambda_auto:",
+        best_trial_autoinit.get("lambda_applied"),
+    )
 
 # Save best config as YAML.
 best_config_path = tuning_dir / "best_config.yml"
 best_config = {
     "hidden_units": [int(v) for v in best_hidden_units],
-    "reg_lambda": float(best_hps.get("reg_lambda")),
+    "reg_lambda": (
+        float(best_hps.get("reg_lambda"))
+        if best_hps.get("reg_lambda") is not None
+        else None
+    ),
+    "reg_lambda_auto": (
+        float(best_trial_autoinit.get("lambda_applied"))
+        if best_trial_autoinit.get("lambda_applied") is not None
+        else None
+    ),
     "reg_tau": float(best_hps.get("reg_tau")),
     "lr": float(best_hps.get("lr")),
+    "trial_id": best_trial_id,
+    "weight_regularization_autoinit": {
+        "enabled": autoinit_enabled,
+        "ratio": autoinit_ratio,
+        "epsilon": autoinit_epsilon,
+        "norm_fraction": autoinit_norm_fraction,
+        "best_trial": best_trial_autoinit,
+    },
     # Include architecture index and pixel-wise weight hyperparameter when available
     "architecture_index": int(best_hps.get("architecture_index")) if best_hps.get("architecture_index") is not None else None,
     "pixel_weight_lambda": (float(best_hps.get("pixel_weight_lambda")) if best_hps.get("pixel_weight_lambda") is not None else None),
@@ -336,6 +404,8 @@ try:
         with open(tuner_trials_path, "r", encoding="utf-8") as f:
             trials = json.load(f)
 
+        trial_autoinit_lookup = dict(getattr(tuner, "trial_autoinit_log", {}))
+
         # Discover all hyperparameter keys across trials
         hp_keys = set()
         for t in trials:
@@ -345,19 +415,34 @@ try:
         hp_keys = sorted(hp_keys)
 
         # CSV header: basic trial fields + discovered hyperparameters
-        header = ["trial_id", "architecture_index", "score", "hidden_units"] + hp_keys
+        header = [
+            "trial_id",
+            "architecture_index",
+            "score",
+            "hidden_units",
+            "reg_lambda_auto",
+            "autoinit_status",
+            "autoinit_hinge_active",
+            "autoinit_fallback_used",
+        ] + hp_keys
 
         with open(csv_trials_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(header)
             for t in trials:
                 row = []
-                row.append(t.get("trial_id", ""))
+                trial_id = str(t.get("trial_id", ""))
+                row.append(trial_id)
                 ai = t.get("architecture_index")
                 row.append("" if ai is None else ai)
                 row.append(t.get("score", ""))
                 # hidden_units as JSON string (keeps list structure)
                 row.append(json.dumps(t.get("hidden_units", None)))
+                autoinit_info = trial_autoinit_lookup.get(trial_id, {})
+                row.append(autoinit_info.get("lambda_applied", ""))
+                row.append(autoinit_info.get("status", ""))
+                row.append(autoinit_info.get("hinge_active", ""))
+                row.append(autoinit_info.get("fallback_used", ""))
                 hp = t.get("hyperparameters") or {}
                 for k in hp_keys:
                     v = hp.get(k, None)
