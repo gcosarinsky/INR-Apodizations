@@ -107,13 +107,24 @@ if val_subset_size > 0 and val_subset_size < len(val_idx):
 # --- Optional: Mask weighting (pixelwise sample weights)
 mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
 use_pixelwise_weights = bool(mask_weighting_cfg.get("enabled", False))
-pixel_weight_lambda_min = float(cfg["tuning"].get("pixel_weight_lambda_min", 0.1))
-pixel_weight_lambda_max = float(cfg["tuning"].get("pixel_weight_lambda_max", 2.0))
+pixel_weight_lambda = float(
+    mask_weighting_cfg.get(
+        "pixel_weight_lambda",
+        mask_weighting_cfg.get("lambda", 0.0),
+    )
+)
 autoinit_cfg = dict(cfg["tuning"].get("weight_regularization_autoinit", {}))
 autoinit_enabled = bool(autoinit_cfg.get("enabled", False))
 autoinit_ratio = float(autoinit_cfg.get("ratio", 0.5))
 autoinit_epsilon = float(autoinit_cfg.get("epsilon", 1e-12))
 autoinit_norm_fraction = float(autoinit_cfg.get("norm_fraction", 0.9))
+fixed_reg_lambda = cfg["tuning"].get("reg_lambda")
+
+if pixel_weight_lambda < 0.0:
+    raise ValueError(
+        "training.mask_weighting.pixel_weight_lambda must be >= 0 "
+        "(legacy key training.mask_weighting.lambda is also accepted)"
+    )
 
 if autoinit_ratio < 0.0:
     raise ValueError("tuning.weight_regularization_autoinit.ratio must be >= 0")
@@ -121,24 +132,37 @@ if autoinit_epsilon <= 0.0:
     raise ValueError("tuning.weight_regularization_autoinit.epsilon must be > 0")
 if autoinit_norm_fraction <= 0.0:
     raise ValueError("tuning.weight_regularization_autoinit.norm_fraction must be > 0")
+if not autoinit_enabled:
+    if fixed_reg_lambda is None:
+        raise ValueError(
+            "tuning.reg_lambda must be provided when "
+            "tuning.weight_regularization_autoinit.enabled is false"
+        )
+    fixed_reg_lambda = float(fixed_reg_lambda)
+    if fixed_reg_lambda < 0.0:
+        raise ValueError("tuning.reg_lambda must be >= 0")
 
 print(
-    "Weight-regularization lambda tuning mode:",
+    "Regularization configuration:",
     {
         "autoinit_enabled": autoinit_enabled,
+        "reg_lambda_fixed": fixed_reg_lambda,
         "ratio": autoinit_ratio,
         "epsilon": autoinit_epsilon,
         "norm_fraction": autoinit_norm_fraction,
     },
 )
+print(
+    "Pixel-weight configuration:",
+    {
+        "enabled": use_pixelwise_weights,
+        "pixel_weight_lambda": pixel_weight_lambda,
+    },
+)
 
 
-def _build_trial_loss_weights(pixel_weight_lambda: float | None) -> np.ndarray | None:
-    """Build per-pixel loss weights for the current trial.
-
-    Args:
-        pixel_weight_lambda: Trial-specific lambda value. When ``None``, the
-            configured mask weighting lambda is used.
+def _build_trial_loss_weights() -> np.ndarray | None:
+    """Build fixed per-pixel loss weights for the current trial.
 
     Returns:
         Optional per-example sample-weight tensor.
@@ -146,10 +170,7 @@ def _build_trial_loss_weights(pixel_weight_lambda: float | None) -> np.ndarray |
     if not mask_weighting_cfg.get("enabled", False):
         return None
 
-    trial_mask_cfg = dict(mask_weighting_cfg)
-    if pixel_weight_lambda is not None:
-        trial_mask_cfg["pixel_weight_lambda"] = float(pixel_weight_lambda)
-    return helpers.build_gaussian_loss_weights(gaussian_masks, trial_mask_cfg)
+    return helpers.build_gaussian_loss_weights(gaussian_masks, mask_weighting_cfg)
 
 RELATIVE_MAE_NAME = "relative_mae_y_pred"
 OBJECTIVE_NAME = f"val_{RELATIVE_MAE_NAME}"
@@ -157,10 +178,10 @@ OBJECTIVE_NAME = f"val_{RELATIVE_MAE_NAME}"
 
 def build_trial_datasets(trial):
     """Build train and validation datasets for the current tuning trial."""
+    del trial
     sample_weights = None
     if use_pixelwise_weights:
-        pixel_weight_lambda = trial.hyperparameters.get("pixel_weight_lambda")
-        sample_weights = _build_trial_loss_weights(pixel_weight_lambda)
+        sample_weights = _build_trial_loss_weights()
 
     train_ds = helpers.build_tf_dataset_by_indices(
         delayed,
@@ -210,14 +231,9 @@ def build_model(hp):
     # 2. Physical Trainer with Tunable Regularization
     if autoinit_enabled:
         # Placeholder value that will be overwritten per trial by tuner callback.
-        reg_lambda = float(cfg["tuning"].get("reg_lambda_min", 1e-3))
+        reg_lambda = float(cfg["tuning"].get("reg_lambda", 1e-3))
     else:
-        reg_lambda = hp.Float(
-            "reg_lambda",
-            cfg["tuning"]["reg_lambda_min"],
-            cfg["tuning"]["reg_lambda_max"],
-            sampling="log",
-        )
+        reg_lambda = float(fixed_reg_lambda)
 
     trainer = DasInrTrainer(
         apodization_model=inr_mlp,
@@ -239,13 +255,6 @@ def build_model(hp):
         RelativeMAE(name="relative_mae_y_pred", normalize_by="y_pred"),
         RelativeMAE(name="relative_mae_y_true", normalize_by="y_true"),
     ]
-    if use_pixelwise_weights:
-        hp.Float(
-            "pixel_weight_lambda",
-            min_value=pixel_weight_lambda_min,
-            max_value=pixel_weight_lambda_max,
-            sampling="linear",
-        )
 
     trainer.compile(
         jit_compile=False, # Hyperband may not benefit from JIT due to short epochs; set to True if desired.
@@ -345,31 +354,41 @@ best_trial_id = str(best_trial.trial_id)
 best_arch_index = int(best_hps.get("architecture_index"))
 best_hidden_units = candidate_architectures[best_arch_index]
 best_trial_autoinit = trial_autoinit_log.get(best_trial_id, {})
+resolved_best_reg_lambda = (
+    float(best_trial_autoinit.get("lambda_applied"))
+    if best_trial_autoinit.get("lambda_applied") is not None
+    else fixed_reg_lambda
+)
+best_reg_lambda_source = (
+    "autoinit"
+    if best_trial_autoinit.get("lambda_applied") is not None
+    else "fixed"
+)
 
 print("Best Hyperparameters:")
 for key in best_hps.values:
     print(f"  {key}: {best_hps.get(key)}")
 print(f"  hidden_units: {best_hidden_units}")
+print(f"  pixel_weight_lambda: {pixel_weight_lambda}")
 if best_trial_autoinit:
     print(
         "  reg_lambda_auto:",
         best_trial_autoinit.get("lambda_applied"),
     )
+else:
+    print(f"  reg_lambda: {resolved_best_reg_lambda}")
 
 # Save best config as YAML.
 best_config_path = tuning_dir / "best_config.yml"
 best_config = {
     "hidden_units": [int(v) for v in best_hidden_units],
-    "reg_lambda": (
-        float(best_hps.get("reg_lambda"))
-        if best_hps.get("reg_lambda") is not None
-        else None
-    ),
+    "reg_lambda": resolved_best_reg_lambda,
     "reg_lambda_auto": (
         float(best_trial_autoinit.get("lambda_applied"))
         if best_trial_autoinit.get("lambda_applied") is not None
         else None
     ),
+    "reg_lambda_source": best_reg_lambda_source,
     "reg_tau": float(best_hps.get("reg_tau")),
     "lr": float(best_hps.get("lr")),
     "trial_id": best_trial_id,
@@ -380,9 +399,9 @@ best_config = {
         "norm_fraction": autoinit_norm_fraction,
         "best_trial": best_trial_autoinit,
     },
-    # Include architecture index and pixel-wise weight hyperparameter when available
+    # Store fixed weights even though they are no longer tuner hyperparameters.
     "architecture_index": int(best_hps.get("architecture_index")) if best_hps.get("architecture_index") is not None else None,
-    "pixel_weight_lambda": (float(best_hps.get("pixel_weight_lambda")) if best_hps.get("pixel_weight_lambda") is not None else None),
+    "pixel_weight_lambda": pixel_weight_lambda if use_pixelwise_weights else None,
 }
 
 with open(best_config_path, "w") as f:
@@ -420,10 +439,13 @@ try:
             "architecture_index",
             "score",
             "hidden_units",
+            "reg_lambda",
             "reg_lambda_auto",
+            "reg_lambda_source",
             "autoinit_status",
             "autoinit_hinge_active",
             "autoinit_fallback_used",
+            "pixel_weight_lambda",
         ] + hp_keys
 
         with open(csv_trials_path, "w", newline="", encoding="utf-8") as f:
@@ -439,10 +461,16 @@ try:
                 # hidden_units as JSON string (keeps list structure)
                 row.append(json.dumps(t.get("hidden_units", None)))
                 autoinit_info = trial_autoinit_lookup.get(trial_id, {})
+                trial_reg_lambda = autoinit_info.get("lambda_applied", "")
+                if not autoinit_enabled:
+                    trial_reg_lambda = resolved_best_reg_lambda
+                row.append(trial_reg_lambda)
                 row.append(autoinit_info.get("lambda_applied", ""))
+                row.append("autoinit" if autoinit_info.get("lambda_applied") is not None else "fixed")
                 row.append(autoinit_info.get("status", ""))
                 row.append(autoinit_info.get("hinge_active", ""))
                 row.append(autoinit_info.get("fallback_used", ""))
+                row.append(pixel_weight_lambda if use_pixelwise_weights else "")
                 hp = t.get("hyperparameters") or {}
                 for k in hp_keys:
                     v = hp.get(k, None)

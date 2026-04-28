@@ -21,7 +21,7 @@ training:
   baseline_f_number: 0.5
   mask_weighting:
     enabled: true
-    pixel_weight_lambda: 0.5
+    pixel_weight_lambda: 1.0
 
 target_regeneration:
   enabled: true
@@ -42,19 +42,16 @@ tuning:
   # Candidate architecture policy and size control
   non_increasing: true
   max_candidates: 32
-  reg_lambda_min: 0.1
-  reg_lambda_max: 0.9
+  reg_lambda: 1000
   weight_regularization_autoinit:
     enabled: true
-    ratio: 0.5
+    ratio: 0.2
     epsilon: 1e-12
     norm_fraction: 0.9
   reg_tau_min: 0.5
   reg_tau_max: 0.9
   lr_min: 1e-4
   lr_max: 1e-2
-  pixel_weight_lambda_min: 0.5
-  pixel_weight_lambda_max: 1.5
   # Hyperband-specific parameters (used by tune_inr_das_hyperband.py)
   hyperband_max_epochs: 40
   hyperband_factor: 3
