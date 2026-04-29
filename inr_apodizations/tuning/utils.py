@@ -300,7 +300,7 @@ class _RegularizationAutoInitCallback(
             })
             return
 
-        if not hasattr(model, "compute_weight_regularization") or not hasattr(model, "reconstruct_image"):
+        if not hasattr(model, "reconstruct_image"):
             self._write_log({
                 "trial_id": self.trial_id,
                 "status": "skipped",
@@ -339,7 +339,7 @@ class _RegularizationAutoInitCallback(
             return
 
         try:
-            y_pred_init, weights_grid_init = model.reconstruct_image(x_init, training=False)
+            y_pred_init, _ = model.reconstruct_image(x_init, training=False)
 
             loss_fn = getattr(model, "loss", None)
             if callable(loss_fn):
@@ -363,26 +363,11 @@ class _RegularizationAutoInitCallback(
                     )
 
             lambda_previous = float(getattr(model, "weight_regularization_lambda", 0.0))
-            model.weight_regularization_lambda = 1.0
-            reg_loss_initial_tensor, norm_initial_tensor, reg_active_tensor = (
-                model.compute_weight_regularization(weights_grid_init)
-            )
-            reg_loss_initial = float(reg_loss_initial_tensor.numpy())
-            norm_initial = float(norm_initial_tensor.numpy())
-            reg_active_initial = bool(float(reg_active_tensor.numpy()) > 0.0)
-
             tau = float(getattr(model, "weight_regularization_tau", 0.0))
-            hinge_active = reg_active_initial and (reg_loss_initial > self.epsilon)
-            fallback_used = not hinge_active
-
-            reg_loss_assumed = None
-            if hinge_active:
-                denominator = max(reg_loss_initial, self.epsilon)
-            else:
-                norm_assumed = float(self.norm_fraction * tau)
-                violation_assumed = max(0.0, tau - norm_assumed)
-                reg_loss_assumed = float(violation_assumed * violation_assumed)
-                denominator = max(reg_loss_assumed, self.epsilon)
+            norm_reference = float(self.norm_fraction * tau)
+            violation_reference = max(0.0, tau - norm_reference)
+            reg_loss_reference = float(violation_reference * violation_reference)
+            denominator = max(reg_loss_reference, self.epsilon)
 
             lambda_applied = float(self.ratio * mae_initial / denominator)
             model.weight_regularization_lambda = lambda_applied
@@ -390,17 +375,16 @@ class _RegularizationAutoInitCallback(
             self._write_log({
                 "trial_id": self.trial_id,
                 "status": "applied",
+                "method": "tau_reference",
                 "ratio": self.ratio,
                 "epsilon": self.epsilon,
                 "norm_fraction": self.norm_fraction,
                 "mae_initial": mae_initial,
-                "norm_initial": norm_initial,
                 "tau": tau,
-                "reg_loss_initial": reg_loss_initial,
-                "reg_active_initial": reg_active_initial,
-                "hinge_active": hinge_active,
-                "fallback_used": fallback_used,
-                "reg_loss_assumed": reg_loss_assumed,
+                "norm_reference": norm_reference,
+                "reg_loss_reference": reg_loss_reference,
+                "hinge_active": False,
+                "fallback_used": False,
                 "lambda_previous_config": lambda_previous,
                 "lambda_applied": lambda_applied,
             })

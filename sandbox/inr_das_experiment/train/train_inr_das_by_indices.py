@@ -254,6 +254,7 @@ weight_reg_auto_cfg = dict(weight_reg_cfg.get("auto_init", {}))
 weight_reg_auto_enabled = bool(weight_reg_auto_cfg.get("enabled", False))
 weight_reg_auto_ratio = float(weight_reg_auto_cfg.get("ratio", 0.5))
 weight_reg_auto_eps = float(weight_reg_auto_cfg.get("epsilon", 1e-12))
+weight_reg_auto_norm_fraction = float(weight_reg_auto_cfg.get("norm_fraction", 0.5))
 
 if weight_reg_lambda < 0.0:
     raise ValueError("training.weight_regularization.lambda must be >= 0")
@@ -265,6 +266,8 @@ if weight_reg_auto_ratio < 0.0:
     raise ValueError("training.weight_regularization.auto_init.ratio must be >= 0")
 if weight_reg_auto_eps <= 0.0:
     raise ValueError("training.weight_regularization.auto_init.epsilon must be > 0")
+if weight_reg_auto_norm_fraction <= 0.0:
+    raise ValueError("training.weight_regularization.auto_init.norm_fraction must be > 0")
 
 resolved_weight_reg_type = "hinge_low_norm" if weight_reg_type == "hinge" else weight_reg_type
 
@@ -291,6 +294,7 @@ print(
             "enabled": weight_reg_auto_enabled,
             "ratio": weight_reg_auto_ratio,
             "epsilon": weight_reg_auto_eps,
+            "norm_fraction": weight_reg_auto_norm_fraction,
         },
     }
 )
@@ -324,7 +328,8 @@ sample_target = np.expand_dims(targets[val_idx[0]].astype(np.float32, copy=False
 predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_delayed, training=False)
 
 mae_initial = None
-reg_loss_initial = None
+norm_reference_auto = None
+reg_loss_reference_auto = None
 if weight_reg_enabled and weight_reg_auto_enabled:
     first_batch = next(iter(train_ds.take(1)))
     if not isinstance(first_batch, (tuple, list)) or len(first_batch) != 3:
@@ -339,24 +344,26 @@ if weight_reg_enabled and weight_reg_auto_enabled:
         loss_obj(y_init, y_pred_init, sample_weight=sample_weight_init).numpy()
     )
 
-    # Compute base regularization loss with lambda=1.0 so denominator is independent
-    # from the lambda value that will be initialized.
     lambda_prev = float(trainer.weight_regularization_lambda)
-    trainer.weight_regularization_lambda = 1.0
-    reg_loss_initial_tensor, _, _ = trainer.compute_weight_regularization(weights_grid_init)
-    reg_loss_initial = float(reg_loss_initial_tensor.numpy())
+    norm_reference_auto = float(weight_reg_auto_norm_fraction * weight_reg_tau)
+    violation_reference = max(0.0, weight_reg_tau - norm_reference_auto)
+    reg_loss_reference_auto = float(violation_reference * violation_reference)
 
     weight_reg_lambda = float(
-        weight_reg_auto_ratio * mae_initial / max(reg_loss_initial, weight_reg_auto_eps)
+        weight_reg_auto_ratio * mae_initial / max(reg_loss_reference_auto, weight_reg_auto_eps)
     )
     trainer.weight_regularization_lambda = float(weight_reg_lambda)
 
     print("Auto-initialized weight regularization lambda:")
     print(
         {
+            "method": "tau_reference",
             "ratio": weight_reg_auto_ratio,
+            "norm_fraction": weight_reg_auto_norm_fraction,
+            "tau": weight_reg_tau,
             "mae_initial": mae_initial,
-            "reg_loss_initial": reg_loss_initial,
+            "norm_reference": norm_reference_auto,
+            "reg_loss_reference": reg_loss_reference_auto,
             "lambda_previous_config": lambda_prev,
             "lambda_applied": weight_reg_lambda,
         }
@@ -543,8 +550,10 @@ effective_cfg = {
             "enabled": weight_reg_auto_enabled,
             "ratio": weight_reg_auto_ratio,
             "epsilon": weight_reg_auto_eps,
+            "norm_fraction": weight_reg_auto_norm_fraction,
             "mae_initial": mae_initial,
-            "reg_loss_initial": reg_loss_initial,
+            "norm_reference": norm_reference_auto,
+            "reg_loss_reference": reg_loss_reference_auto,
         },
     },
 }
