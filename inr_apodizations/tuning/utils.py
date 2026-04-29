@@ -416,6 +416,61 @@ class _RegularizationAutoInitCallback(
             })
 
 
+class _TrialEpochCounterCallback(
+    tf.keras.callbacks.Callback if tf is not None else object
+):
+    """Count trained epochs per trial and accumulate across Hyperband promotions."""
+
+    def __init__(
+        self,
+        trial_id: str,
+        log_sink: dict[str, int],
+        persist_log: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__()
+        self.trial_id = str(trial_id)
+        self.log_sink = log_sink
+        self.persist_log = persist_log
+        self._epochs_this_run = 0
+
+    def __deepcopy__(self, memo: dict) -> "_TrialEpochCounterCallback":
+        """Return a copy that shares non-copyable references (log dict and callable)."""
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        _shared = ("log_sink", "persist_log")
+        for key, value in self.__dict__.items():
+            if key in _shared:
+                setattr(result, key, value)
+            else:
+                setattr(result, key, copy.deepcopy(value, memo))
+        return result
+
+    def on_train_begin(self, logs=None) -> None:  # noqa: D401
+        """Reset per-run epoch counter at the beginning of each fit invocation."""
+        del logs
+        self._epochs_this_run = 0
+
+    def on_epoch_end(self, epoch, logs=None) -> None:  # noqa: D401
+        """Increase epoch count after each completed training epoch."""
+        del epoch, logs
+        self._epochs_this_run += 1
+
+    def on_train_end(self, logs=None) -> None:  # noqa: D401
+        """Accumulate run epochs into the trial-level total and optionally persist."""
+        del logs
+        self.log_sink[self.trial_id] = int(self.log_sink.get(self.trial_id, 0)) + int(
+            self._epochs_this_run
+        )
+        if self.persist_log is not None:
+            try:
+                self.persist_log()
+            except Exception:
+                pass
+
+
 class PlottingHyperband(kt.Hyperband if kt is not None else object):
     """Hyperband tuner that refreshes a live score plot after each trial."""
 
@@ -429,6 +484,7 @@ class PlottingHyperband(kt.Hyperband if kt is not None else object):
         weight_regularization_autoinit_epsilon: float = 1e-12,
         weight_regularization_autoinit_norm_fraction: float = 0.9,
         autoinit_log_path: str | Path | None = None,
+        trial_epoch_log_path: str | Path | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -449,6 +505,8 @@ class PlottingHyperband(kt.Hyperband if kt is not None else object):
 
         self.autoinit_log_path = Path(autoinit_log_path) if autoinit_log_path else None
         self.trial_autoinit_log: dict[str, dict[str, Any]] = {}
+        self.trial_epoch_log_path = Path(trial_epoch_log_path) if trial_epoch_log_path else None
+        self.trial_epoch_log: dict[str, int] = {}
 
     def _persist_autoinit_log(self) -> None:
         """Persist auto-init diagnostics to disk when path is configured."""
@@ -458,6 +516,14 @@ class PlottingHyperband(kt.Hyperband if kt is not None else object):
         with open(self.autoinit_log_path, "w", encoding="utf-8") as file:
             json.dump(self.trial_autoinit_log, file, indent=2)
 
+    def _persist_epoch_log(self) -> None:
+        """Persist epoch-count diagnostics to disk when path is configured."""
+        if self.trial_epoch_log_path is None:
+            return
+        self.trial_epoch_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.trial_epoch_log_path, "w", encoding="utf-8") as file:
+            json.dump(self.trial_epoch_log, file, indent=2)
+
     def on_trial_end(self, trial):
         """Handle the end of a trial and refresh the live score plot."""
         super().on_trial_end(trial)
@@ -466,9 +532,20 @@ class PlottingHyperband(kt.Hyperband if kt is not None else object):
 
     def run_trial(self, trial, *args, **kwargs):
         """Run a trial with trial-specific datasets when a builder is provided."""
+        kwargs = dict(kwargs)
+        if tf is not None:
+            callbacks = list(kwargs.get("callbacks", []))
+            callbacks.append(
+                _TrialEpochCounterCallback(
+                    trial_id=trial.trial_id,
+                    log_sink=self.trial_epoch_log,
+                    persist_log=self._persist_epoch_log,
+                )
+            )
+            kwargs["callbacks"] = callbacks
+
         if self.trial_data_builder is not None:
             train_ds, val_ds = self.trial_data_builder(trial)
-            kwargs = dict(kwargs)
             kwargs["x"] = train_ds
             kwargs["validation_data"] = val_ds
             if self.weight_regularization_autoinit_enabled and tf is not None:

@@ -104,27 +104,271 @@ if val_subset_size > 0 and val_subset_size < len(val_idx):
     val_idx.sort()
     print(f"Validation set reduced to {len(val_idx)} examples (subset_size={val_subset_size}).")
 
+
+def _is_number(value) -> bool:
+    """Return True for numeric scalar values excluding booleans."""
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool)
+
+
+def _coerce_float(name: str, value) -> float:
+    """Validate and convert numeric scalar value to float."""
+    if _is_number(value):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError(f"{name} must be a numeric scalar. Received: {value!r}")
+        try:
+            return float(stripped)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a numeric scalar. Received: {value!r}") from exc
+    raise ValueError(f"{name} must be a numeric scalar. Received: {value!r}")
+
+
+def _validate_sampling(name: str, sampling: str | None, default: str = "linear") -> str:
+    """Normalize and validate sampling mode for Keras Tuner Float parameters."""
+    sampling_value = default if sampling is None else str(sampling).strip().lower()
+    if sampling_value not in ("linear", "log"):
+        raise ValueError(f"{name}.sampling must be 'linear' or 'log'. Received: {sampling!r}")
+    return sampling_value
+
+
+def _validate_numeric_bounds(
+    name: str,
+    value: float,
+    *,
+    min_allowed: float | None = None,
+    strictly_positive: bool = False,
+) -> None:
+    """Validate scalar numeric constraints."""
+    if min_allowed is not None and value < min_allowed:
+        raise ValueError(f"{name} must be >= {min_allowed}. Received: {value}.")
+    if strictly_positive and value <= 0.0:
+        raise ValueError(f"{name} must be > 0. Received: {value}.")
+
+
+def _resolve_numeric_hparam(
+    *,
+    name: str,
+    cfg_value,
+    legacy_fixed=None,
+    legacy_min=None,
+    legacy_max=None,
+    default_sampling: str = "linear",
+    min_allowed: float | None = None,
+    strictly_positive: bool = False,
+) -> dict:
+    """Resolve fixed/search numeric hyperparameter with legacy compatibility.
+
+    Accepted formats:
+    - Scalar: fixed value
+    - Dict with mode=fixed/value or mode=search/min/max
+    - Legacy fallback via `legacy_fixed` or `legacy_min`/`legacy_max`
+    """
+    if isinstance(cfg_value, dict):
+        mode = str(cfg_value.get("mode", "")).strip().lower()
+        if not mode:
+            if "value" in cfg_value:
+                mode = "fixed"
+            elif "min" in cfg_value and "max" in cfg_value:
+                mode = "search"
+            else:
+                raise ValueError(
+                    f"tuning.{name} dict requires mode='fixed'/'search' or compatible keys."
+                )
+
+        if mode == "fixed":
+            fixed_value = _coerce_float(f"tuning.{name}.value", cfg_value.get("value"))
+            _validate_numeric_bounds(
+                f"tuning.{name}.value",
+                fixed_value,
+                min_allowed=min_allowed,
+                strictly_positive=strictly_positive,
+            )
+            return {
+                "mode": "fixed",
+                "value": fixed_value,
+                "sampling": _validate_sampling(f"tuning.{name}", cfg_value.get("sampling"), default_sampling),
+                "source": "config",
+            }
+
+        if mode == "search":
+            min_value = _coerce_float(f"tuning.{name}.min", cfg_value.get("min"))
+            max_value = _coerce_float(f"tuning.{name}.max", cfg_value.get("max"))
+            if min_value > max_value:
+                raise ValueError(
+                    f"tuning.{name}.min must be <= tuning.{name}.max. "
+                    f"Received: {min_value} > {max_value}."
+                )
+            _validate_numeric_bounds(
+                f"tuning.{name}.min",
+                min_value,
+                min_allowed=min_allowed,
+                strictly_positive=strictly_positive,
+            )
+            _validate_numeric_bounds(
+                f"tuning.{name}.max",
+                max_value,
+                min_allowed=min_allowed,
+                strictly_positive=strictly_positive,
+            )
+            sampling = _validate_sampling(
+                f"tuning.{name}", cfg_value.get("sampling"), default_sampling
+            )
+            if sampling == "log" and min_value <= 0.0:
+                raise ValueError(f"tuning.{name}.min must be > 0 when sampling='log'.")
+            return {
+                "mode": "search",
+                "min": min_value,
+                "max": max_value,
+                "sampling": sampling,
+                "source": "config",
+            }
+
+        raise ValueError(f"tuning.{name}.mode must be 'fixed' or 'search'. Received: {mode!r}")
+
+    if _is_number(cfg_value):
+        fixed_value = float(cfg_value)
+        _validate_numeric_bounds(
+            f"tuning.{name}",
+            fixed_value,
+            min_allowed=min_allowed,
+            strictly_positive=strictly_positive,
+        )
+        return {
+            "mode": "fixed",
+            "value": fixed_value,
+            "sampling": default_sampling,
+            "source": "legacy_scalar",
+        }
+
+    if legacy_min is not None and legacy_max is not None:
+        min_value = _coerce_float(f"legacy.{name}_min", legacy_min)
+        max_value = _coerce_float(f"legacy.{name}_max", legacy_max)
+        if min_value > max_value:
+            raise ValueError(
+                f"legacy {name}_min must be <= {name}_max. Received: {min_value} > {max_value}."
+            )
+        _validate_numeric_bounds(
+            f"legacy.{name}_min",
+            min_value,
+            min_allowed=min_allowed,
+            strictly_positive=strictly_positive,
+        )
+        _validate_numeric_bounds(
+            f"legacy.{name}_max",
+            max_value,
+            min_allowed=min_allowed,
+            strictly_positive=strictly_positive,
+        )
+        if default_sampling == "log" and min_value <= 0.0:
+            raise ValueError(f"legacy {name}_min must be > 0 when sampling='log'.")
+        return {
+            "mode": "search",
+            "min": min_value,
+            "max": max_value,
+            "sampling": default_sampling,
+            "source": "legacy_range",
+        }
+
+    if legacy_fixed is not None:
+        fixed_value = _coerce_float(f"legacy.{name}", legacy_fixed)
+        _validate_numeric_bounds(
+            f"legacy.{name}",
+            fixed_value,
+            min_allowed=min_allowed,
+            strictly_positive=strictly_positive,
+        )
+        return {
+            "mode": "fixed",
+            "value": fixed_value,
+            "sampling": default_sampling,
+            "source": "legacy_fixed",
+        }
+
+    raise ValueError(
+        f"tuning.{name} is not configured. Provide fixed/search config or legacy fallback keys."
+    )
+
+
+def _resolve_trial_param_value_from_hp_dict(hp_values: dict, resolved_cfg: dict, hp_key: str) -> float:
+    """Resolve trial value from hp dict for searchable params, else use fixed value."""
+    if resolved_cfg["mode"] == "search":
+        value = hp_values.get(hp_key)
+        if value is None:
+            raise ValueError(f"Missing hyperparameter '{hp_key}' in trial values.")
+        return float(value)
+    return float(resolved_cfg["value"])
+
+
+def _extract_trial_total_epochs_fallback(
+    tuning_output_dir: Path,
+    trial_id: str,
+    objective_name: str,
+) -> int | None:
+    """Fallback epoch extraction from Keras Tuner trial JSON observations."""
+    trial_json = tuning_output_dir / "kt_hyperband" / f"trial_{trial_id}" / "trial.json"
+    if not trial_json.exists():
+        return None
+    try:
+        with open(trial_json, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+        metrics = payload.get("metrics", {})
+        objective_data = metrics.get(objective_name, {})
+        objective_observations = objective_data.get("observations", [])
+        if isinstance(objective_observations, list) and objective_observations:
+            return int(len(objective_observations))
+
+        max_observations = 0
+        for metric_payload in metrics.values():
+            observations = metric_payload.get("observations", [])
+            if isinstance(observations, list):
+                max_observations = max(max_observations, len(observations))
+        return int(max_observations) if max_observations > 0 else None
+    except Exception:
+        return None
+
 # --- Optional: Mask weighting (pixelwise sample weights)
 mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
 use_pixelwise_weights = bool(mask_weighting_cfg.get("enabled", False))
-pixel_weight_lambda = float(
-    mask_weighting_cfg.get(
-        "pixel_weight_lambda",
-        mask_weighting_cfg.get("lambda", 0.0),
-    )
-)
 autoinit_cfg = dict(cfg["tuning"].get("weight_regularization_autoinit", {}))
 autoinit_enabled = bool(autoinit_cfg.get("enabled", False))
 autoinit_ratio = float(autoinit_cfg.get("ratio", 0.5))
 autoinit_epsilon = float(autoinit_cfg.get("epsilon", 1e-12))
 autoinit_norm_fraction = float(autoinit_cfg.get("norm_fraction", 0.9))
-fixed_reg_lambda = cfg["tuning"].get("reg_lambda")
 
-if pixel_weight_lambda < 0.0:
-    raise ValueError(
-        "training.mask_weighting.pixel_weight_lambda must be >= 0 "
-        "(legacy key training.mask_weighting.lambda is also accepted)"
-    )
+learning_rate_cfg = _resolve_numeric_hparam(
+    name="learning_rate",
+    cfg_value=cfg["tuning"].get("learning_rate"),
+    legacy_min=cfg["tuning"].get("lr_min"),
+    legacy_max=cfg["tuning"].get("lr_max"),
+    default_sampling="log",
+    strictly_positive=True,
+)
+reg_tau_cfg = _resolve_numeric_hparam(
+    name="reg_tau",
+    cfg_value=cfg["tuning"].get("reg_tau"),
+    legacy_min=cfg["tuning"].get("reg_tau_min"),
+    legacy_max=cfg["tuning"].get("reg_tau_max"),
+    default_sampling="linear",
+    min_allowed=0.0,
+)
+reg_lambda_cfg = _resolve_numeric_hparam(
+    name="reg_lambda",
+    cfg_value=cfg["tuning"].get("reg_lambda"),
+    default_sampling="log",
+    min_allowed=0.0,
+)
+pixel_weight_lambda_cfg = _resolve_numeric_hparam(
+    name="pixel_weight_lambda",
+    cfg_value=cfg["tuning"].get("pixel_weight_lambda"),
+    legacy_fixed=mask_weighting_cfg.get(
+        "pixel_weight_lambda",
+        mask_weighting_cfg.get("lambda", 0.0),
+    ),
+    default_sampling="linear",
+    min_allowed=0.0,
+)
 
 if autoinit_ratio < 0.0:
     raise ValueError("tuning.weight_regularization_autoinit.ratio must be >= 0")
@@ -132,21 +376,15 @@ if autoinit_epsilon <= 0.0:
     raise ValueError("tuning.weight_regularization_autoinit.epsilon must be > 0")
 if autoinit_norm_fraction <= 0.0:
     raise ValueError("tuning.weight_regularization_autoinit.norm_fraction must be > 0")
-if not autoinit_enabled:
-    if fixed_reg_lambda is None:
-        raise ValueError(
-            "tuning.reg_lambda must be provided when "
-            "tuning.weight_regularization_autoinit.enabled is false"
-        )
-    fixed_reg_lambda = float(fixed_reg_lambda)
-    if fixed_reg_lambda < 0.0:
-        raise ValueError("tuning.reg_lambda must be >= 0")
 
 print(
     "Regularization configuration:",
     {
         "autoinit_enabled": autoinit_enabled,
-        "reg_lambda_fixed": fixed_reg_lambda,
+        "reg_lambda_mode": reg_lambda_cfg["mode"],
+        "reg_lambda": reg_lambda_cfg,
+        "reg_tau": reg_tau_cfg,
+        "learning_rate": learning_rate_cfg,
         "ratio": autoinit_ratio,
         "epsilon": autoinit_epsilon,
         "norm_fraction": autoinit_norm_fraction,
@@ -156,13 +394,13 @@ print(
     "Pixel-weight configuration:",
     {
         "enabled": use_pixelwise_weights,
-        "pixel_weight_lambda": pixel_weight_lambda,
+        "pixel_weight_lambda": pixel_weight_lambda_cfg,
     },
 )
 
 
-def _build_trial_loss_weights() -> np.ndarray | None:
-    """Build fixed per-pixel loss weights for the current trial.
+def _build_trial_loss_weights(pixel_weight_lambda_value: float) -> np.ndarray | None:
+    """Build per-pixel loss weights for the current trial.
 
     Returns:
         Optional per-example sample-weight tensor.
@@ -170,7 +408,10 @@ def _build_trial_loss_weights() -> np.ndarray | None:
     if not mask_weighting_cfg.get("enabled", False):
         return None
 
-    return helpers.build_gaussian_loss_weights(gaussian_masks, mask_weighting_cfg)
+    local_mask_weighting_cfg = dict(mask_weighting_cfg)
+    local_mask_weighting_cfg["pixel_weight_lambda"] = float(pixel_weight_lambda_value)
+
+    return helpers.build_gaussian_loss_weights(gaussian_masks, local_mask_weighting_cfg)
 
 RELATIVE_MAE_NAME = "relative_mae_y_pred"
 OBJECTIVE_NAME = f"val_{RELATIVE_MAE_NAME}"
@@ -178,10 +419,15 @@ OBJECTIVE_NAME = f"val_{RELATIVE_MAE_NAME}"
 
 def build_trial_datasets(trial):
     """Build train and validation datasets for the current tuning trial."""
-    del trial
     sample_weights = None
     if use_pixelwise_weights:
-        sample_weights = _build_trial_loss_weights()
+        hp_values = dict(getattr(trial.hyperparameters, "values", {}))
+        trial_pixel_weight_lambda = _resolve_trial_param_value_from_hp_dict(
+            hp_values,
+            pixel_weight_lambda_cfg,
+            hp_key="pixel_weight_lambda",
+        )
+        sample_weights = _build_trial_loss_weights(trial_pixel_weight_lambda)
 
     train_ds = helpers.build_tf_dataset_by_indices(
         delayed,
@@ -228,12 +474,39 @@ def build_model(hp):
         output_activation=cfg["model"]["output_activation"]
     )
     
+    # Register searchable pixel weighting as tuner HP, even though the value is
+    # consumed in trial dataset building.
+    if pixel_weight_lambda_cfg["mode"] == "search":
+        hp.Float(
+            "pixel_weight_lambda",
+            pixel_weight_lambda_cfg["min"],
+            pixel_weight_lambda_cfg["max"],
+            sampling=pixel_weight_lambda_cfg["sampling"],
+        )
+
     # 2. Physical Trainer with Tunable Regularization
-    if autoinit_enabled:
-        # Placeholder value that will be overwritten per trial by tuner callback.
-        reg_lambda = float(cfg["tuning"].get("reg_lambda", 1e-3))
+    if reg_lambda_cfg["mode"] == "search":
+        reg_lambda = hp.Float(
+            "reg_lambda",
+            reg_lambda_cfg["min"],
+            reg_lambda_cfg["max"],
+            sampling=reg_lambda_cfg["sampling"],
+        )
     else:
-        reg_lambda = float(fixed_reg_lambda)
+        reg_lambda = float(reg_lambda_cfg["value"])
+
+    if reg_tau_cfg["mode"] == "search":
+        reg_tau = hp.Float(
+            "reg_tau",
+            reg_tau_cfg["min"],
+            reg_tau_cfg["max"],
+            sampling=reg_tau_cfg["sampling"],
+        )
+    else:
+        reg_tau = float(reg_tau_cfg["value"])
+
+    # If auto-init is enabled, `reg_lambda` is treated as trial initial value and
+    # then overwritten before the first optimizer step.
 
     trainer = DasInrTrainer(
         apodization_model=inr_mlp,
@@ -241,13 +514,20 @@ def build_model(hp):
         feature_chunk_size=cfg["model"]["feature_chunk_size"],
         weight_regularization_enabled=True,
         weight_regularization_lambda=reg_lambda,
-        weight_regularization_tau=hp.Float("reg_tau", 
-                                           cfg["tuning"]["reg_tau_min"], 
-                                           cfg["tuning"]["reg_tau_max"]) 
+        weight_regularization_tau=reg_tau,
     )
     
     # 3. Compilation
-    lr = hp.Float("lr", cfg["tuning"]["lr_min"], cfg["tuning"]["lr_max"], sampling="log")
+    if learning_rate_cfg["mode"] == "search":
+        lr = hp.Float(
+            "lr",
+            learning_rate_cfg["min"],
+            learning_rate_cfg["max"],
+            sampling=learning_rate_cfg["sampling"],
+        )
+    else:
+        lr = float(learning_rate_cfg["value"])
+
     loss_obj = PixelWeightedMAELoss(name="pixel_weighted_mae_loss")
     metrics = []
     weighted_metrics = [
@@ -305,6 +585,7 @@ with strategy.scope():
         weight_regularization_autoinit_epsilon=autoinit_epsilon,
         weight_regularization_autoinit_norm_fraction=autoinit_norm_fraction,
         autoinit_log_path=tuning_dir / "trial_autoinit_log.json",
+        trial_epoch_log_path=tuning_dir / "trial_epoch_log.json",
     )
 
 # Prepare datasets for fit
@@ -354,22 +635,34 @@ best_trial_id = str(best_trial.trial_id)
 best_arch_index = int(best_hps.get("architecture_index"))
 best_hidden_units = candidate_architectures[best_arch_index]
 best_trial_autoinit = trial_autoinit_log.get(best_trial_id, {})
+best_hp_values = dict(best_hps.values)
+best_lr = _resolve_trial_param_value_from_hp_dict(best_hp_values, learning_rate_cfg, hp_key="lr")
+best_reg_tau = _resolve_trial_param_value_from_hp_dict(best_hp_values, reg_tau_cfg, hp_key="reg_tau")
+best_reg_lambda_candidate = _resolve_trial_param_value_from_hp_dict(
+    best_hp_values,
+    reg_lambda_cfg,
+    hp_key="reg_lambda",
+)
+best_pixel_weight_lambda = _resolve_trial_param_value_from_hp_dict(
+    best_hp_values,
+    pixel_weight_lambda_cfg,
+    hp_key="pixel_weight_lambda",
+)
+
 resolved_best_reg_lambda = (
     float(best_trial_autoinit.get("lambda_applied"))
     if best_trial_autoinit.get("lambda_applied") is not None
-    else fixed_reg_lambda
+    else best_reg_lambda_candidate
 )
-best_reg_lambda_source = (
-    "autoinit"
-    if best_trial_autoinit.get("lambda_applied") is not None
-    else "fixed"
-)
+best_reg_lambda_source = "autoinit" if best_trial_autoinit.get("lambda_applied") is not None else reg_lambda_cfg["mode"]
 
 print("Best Hyperparameters:")
 for key in best_hps.values:
     print(f"  {key}: {best_hps.get(key)}")
 print(f"  hidden_units: {best_hidden_units}")
-print(f"  pixel_weight_lambda: {pixel_weight_lambda}")
+print(f"  pixel_weight_lambda: {best_pixel_weight_lambda}")
+print(f"  lr: {best_lr}")
+print(f"  reg_tau: {best_reg_tau}")
 if best_trial_autoinit:
     print(
         "  reg_lambda_auto:",
@@ -389,8 +682,8 @@ best_config = {
         else None
     ),
     "reg_lambda_source": best_reg_lambda_source,
-    "reg_tau": float(best_hps.get("reg_tau")),
-    "lr": float(best_hps.get("lr")),
+    "reg_tau": best_reg_tau,
+    "lr": best_lr,
     "trial_id": best_trial_id,
     "weight_regularization_autoinit": {
         "enabled": autoinit_enabled,
@@ -401,7 +694,11 @@ best_config = {
     },
     # Store fixed weights even though they are no longer tuner hyperparameters.
     "architecture_index": int(best_hps.get("architecture_index")) if best_hps.get("architecture_index") is not None else None,
-    "pixel_weight_lambda": pixel_weight_lambda if use_pixelwise_weights else None,
+    "pixel_weight_lambda": best_pixel_weight_lambda if use_pixelwise_weights else None,
+    "learning_rate_mode": learning_rate_cfg["mode"],
+    "reg_tau_mode": reg_tau_cfg["mode"],
+    "reg_lambda_mode": reg_lambda_cfg["mode"],
+    "pixel_weight_lambda_mode": pixel_weight_lambda_cfg["mode"],
 }
 
 with open(best_config_path, "w") as f:
@@ -431,13 +728,18 @@ try:
             hp = t.get("hyperparameters") or {}
             if isinstance(hp, dict):
                 hp_keys.update(hp.keys())
+        hp_keys.discard("architecture_index")
         hp_keys = sorted(hp_keys)
+
+        trial_epoch_lookup = dict(getattr(tuner, "trial_epoch_log", {}))
 
         # CSV header: basic trial fields + discovered hyperparameters
         header = [
             "trial_id",
             "architecture_index",
             "score",
+            "epochs_trained_total",
+            "epochs_source",
             "hidden_units",
             "reg_lambda",
             "reg_lambda_auto",
@@ -458,20 +760,50 @@ try:
                 ai = t.get("architecture_index")
                 row.append("" if ai is None else ai)
                 row.append(t.get("score", ""))
+
+                trial_epochs_callback = trial_epoch_lookup.get(trial_id)
+                trial_epochs_fallback = _extract_trial_total_epochs_fallback(
+                    tuning_output_dir=tuning_dir,
+                    trial_id=trial_id,
+                    objective_name=OBJECTIVE_NAME,
+                )
+                if trial_epochs_callback is not None:
+                    row.append(int(trial_epochs_callback))
+                    row.append("callback")
+                elif trial_epochs_fallback is not None:
+                    row.append(int(trial_epochs_fallback))
+                    row.append("trial_json")
+                else:
+                    row.append("")
+                    row.append("missing")
+
                 # hidden_units as JSON string (keeps list structure)
                 row.append(json.dumps(t.get("hidden_units", None)))
                 autoinit_info = trial_autoinit_lookup.get(trial_id, {})
-                trial_reg_lambda = autoinit_info.get("lambda_applied", "")
-                if not autoinit_enabled:
-                    trial_reg_lambda = resolved_best_reg_lambda
+                hp = t.get("hyperparameters") or {}
+
+                trial_reg_lambda_candidate = _resolve_trial_param_value_from_hp_dict(
+                    hp,
+                    reg_lambda_cfg,
+                    hp_key="reg_lambda",
+                )
+                trial_reg_lambda = autoinit_info.get("lambda_applied", trial_reg_lambda_candidate)
                 row.append(trial_reg_lambda)
                 row.append(autoinit_info.get("lambda_applied", ""))
-                row.append("autoinit" if autoinit_info.get("lambda_applied") is not None else "fixed")
+                row.append(
+                    "autoinit"
+                    if autoinit_info.get("lambda_applied") is not None
+                    else reg_lambda_cfg["mode"]
+                )
                 row.append(autoinit_info.get("status", ""))
                 row.append(autoinit_info.get("hinge_active", ""))
                 row.append(autoinit_info.get("fallback_used", ""))
-                row.append(pixel_weight_lambda if use_pixelwise_weights else "")
-                hp = t.get("hyperparameters") or {}
+                trial_pixel_weight_lambda = _resolve_trial_param_value_from_hp_dict(
+                    hp,
+                    pixel_weight_lambda_cfg,
+                    hp_key="pixel_weight_lambda",
+                )
+                row.append(trial_pixel_weight_lambda if use_pixelwise_weights else "")
                 for k in hp_keys:
                     v = hp.get(k, None)
                     try:
