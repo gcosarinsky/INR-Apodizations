@@ -21,7 +21,7 @@ training:
   baseline_f_number: 0.5
   mask_weighting:
     enabled: true
-    pixel_weight_lambda: 0.5
+    pixel_weight_lambda: 1.0
 
 target_regeneration:
   enabled: true
@@ -33,8 +33,8 @@ tuning:
   max_trials: 1
   executions_per_trial: 1
   # Candidate architecture generation ranges
-  n_layers_min: 2
-  n_layers_max: 5
+  n_layers_min: 1
+  n_layers_max: 3
   n_layers_step: 1
   units_min: 4
   units_max: 32
@@ -42,18 +42,54 @@ tuning:
   # Candidate architecture policy and size control
   non_increasing: true
   max_candidates: 32
-  reg_lambda_min: 0.1
-  reg_lambda_max: 0.9
-  reg_tau_min: 0.5
-  reg_tau_max: 0.9
-  lr_min: 1e-4
-  lr_max: 1e-2
-  pixel_weight_lambda_min: 0.1
-  pixel_weight_lambda_max: 2.0
+  # Hyperparameters can be fixed or searched using `mode`.
+  # Examples:
+  # learning_rate:
+  #   mode: search
+  #   min: 1e-4
+  #   max: 1e-2
+  #   sampling: log
+  # reg_tau:
+  #   mode: search
+  #   min: 0.5
+  #   max: 0.9
+  # reg_lambda:
+  #   mode: search
+  #   min: 1e3
+  #   max: 1e6
+  #   sampling: log
+  # pixel_weight_lambda:
+  #   mode: search
+  #   min: 0.0
+  #   max: 2.0
+
+  learning_rate:
+    mode: fixed
+    value: 0.001
+  reg_tau:
+    mode: fixed
+    value: 0.75
+  reg_lambda: # used in case autoinit is disabled; otherwise, it's ignored and auto-initialized based on the first trial's loss.
+    mode: fixed
+    value: 1000
+  pixel_weight_lambda:
+    mode: fixed
+    value: 1.0
+
+  # Legacy keys remain supported for backward compatibility.
+  # reg_tau_min: 0.5
+  # reg_tau_max: 0.9
+  # lr_min: 1e-3
+  # lr_max: 1e-2
+  weight_regularization_autoinit:
+    enabled: true
+    ratio: 0.2
+    epsilon: 1e-12
+    norm_fraction: 0.5
   # Hyperband-specific parameters (used by tune_inr_das_hyperband.py)
-  hyperband_max_epochs: 27
+  hyperband_max_epochs: 40
   hyperband_factor: 3
-  hyperband_iterations: 3
+  hyperband_iterations: 1
 
 plots:
   cmap: "gray"

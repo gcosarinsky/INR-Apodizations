@@ -6,6 +6,7 @@ shared helpers used by the Keras Tuner workflow.
 from __future__ import annotations
 
 import itertools
+import json
 import random
 from pathlib import Path
 from typing import Any, Callable, List, Sequence
@@ -27,6 +28,11 @@ try:
     import keras_tuner as kt
 except Exception:  # pragma: no cover - only needed when tuning is unavailable.
     kt = None
+
+try:
+    import tensorflow as tf
+except Exception:  # pragma: no cover - optional import when TF is unavailable.
+    tf = None
 
 
 def _build_discrete_values(min_value: int, max_value: int, step: int, name: str) -> List[int]:
@@ -226,6 +232,229 @@ class LiveTrialScorePlot:
             pass
 
 
+class _RegularizationAutoInitCallback(
+    tf.keras.callbacks.Callback if tf is not None else object
+):
+    """Initialize regularization lambda at trial start using the first train batch."""
+
+    def __init__(
+        self,
+        train_ds: Any,
+        trial_id: str,
+        ratio: float,
+        epsilon: float,
+        norm_fraction: float,
+        log_sink: dict[str, dict[str, Any]],
+        persist_log: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__()
+        self.train_ds = train_ds
+        self.trial_id = str(trial_id)
+        self.ratio = float(ratio)
+        self.epsilon = float(epsilon)
+        self.norm_fraction = float(norm_fraction)
+        self.log_sink = log_sink
+        self.persist_log = persist_log
+
+    def __deepcopy__(self, memo: dict) -> "_RegularizationAutoInitCallback":
+        """Return a copy that shares non-copyable references (dataset, log dict, callable)."""
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        # Attributes that must be shared across copies or are not deep-copyable.
+        _shared = ("train_ds", "log_sink", "persist_log")
+        for key, value in self.__dict__.items():
+            if key in _shared:
+                setattr(result, key, value)
+            else:
+                setattr(result, key, copy.deepcopy(value, memo))
+        return result
+
+    def _write_log(self, payload: dict[str, Any]) -> None:
+        self.log_sink[self.trial_id] = payload
+        if self.persist_log is not None:
+            try:
+                self.persist_log()
+            except Exception:
+                pass
+
+    def on_train_begin(self, logs=None) -> None:  # noqa: D401
+        """Compute and apply trial-specific lambda before the first optimizer step."""
+        del logs
+        model = self.model
+        if model is None:
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "skipped",
+                "reason": "model_unavailable",
+            })
+            return
+
+        if not bool(getattr(model, "weight_regularization_enabled", False)):
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "skipped",
+                "reason": "weight_regularization_disabled",
+            })
+            return
+
+        if not hasattr(model, "reconstruct_image"):
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "skipped",
+                "reason": "model_missing_regularization_api",
+            })
+            return
+
+        try:
+            first_batch = next(iter(self.train_ds.take(1)))
+        except StopIteration:
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "skipped",
+                "reason": "empty_train_dataset",
+            })
+            return
+        except Exception as exc:
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "skipped",
+                "reason": f"failed_to_read_first_batch: {exc}",
+            })
+            return
+
+        if isinstance(first_batch, (tuple, list)) and len(first_batch) == 3:
+            x_init, y_init, sample_weight_init = first_batch
+        elif isinstance(first_batch, (tuple, list)) and len(first_batch) == 2:
+            x_init, y_init = first_batch
+            sample_weight_init = None
+        else:
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "skipped",
+                "reason": "unsupported_batch_structure",
+            })
+            return
+
+        try:
+            y_pred_init, _ = model.reconstruct_image(x_init, training=False)
+
+            loss_fn = getattr(model, "loss", None)
+            if callable(loss_fn):
+                if sample_weight_init is None:
+                    mae_initial = float(loss_fn(y_init, y_pred_init).numpy())
+                else:
+                    mae_initial = float(
+                        loss_fn(y_init, y_pred_init, sample_weight=sample_weight_init).numpy()
+                    )
+            else:
+                if sample_weight_init is None:
+                    mae_initial = float(model.compiled_loss(y_init, y_pred_init).numpy())
+                else:
+                    mae_initial = float(
+                        model.compiled_loss(
+                            y_init,
+                            y_pred_init,
+                            sample_weight=sample_weight_init,
+                            regularization_losses=None,
+                        ).numpy()
+                    )
+
+            lambda_previous = float(getattr(model, "weight_regularization_lambda", 0.0))
+            tau = float(getattr(model, "weight_regularization_tau", 0.0))
+            norm_reference = float(self.norm_fraction * tau)
+            violation_reference = max(0.0, tau - norm_reference)
+            reg_loss_reference = float(violation_reference * violation_reference)
+            denominator = max(reg_loss_reference, self.epsilon)
+
+            lambda_applied = float(self.ratio * mae_initial / denominator)
+            model.weight_regularization_lambda = lambda_applied
+
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "applied",
+                "method": "tau_reference",
+                "ratio": self.ratio,
+                "epsilon": self.epsilon,
+                "norm_fraction": self.norm_fraction,
+                "mae_initial": mae_initial,
+                "tau": tau,
+                "norm_reference": norm_reference,
+                "reg_loss_reference": reg_loss_reference,
+                "hinge_active": False,
+                "fallback_used": False,
+                "lambda_previous_config": lambda_previous,
+                "lambda_applied": lambda_applied,
+            })
+        except Exception as exc:
+            try:
+                model.weight_regularization_lambda = lambda_previous
+            except Exception:
+                pass
+            self._write_log({
+                "trial_id": self.trial_id,
+                "status": "failed",
+                "reason": f"autoinit_exception: {exc}",
+            })
+
+
+class _TrialEpochCounterCallback(
+    tf.keras.callbacks.Callback if tf is not None else object
+):
+    """Count trained epochs per trial and accumulate across Hyperband promotions."""
+
+    def __init__(
+        self,
+        trial_id: str,
+        log_sink: dict[str, int],
+        persist_log: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__()
+        self.trial_id = str(trial_id)
+        self.log_sink = log_sink
+        self.persist_log = persist_log
+        self._epochs_this_run = 0
+
+    def __deepcopy__(self, memo: dict) -> "_TrialEpochCounterCallback":
+        """Return a copy that shares non-copyable references (log dict and callable)."""
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        _shared = ("log_sink", "persist_log")
+        for key, value in self.__dict__.items():
+            if key in _shared:
+                setattr(result, key, value)
+            else:
+                setattr(result, key, copy.deepcopy(value, memo))
+        return result
+
+    def on_train_begin(self, logs=None) -> None:  # noqa: D401
+        """Reset per-run epoch counter at the beginning of each fit invocation."""
+        del logs
+        self._epochs_this_run = 0
+
+    def on_epoch_end(self, epoch, logs=None) -> None:  # noqa: D401
+        """Increase epoch count after each completed training epoch."""
+        del epoch, logs
+        self._epochs_this_run += 1
+
+    def on_train_end(self, logs=None) -> None:  # noqa: D401
+        """Accumulate run epochs into the trial-level total and optionally persist."""
+        del logs
+        self.log_sink[self.trial_id] = int(self.log_sink.get(self.trial_id, 0)) + int(
+            self._epochs_this_run
+        )
+        if self.persist_log is not None:
+            try:
+                self.persist_log()
+            except Exception:
+                pass
+
+
 class PlottingHyperband(kt.Hyperband if kt is not None else object):
     """Hyperband tuner that refreshes a live score plot after each trial."""
 
@@ -234,11 +463,50 @@ class PlottingHyperband(kt.Hyperband if kt is not None else object):
         *args,
         live_plot: LiveTrialScorePlot | None = None,
         trial_data_builder: Callable[[Any], tuple[Any, Any]] | None = None,
+        weight_regularization_autoinit_enabled: bool = False,
+        weight_regularization_autoinit_ratio: float = 0.5,
+        weight_regularization_autoinit_epsilon: float = 1e-12,
+        weight_regularization_autoinit_norm_fraction: float = 0.9,
+        autoinit_log_path: str | Path | None = None,
+        trial_epoch_log_path: str | Path | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.live_plot = live_plot
         self.trial_data_builder = trial_data_builder
+        self.weight_regularization_autoinit_enabled = bool(weight_regularization_autoinit_enabled)
+        self.weight_regularization_autoinit_ratio = float(weight_regularization_autoinit_ratio)
+        self.weight_regularization_autoinit_epsilon = float(weight_regularization_autoinit_epsilon)
+        self.weight_regularization_autoinit_norm_fraction = float(
+            weight_regularization_autoinit_norm_fraction
+        )
+        if self.weight_regularization_autoinit_ratio < 0.0:
+            raise ValueError("weight_regularization_autoinit_ratio must be >= 0")
+        if self.weight_regularization_autoinit_epsilon <= 0.0:
+            raise ValueError("weight_regularization_autoinit_epsilon must be > 0")
+        if self.weight_regularization_autoinit_norm_fraction <= 0.0:
+            raise ValueError("weight_regularization_autoinit_norm_fraction must be > 0")
+
+        self.autoinit_log_path = Path(autoinit_log_path) if autoinit_log_path else None
+        self.trial_autoinit_log: dict[str, dict[str, Any]] = {}
+        self.trial_epoch_log_path = Path(trial_epoch_log_path) if trial_epoch_log_path else None
+        self.trial_epoch_log: dict[str, int] = {}
+
+    def _persist_autoinit_log(self) -> None:
+        """Persist auto-init diagnostics to disk when path is configured."""
+        if self.autoinit_log_path is None:
+            return
+        self.autoinit_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.autoinit_log_path, "w", encoding="utf-8") as file:
+            json.dump(self.trial_autoinit_log, file, indent=2)
+
+    def _persist_epoch_log(self) -> None:
+        """Persist epoch-count diagnostics to disk when path is configured."""
+        if self.trial_epoch_log_path is None:
+            return
+        self.trial_epoch_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.trial_epoch_log_path, "w", encoding="utf-8") as file:
+            json.dump(self.trial_epoch_log, file, indent=2)
 
     def on_trial_end(self, trial):
         """Handle the end of a trial and refresh the live score plot."""
@@ -248,9 +516,34 @@ class PlottingHyperband(kt.Hyperband if kt is not None else object):
 
     def run_trial(self, trial, *args, **kwargs):
         """Run a trial with trial-specific datasets when a builder is provided."""
+        kwargs = dict(kwargs)
+        if tf is not None:
+            callbacks = list(kwargs.get("callbacks", []))
+            callbacks.append(
+                _TrialEpochCounterCallback(
+                    trial_id=trial.trial_id,
+                    log_sink=self.trial_epoch_log,
+                    persist_log=self._persist_epoch_log,
+                )
+            )
+            kwargs["callbacks"] = callbacks
+
         if self.trial_data_builder is not None:
             train_ds, val_ds = self.trial_data_builder(trial)
-            kwargs = dict(kwargs)
             kwargs["x"] = train_ds
             kwargs["validation_data"] = val_ds
+            if self.weight_regularization_autoinit_enabled and tf is not None:
+                callbacks = list(kwargs.get("callbacks", []))
+                callbacks.append(
+                    _RegularizationAutoInitCallback(
+                        train_ds=train_ds,
+                        trial_id=trial.trial_id,
+                        ratio=self.weight_regularization_autoinit_ratio,
+                        epsilon=self.weight_regularization_autoinit_epsilon,
+                        norm_fraction=self.weight_regularization_autoinit_norm_fraction,
+                        log_sink=self.trial_autoinit_log,
+                        persist_log=self._persist_autoinit_log,
+                    )
+                )
+                kwargs["callbacks"] = callbacks
         return super().run_trial(trial, **kwargs)

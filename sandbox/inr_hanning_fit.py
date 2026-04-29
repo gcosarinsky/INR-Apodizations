@@ -214,9 +214,8 @@ def _plot_state_figure(
     ax_prof.set_title("Profiles at two depths")
     ax_prof.set_xlabel("Element lateral position [mm]")
     ax_prof.set_ylabel("Apodization weight")
-    ax_prof.set_xlim(-6, 6)
     ax_prof.grid(True, alpha=0.3)
-    ax_prof.legend(fontsize=10)
+    ax_prof.legend(fontsize=8)
 
     fig.suptitle(title, fontsize=14)
     return fig
@@ -320,10 +319,9 @@ def plot_results(
     fig_history.suptitle("INR training history", fontsize=14)
 
     figure_dir.mkdir(parents=True, exist_ok=True)
-    run_suffix = f"_H{HIDDEN_UNITS}"
-    path_before = figure_dir / f"before{run_suffix}.png"
-    path_after = figure_dir / f"after{run_suffix}.png"
-    path_history = figure_dir / f"history{run_suffix}.png"
+    path_before = figure_dir / "before.png"
+    path_after = figure_dir / "after.png"
+    path_history = figure_dir / "history.png"
 
     fig_before.savefig(path_before, dpi=150)
     fig_after.savefig(path_after, dpi=150)

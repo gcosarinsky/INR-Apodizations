@@ -52,6 +52,7 @@ np.random.seed(seed)
 
 candidate_architectures = generate_candidate_architectures(cfg["tuning"], fallback_seed=seed)
 print(f"Generated {len(candidate_architectures)} candidate INR architectures.")
+fixed_reg_lambda = float(cfg["tuning"]["reg_lambda"])
 
 # Print all candidate architectures and ask for user confirmation before tuning.
 # Messages to the user are in Spanish per workspace conventions; code/comments remain in English.
@@ -183,10 +184,7 @@ def build_model(hp):
         features_grid=cm.get_features_grid(scaled=cfg["model"]["scaled_features"]),
         feature_chunk_size=cfg["model"]["feature_chunk_size"],
         weight_regularization_enabled=True,
-        weight_regularization_lambda=hp.Float("reg_lambda", 
-                                              cfg["tuning"]["reg_lambda_min"], 
-                                              cfg["tuning"]["reg_lambda_max"], 
-                                              sampling="log"),
+        weight_regularization_lambda=fixed_reg_lambda,
         weight_regularization_tau=hp.Float("reg_tau", 
                                            cfg["tuning"]["reg_tau_min"], 
                                            cfg["tuning"]["reg_tau_max"])
@@ -258,12 +256,13 @@ print("Best Hyperparameters:")
 for key in best_hps.values:
     print(f"  {key}: {best_hps.get(key)}")
 print(f"  hidden_units: {best_hidden_units}")
+print(f"  reg_lambda: {fixed_reg_lambda}")
 
 # Save best config as YAML
 best_config_path = tuning_dir / "best_config.yml"
 best_config = {
     "hidden_units": [int(v) for v in best_hidden_units],
-    "reg_lambda": float(best_hps.get("reg_lambda")),
+    "reg_lambda": fixed_reg_lambda,
     "reg_tau": float(best_hps.get("reg_tau")),
     "lr": float(best_hps.get("lr")),
 }

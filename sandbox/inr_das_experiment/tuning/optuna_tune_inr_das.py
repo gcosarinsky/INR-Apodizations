@@ -120,6 +120,7 @@ np.random.seed(seed)
 candidate_architectures = generate_candidate_architectures(cfg["tuning"], fallback_seed=seed)
 # Ensure architectures are immutable for internal use
 candidate_architectures = [tuple(a) for a in candidate_architectures]
+fixed_reg_lambda = float(cfg["tuning"]["reg_lambda"])
 # Optuna persistent storage expects categorical choices to be simple types
 # so expose architectures as serializable string labels (e.g. "16-8-4") and
 # map labels back to tuples when building the model.
@@ -186,7 +187,7 @@ val_ds = helpers.build_tf_dataset_by_indices(
 # print("Running 1-epoch smoke test (outside Optuna)...")
 # try:
 #     smoke_arch_index = 0
-#     smoke_reg_lambda = float(cfg["tuning"]["reg_lambda_min"])
+#     smoke_reg_lambda = fixed_reg_lambda
 #     smoke_reg_tau = float(cfg["tuning"]["reg_tau_min"])
 #     smoke_lr = float(cfg["tuning"]["lr_min"])
 #     smoke_trainer = build_and_compile_trainer(cfg, cm, candidate_architectures,
@@ -230,12 +231,6 @@ def objective(trial: optuna.trial.Trial):
     arch_index = candidate_architectures.index(arch)
     # Log architecture being tested for traceability
     print(f"Trial {trial.number}: testing architecture: {list(arch)}")
-    reg_lambda = trial.suggest_float(
-        "reg_lambda",
-        float(cfg["tuning"]["reg_lambda_min"]),
-        float(cfg["tuning"]["reg_lambda_max"]),
-        log=True,
-    )
     reg_tau = trial.suggest_float(
         "reg_tau",
         float(cfg["tuning"]["reg_tau_min"]),
@@ -248,7 +243,15 @@ def objective(trial: optuna.trial.Trial):
         log=True,
     )
 
-    trainer = build_and_compile_trainer(cfg, cm, candidate_architectures, arch_index, reg_lambda, reg_tau, lr)
+    trainer = build_and_compile_trainer(
+        cfg,
+        cm,
+        candidate_architectures,
+        arch_index,
+        fixed_reg_lambda,
+        reg_tau,
+        lr,
+    )
 
     optuna_cb = OptunaPruningCallback(trial, val_delayed_tf, val_scatterers, hanning_snrs, cm, cfg)
 
@@ -284,7 +287,7 @@ if best_arch is None and "architecture_index" in best_hps:
     best_arch = candidate_architectures[int(best_hps["architecture_index"])]
 best_config = {
     "hidden_units": [int(v) for v in best_arch],
-    "reg_lambda": float(best_hps.get("reg_lambda")),
+    "reg_lambda": fixed_reg_lambda,
     "reg_tau": float(best_hps.get("reg_tau")),
     "lr": float(best_hps.get("lr")),
     }
