@@ -1,4 +1,4 @@
-"""Evaluate FFT magnitude of apodization profiles (INR vs Hanning).
+"""Evaluate FFT magnitude of apodization profiles (INR vs baselines).
 
 This sandbox script compares per-element apodization profiles at explicit
 ``(x_mm, z_mm)`` points and evaluates their spectral magnitude using FFT.
@@ -7,9 +7,9 @@ Workflow:
 1. Load runtime configuration from YAML.
 2. Build ``CoordinateManager`` from a delayed-samples dataset folder.
 3. Load a trained INR checkpoint and infer the INR apodization map ``(E, Z, X)``.
-4. Compute baseline Hanning apodization on the same grid.
+4. Compute baseline apodizations on the same grid (Hanning, and optional Uniform).
 5. Extract per-element profiles for all requested points, compute FFT magnitudes,
-   and compare INR vs Hanning.
+    and compare INR against selected baselines.
 6. Save per-point figures, a summary figure, and an ``.npz`` bundle with raw data.
 """
 
@@ -230,24 +230,28 @@ def find_nearest_index_and_value(values: np.ndarray, query: float) -> tuple[int,
     return idx, float(values[idx])
 
 
-def build_fft_db(
-    fft_abs_inr: np.ndarray,
-    fft_abs_hanning: np.ndarray,
+def build_fft_db_many(
+    fft_abs_curves: list[np.ndarray],
     mode: str,
     eps: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Convert FFT magnitudes to dB using selected reference policy."""
+) -> list[np.ndarray]:
+    """Convert multiple FFT magnitude curves to dB using selected reference policy."""
     mode_norm = str(mode).strip().lower()
+    if len(fft_abs_curves) == 0:
+        raise ValueError("At least one FFT curve is required for dB conversion.")
+
     if mode_norm == "pair_peak":
-        reference = max(float(np.max(fft_abs_inr)), float(np.max(fft_abs_hanning)), eps)
-        return to_db(fft_abs_inr, ref=reference, eps=eps), to_db(fft_abs_hanning, ref=reference, eps=eps)
+        reference = max(*[float(np.max(curve)) for curve in fft_abs_curves], eps)
+        return [to_db(curve, ref=reference, eps=eps) for curve in fft_abs_curves]
 
     if mode_norm != "self_peak":
         raise ValueError("fft.db_reference must be 'self_peak' or 'pair_peak'.")
 
-    ref_inr = max(float(np.max(fft_abs_inr)), eps)
-    ref_hanning = max(float(np.max(fft_abs_hanning)), eps)
-    return to_db(fft_abs_inr, ref=ref_inr, eps=eps), to_db(fft_abs_hanning, ref=ref_hanning, eps=eps)
+    output_curves: list[np.ndarray] = []
+    for curve in fft_abs_curves:
+        curve_ref = max(float(np.max(curve)), eps)
+        output_curves.append(to_db(curve, ref=curve_ref, eps=eps))
+    return output_curves
 
 
 def save_point_figure(
@@ -256,9 +260,12 @@ def save_point_figure(
     freq_cpe: np.ndarray,
     inr_profile: np.ndarray,
     hanning_profile: np.ndarray,
+    uniform_profile: np.ndarray | None,
     inr_fft_plot: np.ndarray,
     hanning_fft_plot: np.ndarray,
+    uniform_fft_plot: np.ndarray | None,
     use_db: bool,
+    db_min: float,
     freq_axis_max: float,
     point_label: str,
     fft_ylabel: str,
@@ -268,6 +275,8 @@ def save_point_figure(
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
 
     axes[0].plot(element_x_mm, hanning_profile, label="Hanning", linewidth=2)
+    if uniform_profile is not None:
+        axes[0].plot(element_x_mm, uniform_profile, label="Uniform", linewidth=2)
     axes[0].plot(element_x_mm, inr_profile, label="INR", linewidth=2)
     axes[0].set_xlabel("Element lateral coordinate (mm)")
     axes[0].set_ylabel("Apodization weight")
@@ -276,6 +285,8 @@ def save_point_figure(
     axes[0].legend()
 
     axes[1].plot(freq_cpe, hanning_fft_plot, label="Hanning", linewidth=2)
+    if uniform_fft_plot is not None:
+        axes[1].plot(freq_cpe, uniform_fft_plot, label="Uniform", linewidth=2)
     axes[1].plot(freq_cpe, inr_fft_plot, label="INR", linewidth=2)
     axes[1].set_xlabel("Spatial frequency (cycles/element)")
     axes[1].set_ylabel(fft_ylabel)
@@ -284,7 +295,7 @@ def save_point_figure(
     axes[1].grid(True, alpha=0.3)
     axes[1].legend()
     if use_db:
-        axes[1].set_ylim(-80.0, 5.0)
+        axes[1].set_ylim(db_min, 5.0)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
@@ -297,8 +308,10 @@ def save_summary_figure(
     freq_cpe: np.ndarray,
     inr_fft_matrix_plot: np.ndarray,
     hanning_fft_matrix_plot: np.ndarray,
+    uniform_fft_matrix_plot: np.ndarray | None,
     use_db: bool,
     freq_axis_max: float,
+    db_min: float,
     fft_ylabel: str,
     dpi: int,
 ) -> None:
@@ -309,15 +322,18 @@ def save_summary_figure(
     for point_idx, label in enumerate(point_labels):
         ax = axes[point_idx, 0]
         ax.plot(freq_cpe, hanning_fft_matrix_plot[point_idx], label="Hanning", linewidth=2)
+        if uniform_fft_matrix_plot is not None:
+            ax.plot(freq_cpe, uniform_fft_matrix_plot[point_idx], label="Uniform", linewidth=2)
         ax.plot(freq_cpe, inr_fft_matrix_plot[point_idx], label="INR", linewidth=2)
         ax.set_title(f"FFT magnitude comparison | {label}")
         ax.set_xlabel("Spatial frequency (cycles/element)")
         ax.set_ylabel(fft_ylabel)
         ax.set_xlim(0.0, freq_axis_max)
+        ax.set_ylim(db_min, 0)
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best")
         if use_db:
-            ax.set_ylim(-80.0, 5.0)
+            ax.set_ylim(db_min, 5.0)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
@@ -325,7 +341,7 @@ def save_summary_figure(
 
 
 def main() -> None:
-    """Run FFT comparison for INR and Hanning apodization profiles."""
+    """Run FFT comparison for INR and selected baseline apodization profiles."""
     cfg = load_yaml_config(CONFIG_PATH)
 
     dataset_folder = resolve_project_path(cfg["io"]["dataset_folder"])
@@ -368,6 +384,8 @@ def main() -> None:
     else:
         baseline_f_number = float(baseline_f_number_cfg)
 
+    include_uniform = bool(cfg.get("analysis", {}).get("include_uniform", False))
+
     hanning_tensor = compute_dynamic_apodizations_tf(
         cm=cm,
         f_number=baseline_f_number,
@@ -376,6 +394,8 @@ def main() -> None:
     ).get("hanning")
     if hanning_tensor is None:
         raise ValueError("Could not compute Hanning apodization tensor.")
+
+    uniform_tensor = tf.ones_like(hanning_tensor) if include_uniform else None
 
     points_requested = np.asarray(cfg["analysis"]["points_xz_mm"], dtype=np.float32)
     n_points = int(points_requested.shape[0])
@@ -390,6 +410,7 @@ def main() -> None:
     use_fft_db = bool(cfg["fft"].get("use_db", True))
     fft_db_reference = str(cfg["fft"].get("db_reference", "pair_peak"))
     fft_db_eps = float(cfg["fft"].get("db_eps", 1e-8))
+    db_min = float(cfg["fft"].get("db_min", -60.0))
 
     if n_fft < int(element_x_mm.shape[0]):
         raise ValueError(
@@ -410,11 +431,13 @@ def main() -> None:
 
     profiles_inr = np.zeros((n_points, element_x_mm.size), dtype=np.float32)
     profiles_hanning = np.zeros_like(profiles_inr)
+    profiles_uniform = np.zeros_like(profiles_inr) if include_uniform else None
     selected_points_mm = np.zeros((n_points, 2), dtype=np.float32)
     selected_indices = np.zeros((n_points, 2), dtype=np.int32)
 
     fft_abs_inr = np.zeros((n_points, fft_freq_cpe.size), dtype=np.float32)
     fft_abs_hanning = np.zeros_like(fft_abs_inr)
+    fft_abs_uniform = np.zeros_like(fft_abs_inr) if include_uniform else None
 
     point_labels: list[str] = []
 
@@ -439,43 +462,64 @@ def main() -> None:
             x_fixed=float(x_req_mm),
             scaled=False,
         ).numpy()
+        uniform_profile = None
+        if uniform_tensor is not None:
+            uniform_profile = extract_profile_for_z(
+                uniform_tensor,
+                cm,
+                z_fixed=float(z_req_mm),
+                x_fixed=float(x_req_mm),
+                scaled=False,
+            ).numpy()
 
         inr_profile = np.asarray(inr_profile, dtype=np.float32)
         hanning_profile = np.asarray(hanning_profile, dtype=np.float32)
+        if uniform_profile is not None:
+            uniform_profile = np.asarray(uniform_profile, dtype=np.float32)
 
         profiles_inr[point_idx, :] = inr_profile
         profiles_hanning[point_idx, :] = hanning_profile
+        if profiles_uniform is not None and uniform_profile is not None:
+            profiles_uniform[point_idx, :] = uniform_profile
 
         inr_profile_windowed = inr_profile * window_vector
         hanning_profile_windowed = hanning_profile * window_vector
+        uniform_profile_windowed = uniform_profile * window_vector if uniform_profile is not None else None
 
         fft_inr_abs = compute_fft_abs(inr_profile_windowed, n_fft=n_fft)
         fft_hanning_abs = compute_fft_abs(hanning_profile_windowed, n_fft=n_fft)
+        fft_uniform_abs = (
+            compute_fft_abs(uniform_profile_windowed, n_fft=n_fft)
+            if uniform_profile_windowed is not None
+            else None
+        )
 
         fft_abs_inr[point_idx, :] = fft_inr_abs
         fft_abs_hanning[point_idx, :] = fft_hanning_abs
+        if fft_abs_uniform is not None and fft_uniform_abs is not None:
+            fft_abs_uniform[point_idx, :] = fft_uniform_abs
 
-        point_labels.append(
-            f"req(x={float(x_req_mm):.2f}, z={float(z_req_mm):.2f}) mm -> "
-            f"sel(x={x_sel_mm:.2f}, z={z_sel_mm:.2f}) mm"
-        )
+        point_labels.append(f"x = {x_sel_mm:.2f} mm,  z = {z_sel_mm:.2f} mm")
 
     if use_fft_db:
         fft_plot_inr = np.zeros_like(fft_abs_inr)
         fft_plot_hanning = np.zeros_like(fft_abs_hanning)
+        fft_plot_uniform = np.zeros_like(fft_abs_uniform) if fft_abs_uniform is not None else None
         for point_idx in range(n_points):
-            db_inr, db_hanning = build_fft_db(
-                fft_abs_inr[point_idx],
-                fft_abs_hanning[point_idx],
-                mode=fft_db_reference,
-                eps=fft_db_eps,
-            )
-            fft_plot_inr[point_idx, :] = db_inr.astype(np.float32)
-            fft_plot_hanning[point_idx, :] = db_hanning.astype(np.float32)
+            fft_curves = [fft_abs_inr[point_idx], fft_abs_hanning[point_idx]]
+            if fft_abs_uniform is not None:
+                fft_curves.append(fft_abs_uniform[point_idx])
+
+            db_curves = build_fft_db_many(fft_curves, mode=fft_db_reference, eps=fft_db_eps)
+            fft_plot_inr[point_idx, :] = db_curves[0].astype(np.float32)
+            fft_plot_hanning[point_idx, :] = db_curves[1].astype(np.float32)
+            if fft_plot_uniform is not None and len(db_curves) > 2:
+                fft_plot_uniform[point_idx, :] = db_curves[2].astype(np.float32)
         fft_ylabel = "|FFT| (dB)"
     else:
         fft_plot_inr = fft_abs_inr.copy()
         fft_plot_hanning = fft_abs_hanning.copy()
+        fft_plot_uniform = fft_abs_uniform.copy() if fft_abs_uniform is not None else None
         fft_ylabel = "|FFT| (linear)"
 
     output_root = resolve_project_path(cfg["io"]["output_root"])
@@ -493,9 +537,12 @@ def main() -> None:
             freq_cpe=fft_freq_cpe,
             inr_profile=profiles_inr[point_idx],
             hanning_profile=profiles_hanning[point_idx],
+            uniform_profile=(profiles_uniform[point_idx] if profiles_uniform is not None else None),
             inr_fft_plot=fft_plot_inr[point_idx],
             hanning_fft_plot=fft_plot_hanning[point_idx],
+            uniform_fft_plot=(fft_plot_uniform[point_idx] if fft_plot_uniform is not None else None),
             use_db=use_fft_db,
+            db_min=db_min,
             freq_axis_max=freq_axis_max,
             point_label=point_labels[point_idx],
             fft_ylabel=fft_ylabel,
@@ -508,8 +555,10 @@ def main() -> None:
         freq_cpe=fft_freq_cpe,
         inr_fft_matrix_plot=fft_plot_inr,
         hanning_fft_matrix_plot=fft_plot_hanning,
+        uniform_fft_matrix_plot=fft_plot_uniform,
         use_db=use_fft_db,
         freq_axis_max=freq_axis_max,
+        db_min=db_min,
         fft_ylabel=fft_ylabel,
         dpi=dpi,
     )
@@ -522,12 +571,14 @@ def main() -> None:
         "physical_feature_set": physical_feature_set,
         "feature_chunk_size": feature_chunk_size,
         "baseline_f_number": baseline_f_number,
+        "include_uniform": include_uniform,
         "fft": {
             "n_fft": n_fft,
             "window": fft_window_name,
             "use_db": use_fft_db,
             "db_reference": fft_db_reference,
             "db_eps": fft_db_eps,
+            "db_min": db_min,
             "freq_axis_max": freq_axis_max,
         },
         "points_requested_mm": points_requested.tolist(),
@@ -538,19 +589,30 @@ def main() -> None:
 
     np.savez(
         output_dir / "fft_profile_data.npz",
-        element_x_mm=element_x_mm,
-        freq_cycles_per_element=fft_freq_cpe,
-        freq_cycles_per_mm=fft_freq_cpm,
-        points_requested_mm=points_requested,
-        points_selected_mm=selected_points_mm,
-        selected_indices_xz=selected_indices,
-        profile_inr=profiles_inr,
-        profile_hanning=profiles_hanning,
-        fft_abs_inr=fft_abs_inr,
-        fft_abs_hanning=fft_abs_hanning,
-        fft_plot_inr=fft_plot_inr,
-        fft_plot_hanning=fft_plot_hanning,
-        metadata_json=json.dumps(metadata, indent=2),
+        **{
+            "element_x_mm": element_x_mm,
+            "freq_cycles_per_element": fft_freq_cpe,
+            "freq_cycles_per_mm": fft_freq_cpm,
+            "points_requested_mm": points_requested,
+            "points_selected_mm": selected_points_mm,
+            "selected_indices_xz": selected_indices,
+            "profile_inr": profiles_inr,
+            "profile_hanning": profiles_hanning,
+            "fft_abs_inr": fft_abs_inr,
+            "fft_abs_hanning": fft_abs_hanning,
+            "fft_plot_inr": fft_plot_inr,
+            "fft_plot_hanning": fft_plot_hanning,
+            "metadata_json": json.dumps(metadata, indent=2),
+            **(
+                {
+                    "profile_uniform": profiles_uniform,
+                    "fft_abs_uniform": fft_abs_uniform,
+                    "fft_plot_uniform": fft_plot_uniform,
+                }
+                if include_uniform and profiles_uniform is not None and fft_abs_uniform is not None
+                else {}
+            ),
+        },
     )
 
     with (output_dir / "run_info.json").open("w", encoding="utf-8") as handle:

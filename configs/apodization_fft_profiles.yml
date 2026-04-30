@@ -13,11 +13,13 @@ model:
 analysis:
   # If null, defaults to kp.f_number from dataset config.
   baseline_f_number: 0.5
+  include_uniform: true
   points_xz_mm:
     - [0.0, 15.0]
     - [0.0, 25.0]
     - [0.0, 35.0]
-    - [8.0, 25.0]
+    - [10.0, 25.0]
+    - [15.0, 25.0]
 
 fft:
   n_fft: 512
@@ -26,6 +28,7 @@ fft:
   use_db: true
   db_reference: pair_peak  # self_peak | pair_peak
   db_eps: 1.0e-8
+  db_min: -80.0
   freq_axis_max: 0.2  # As fraction of Nyquist (0.5 means up to Nyquist)
 
 plots:

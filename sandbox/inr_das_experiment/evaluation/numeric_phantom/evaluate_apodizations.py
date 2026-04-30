@@ -455,12 +455,26 @@ if profiles_enabled:
             f"{missing_methods}"
         )
 
-    selected_images_abs = {name: np.asarray(images[name], dtype=np.float64) for name in selected_method_names}
+    selected_images_abs = {name: np.abs(np.asarray(images[name])).astype(np.float64) for name in selected_method_names}
 
     half_width_lateral_mm = float(profile_cfg.get("half_width_lateral_mm", 1.5))
     half_width_axial_mm = float(profile_cfg.get("half_width_axial_mm", 1.0))
     vmin_db = float(profile_cfg.get("vmin_db", -60.0))
     snr_radius_mm = float(profile_cfg.get("snr_radius_mm", 1.5))
+    snr_y_lim_cfg = profile_cfg.get("snr_y_lim_db", None)
+    snr_y_lim_db: tuple[float, float] | None = None
+    if snr_y_lim_cfg is not None:
+        if not isinstance(snr_y_lim_cfg, (list, tuple)) or len(snr_y_lim_cfg) != 2:
+            raise ValueError(
+                "`reflector_lateral_profiles.snr_y_lim_db` must be null or a [ymin, ymax] list."
+            )
+        snr_y_min = float(snr_y_lim_cfg[0])
+        snr_y_max = float(snr_y_lim_cfg[1])
+        if snr_y_max <= snr_y_min:
+            raise ValueError(
+                "`reflector_lateral_profiles.snr_y_lim_db` must satisfy ymax > ymin."
+            )
+        snr_y_lim_db = (snr_y_min, snr_y_max)
 
     reflector_points = _build_grid_reflector_points(cfg)
     selected_indices = _resolve_reflector_indices(
@@ -689,6 +703,8 @@ if profiles_enabled:
     ax_snr.set_xlabel("Reflector index")
     ax_snr.set_ylabel("SNR (dB)")
     ax_snr.set_title("SNR vs reflector index")
+    if snr_y_lim_db is not None:
+        ax_snr.set_ylim(*snr_y_lim_db)
     ax_snr.legend(fontsize=fontsize_legend)
     ax_snr.grid(True, alpha=0.3)
 

@@ -2,7 +2,7 @@ io:
   simulation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/delayed_samples
   evaluation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/
   save_plot: true
-  model_path: sandbox/inr_das_experiment/outputs/train/20260423_113629
+  model_path: sandbox/inr_das_experiment/outputs/train/20260429_153130
 
 phantom:
   mode: grid
@@ -52,8 +52,8 @@ visualization:
 reflector_lateral_profiles:
   enabled: true
   # Set inr_enabled to false to skip INR model loading and evaluate only reference apodizations.
-  inr_enabled: false
-  methods: [uniform, boxcar, hanning]
+  inr_enabled: true
+  methods: [uniform, hanning, inr]
   reflector_indices: all
   half_width_lateral_mm: 1.5
   half_width_axial_mm: 1.0
@@ -64,6 +64,8 @@ reflector_lateral_profiles:
   # Profile display mode for per-reflector figures: "lateral", "axial", or "both".
   profile_type: lateral
   snr_radius_mm: 1.5
+  # Optional SNR summary y-axis limits in dB. Use null for automatic limits.
+  snr_y_lim_db: [40, 60]  # Example: [0.0, 60.0]
 
 plots:
   legend_fontsize: 10      # Tamaño de fuente para legendas (default: 8)

@@ -3,8 +3,9 @@
 #################################################################################
 
 PROJECT_NAME = inr-apodizations
+ENV_NAME = inr-apodizations
 PYTHON_VERSION = 3.10
-PYTHON_INTERPRETER = python
+PYTHON_INTERPRETER = conda run -n $(ENV_NAME) python
 
 #################################################################################
 # COMMANDS                                                                      #
@@ -68,6 +69,15 @@ data: requirements
 run-delayed-samples:
 	$(PYTHON_INTERPRETER) scripts/create_delayed_samples_dataset.py
 
+## Run numeric phantom evaluation script
+.PHONY: run-phantom-eval
+run-phantom-eval:
+	$(PYTHON_INTERPRETER) sandbox\inr_das_experiment\evaluation\numeric_phantom\evaluate_apodizations.py
+
+## Run FFT profile evaluation script
+.PHONY: run-fft-profile-eval
+run-fft-profile-eval:
+	$(PYTHON_INTERPRETER) sandbox\inr_das_experiment\evaluation\evaluate_apodization_profile_fft.py
 
 #################################################################################
 # Self Documenting Commands                                                     #
