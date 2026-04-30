@@ -1021,4 +1021,5 @@ helpers.plot_training_curves(
     reference_mae={"hanning": validation_bundle.get("masked_mae_by_method", {}).get("hanning")},
     reference_relative_y_pred={"hanning": relative_mae_y_pred_by_method.get("hanning")},
     reference_relative_y_true={"hanning": relative_mae_y_true_by_method.get("hanning")},
+    weight_reg_lambda=weight_reg_lambda if weight_reg_enabled else None,
 )

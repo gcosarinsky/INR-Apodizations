@@ -40,14 +40,14 @@ training:
   weight_regularization:
     enabled: true
     type: hinge_low_norm
-    lambda: 0.1
+    lambda: 333000
     tau: 0.7
     epsilon: 1.0e-8
     normalize_norm: true
     auto_init:
-      enabled: true
-      ratio: 0.1
-      norm_fraction: 0.5
+      enabled: false
+      ratio: 0.2
+      norm_fraction: 0.8
       epsilon: 1.0e-12
   mae_db_ref: null
   mae_db_eps: 1.0e-8

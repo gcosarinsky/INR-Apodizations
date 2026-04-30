@@ -206,6 +206,7 @@ def plot_training_curves(
     reference_mae: dict | None = None,
     reference_relative_y_pred: dict | None = None,
     reference_relative_y_true: dict | None = None,
+    weight_reg_lambda: float | None = None,
 ) -> None:
     """Save split training-curve figures from a Keras history dictionary.
 
@@ -222,10 +223,15 @@ def plot_training_curves(
         reference_relative_y_true: Optional dict of baseline RelativeMAE values
             (normalize_by=y_true) to overlay on the relative_mae_y_true figure.
             Allowed keys: ``hanning``.
+        weight_reg_lambda: Optional regularization lambda value. When provided,
+            it is shown in the title of the regularization loss subplot of the
+            combined figure ``training_history_loss_combined.png``.
 
         Output policy:
         - Loss metrics are plotted without ``reg_loss``.
-        - ``reg_loss`` is plotted in its own figure.
+        - ``reg_loss`` is plotted in its own separate figure.
+        - A combined figure (``loss_combined``) with two subplots is also
+            generated: top=loss, bottom=reg_loss.
         - Relative MAE metrics are split into separate figures for
             ``normalize_by=y_pred`` and ``normalize_by=y_true``.
         - Regularization metrics are saved in separate figures, one metric per
@@ -233,6 +239,7 @@ def plot_training_curves(
         - "Other metrics" figures are not generated.
         - A single output file is produced per figure type (no duplicate
             versions without references).
+        - All curves use "Train" / "Validation" as legend labels.
     """
 
     if not history:
@@ -297,6 +304,7 @@ def plot_training_curves(
         title: str,
         ylabel: str,
         ref_dict: dict | None = None,
+        label_map: dict | None = None,
     ) -> None:
         base_colors: dict[str, str] = {}
         color_index = 0
@@ -309,7 +317,8 @@ def plot_training_curves(
                 color_index += 1
 
             line_style = "--" if metric_name.startswith("val_") else "-"
-            axis.plot(series, label=metric_name, color=base_colors[base_name], linestyle=line_style)
+            display_label = label_map.get(metric_name, metric_name) if label_map else metric_name
+            axis.plot(series, label=display_label, color=base_colors[base_name], linestyle=line_style)
 
         if ref_dict:
             for ref_name, ref_value in ref_dict.items():
@@ -335,18 +344,20 @@ def plot_training_curves(
                     textcoords="offset points",
                     ha="right",
                     va="center",
-                    fontsize=8,
+                    fontsize=13,
                     color=ref_color,
-                    bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 1.5},
+                    bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none", "pad": 2.5},
                 )
 
-        axis.set_title(title)
-        axis.set_xlabel("Epoch")
-        axis.set_ylabel(ylabel)
+        if title:
+            axis.set_title(title, fontsize=13)
+        axis.set_xlabel("Epoch", fontsize=12)
+        axis.set_ylabel(ylabel, fontsize=12)
+        axis.tick_params(axis="both", labelsize=11)
         axis.grid(True, alpha=0.3)
         lines, labels = axis.get_legend_handles_labels()
         if lines:
-            axis.legend(lines, labels, fontsize=9)
+            axis.legend(lines, labels, fontsize=11)
 
     output_dir = os.path.dirname(output_path)
     output_stem = os.path.splitext(os.path.basename(output_path))[0]
@@ -359,6 +370,7 @@ def plot_training_curves(
         ylabel: str,
         file_suffix: str,
         ref_dict: dict | None = None,
+        label_map: dict | None = None,
     ) -> bool:
         if not metric_names:
             return False
@@ -369,6 +381,7 @@ def plot_training_curves(
             title=title,
             ylabel=ylabel,
             ref_dict=ref_dict,
+            label_map=label_map,
         )
         fig.savefig(os.path.join(output_dir, f"{output_stem}_{file_suffix}.png"), dpi=150)
         plt.close(fig)
@@ -397,34 +410,60 @@ def plot_training_curves(
         if _is_regularization_metric(name) and _base_metric_name(name) != "reg_loss"
     ]
 
+    def _train_val_label_map(metric_names: list[str]) -> dict[str, str]:
+        """Map raw metric names to 'Train' / 'Validation' display labels."""
+        return {
+            name: ("Validation" if name.startswith("val_") else "Train")
+            for name in metric_names
+        }
+
     n_saved = 0
-    n_saved += int(_save_single_figure(loss_keys, "Loss", "Loss", "losses"))
-    n_saved += int(_save_single_figure(reg_loss_keys, "Regularization loss", "Loss", "reg_loss"))
+    n_saved += int(
+        _save_single_figure(
+            loss_keys,
+            "Loss (Weighted MAE)",
+            "Loss",
+            "losses",
+            label_map=_train_val_label_map(loss_keys),
+        )
+    )
+    n_saved += int(
+        _save_single_figure(
+            reg_loss_keys,
+            "Regularization Loss",
+            "Loss",
+            "reg_loss",
+            label_map=_train_val_label_map(reg_loss_keys),
+        )
+    )
     n_saved += int(
         _save_single_figure(
             absolute_reconstruction_keys,
-            "Absolute reconstruction metrics",
+            "Weighted MAE",
             "Metric value",
             "absolute_metrics",
             ref_dict=reference_mae,
+            label_map=_train_val_label_map(absolute_reconstruction_keys),
         )
     )
     n_saved += int(
         _save_single_figure(
             relative_y_pred_keys,
-            "Relative reconstruction metrics (normalize_by=y_pred)",
+            "Relative Weighted MAE (norm. by prediction)",
             "Metric value",
             "relative_mae_y_pred",
             ref_dict=reference_relative_y_pred,
+            label_map=_train_val_label_map(relative_y_pred_keys),
         )
     )
     n_saved += int(
         _save_single_figure(
             relative_y_true_keys,
-            "Relative reconstruction metrics (normalize_by=y_true)",
+            "Relative Weighted MAE (norm. by target)",
             "Metric value",
             "relative_mae_y_true",
             ref_dict=reference_relative_y_true,
+            label_map=_train_val_label_map(relative_y_true_keys),
         )
     )
     n_saved += int(_save_single_figure(ssim_keys, "SSIM metrics", "SSIM", "ssim"))
@@ -448,8 +487,35 @@ def plot_training_curves(
                 f"Regularization metric: {base_name}",
                 "Metric value",
                 f"reg_metric_{safe_base_name}",
+                label_map=_train_val_label_map(metric_group),
             )
         )
+
+    # Combined loss + reg_loss figure (subplot 2,1)
+    if loss_keys or reg_loss_keys:
+        fig_comb, axes_comb = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
+        _plot_panel(
+            axis=axes_comb[0],
+            metric_names=loss_keys,
+            title="Loss (Weighted MAE)",
+            ylabel="Loss",
+            label_map=_train_val_label_map(loss_keys),
+        )
+        reg_title = "Regularization Loss"
+        if weight_reg_lambda is not None:
+            reg_title += f"  [\u03bb={weight_reg_lambda:.3g}]"
+        _plot_panel(
+            axis=axes_comb[1],
+            metric_names=reg_loss_keys,
+            title=reg_title,
+            ylabel="Loss",
+            label_map=_train_val_label_map(reg_loss_keys),
+        )
+        fig_comb.savefig(
+            os.path.join(output_dir, f"{output_stem}_loss_combined.png"), dpi=150
+        )
+        plt.close(fig_comb)
+        n_saved += 1
 
     if n_saved == 0:
         raise ValueError("history does not contain plottable metrics")
@@ -731,20 +797,31 @@ def plot_apodization_before_after(
     cmap: str = "viridis",
     hanning_apod: np.ndarray | None = None,
 ) -> None:
-    """Save apodization maps and element-axis profiles at selected depths.
+    """Save apodization maps and element-axis profiles as two separate PNG files.
+
+    Generates two figures derived from ``output_path``:
+
+    - ``<stem>_maps.png``: 1×2 grid with Hanning map (left) and INR-after map (right).
+    - ``<stem>_profiles.png``: element-axis profiles for INR-after and Hanning at
+      each requested depth.
+
+    INR-before is intentionally excluded from both figures.
 
     Args:
         cm: Coordinate manager used to extract geometry coordinates.
-        apod_before: INR weights before training with shape (E, Z, X).
+        apod_before: INR weights before training with shape (E, Z, X). Kept for
+            API compatibility but not plotted.
         apod_after: INR weights after training with shape (E, Z, X).
-        output_path: Path to the output PNG file.
-        x_fixed: Lateral x value used for map extraction.
-        z_fixed: Single depth used for profile extraction when ``z_profiles`` is not provided.
+        output_path: Anchor output PNG path. Two sibling files are written:
+            ``<stem>_maps.png`` and ``<stem>_profiles.png``.
+        x_fixed: Lateral x value used for map and profile extraction.
+        z_fixed: Single depth used for profile extraction when ``z_profiles`` is
+            not provided.
         z_profiles: Optional list/tuple of depths (mm) used for profile extraction.
         cmap: Colormap used for both maps.
+        hanning_apod: Optional Hanning reference apodization with shape (E, Z, X).
     """
-    # Plotting and profile requests are interpreted in physical units (mm)
-    # to keep config values intuitive even when training uses scaled features.
+    # Plotting and profile requests are interpreted in physical units (mm).
     coords_phys = cm.get_coordinates_1d(scaled=False)
     x_elems = np.asarray(coords_phys["x_elem"])
     z_coords = np.asarray(coords_phys["z"])
@@ -755,24 +832,13 @@ def plot_apodization_before_after(
         float(z_coords[0]),
     )
 
-    map_before = extract_map_for_x(
-        tf.convert_to_tensor(apod_before),
-        cm,
-        x_fixed=x_fixed,
-        scaled=False,
-    )
     map_after = extract_map_for_x(
         tf.convert_to_tensor(apod_after),
         cm,
         x_fixed=x_fixed,
         scaled=False,
     )
-
-    # Convert maps to numpy arrays for plotting.
-    mb = map_before.numpy()
     ma = map_after.numpy()
-    vmin = float(min(float(mb.min()), float(ma.min())))
-    vmax = float(max(float(mb.max()), float(ma.max())))
 
     # Determine z indices for profile extraction.
     if z_profiles is None or len(z_profiles) == 0:
@@ -782,75 +848,89 @@ def plot_apodization_before_after(
             z_indices = [int(np.argmin(np.abs(z_coords - float(z_fixed))))]
     else:
         z_indices = [int(np.argmin(np.abs(z_coords - float(z)))) for z in z_profiles]
-        # Keep order and avoid duplicated nearest-neighbor indices.
         z_indices = list(dict.fromkeys(z_indices))
     z_values = [float(z_coords[idx]) for idx in z_indices]
 
-    # Lateral x index for profile extraction.
     x_coords = np.asarray(coords_phys["x"])
     x_idx = int(np.argmin(np.abs(x_coords - float(x_fixed))))
 
-    apod_before_np = np.asarray(apod_before)
     apod_after_np = np.asarray(apod_after)
     hanning_np = np.asarray(hanning_apod) if hanning_apod is not None else None
 
-    # Layout: 2x2 (maps on top row, profile on bottom-left, empty on bottom-right).
-    fig, axes = plt.subplots(
-        2,
-        2,
-        figsize=(12, 10),
-        sharex=False,
-        sharey=False,
-        constrained_layout=True,
-    )
+    # Build output paths from the anchor path stem.
+    output_dir = os.path.dirname(output_path)
+    output_stem = os.path.splitext(os.path.basename(output_path))[0]
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    maps_path = os.path.join(output_dir, f"{output_stem}_maps.png") if output_dir else f"{output_stem}_maps.png"
+    profiles_path = os.path.join(output_dir, f"{output_stem}_profiles.png") if output_dir else f"{output_stem}_profiles.png"
 
-    im0 = axes[0, 0].imshow(
-        mb,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        extent=map_extent,
-        aspect="auto",
-    )
-    axes[0, 0].set_title("Apodization INR before")
-    axes[0, 0].set_xlabel("Element lateral coordinate (mm)")
-    axes[0, 0].set_ylabel("Depth z (mm)")
+    # ------------------------------------------------------------------
+    # Figure 1: Maps  — Hanning (left) | INR after (right)
+    # ------------------------------------------------------------------
+    if hanning_np is not None:
+        map_hanning = extract_map_for_x(
+            tf.convert_to_tensor(hanning_apod),
+            cm,
+            x_fixed=x_fixed,
+            scaled=False,
+        )
+        mh = map_hanning.numpy()
+        vmin = float(min(float(mh.min()), float(ma.min())))
+        vmax = float(max(float(mh.max()), float(ma.max())))
 
-    im1 = axes[0, 1].imshow(
-        ma,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        extent=map_extent,
-        aspect="auto",
-    )
-    axes[0, 1].set_title("Apodization INR after")
-    axes[0, 1].set_xlabel("Element lateral coordinate (mm)")
+        fig_maps, axes_maps = plt.subplots(
+            1, 2, figsize=(12, 5), constrained_layout=True
+        )
+        im0 = axes_maps[0].imshow(
+            mh, cmap=cmap, vmin=vmin, vmax=vmax, extent=map_extent, aspect="auto"
+        )
+        axes_maps[0].set_title("Hanning apodization", fontsize=13)
+        axes_maps[0].set_xlabel("Element lateral coordinate (mm)", fontsize=11)
+        axes_maps[0].set_ylabel("Depth z (mm)", fontsize=11)
+        fig_maps.colorbar(im0, ax=axes_maps[0], label="Weight")
 
-    # Profile plot: one pair/triple of curves per selected depth on the same axes.
+        im1 = axes_maps[1].imshow(
+            ma, cmap=cmap, vmin=vmin, vmax=vmax, extent=map_extent, aspect="auto"
+        )
+        axes_maps[1].set_title("INR apodization", fontsize=13)
+        axes_maps[1].set_xlabel("Element lateral coordinate (mm)", fontsize=11)
+        fig_maps.colorbar(im1, ax=axes_maps[1], label="Weight")
+    else:
+        vmin = float(ma.min())
+        vmax = float(ma.max())
+
+        fig_maps, ax_single = plt.subplots(1, 1, figsize=(7, 5), constrained_layout=True)
+        im1 = ax_single.imshow(
+            ma, cmap=cmap, vmin=vmin, vmax=vmax, extent=map_extent, aspect="auto"
+        )
+        ax_single.set_title("INR apodization", fontsize=13)
+        ax_single.set_xlabel("Element lateral coordinate (mm)", fontsize=11)
+        ax_single.set_ylabel("Depth z (mm)", fontsize=11)
+        fig_maps.colorbar(im1, ax=ax_single, label="Weight")
+
+    fig_maps.suptitle(f"Apodization maps at x={x_fixed:.2f} mm", fontsize=14)
+    fig_maps.savefig(maps_path, dpi=150)
+    plt.close(fig_maps)
+
+    # ------------------------------------------------------------------
+    # Figure 2: Profiles — INR after and Hanning per selected depth
+    # ------------------------------------------------------------------
+    fig_prof, ax_prof = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
     depth_colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(z_indices))))
     for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
-        profile_before = apod_before_np[:, z_idx, x_idx]
         profile_after = apod_after_np[:, z_idx, x_idx]
-        axes[1, 0].plot(
-            x_elems,
-            profile_before,
-            label=f"INR before z={z_value:.2f} mm",
-            linewidth=2,
-            color=color,
-            linestyle="-",
-        )
-        axes[1, 0].plot(
+        ax_prof.plot(
             x_elems,
             profile_after,
-            label=f"INR after z={z_value:.2f} mm",
+            label=f"INR z={z_value:.2f} mm",
             linewidth=2,
             color=color,
             linestyle="--",
         )
         if hanning_np is not None:
             profile_hanning = hanning_np[:, z_idx, x_idx]
-            axes[1, 0].plot(
+            ax_prof.plot(
                 x_elems,
                 profile_hanning,
                 label=f"Hanning z={z_value:.2f} mm",
@@ -860,45 +940,16 @@ def plot_apodization_before_after(
             )
 
     depth_list_text = ", ".join(f"{z:.2f}" for z in z_values)
-    axes[1, 0].set_title(
-        f"Profiles at x={x_fixed:.2f} mm, z=[{depth_list_text}] mm"
+    ax_prof.set_title(
+        f"Profiles at x={x_fixed:.2f} mm, z=[{depth_list_text}] mm", fontsize=13
     )
-    axes[1, 0].set_xlabel("Element lateral coordinate (mm)")
-    axes[1, 0].set_ylabel("Apodization weight")
-    axes[1, 0].grid(True, alpha=0.3)
-    axes[1, 0].legend()
-
-    # Bottom-right: show Hanning map if provided, else hide.
-    if hanning_apod is not None:
-        map_hanning = extract_map_for_x(
-            tf.convert_to_tensor(hanning_apod),
-            cm,
-            x_fixed=x_fixed,
-            scaled=False,
-        )
-        mh = map_hanning.numpy()
-        im2 = axes[1, 1].imshow(
-            mh,
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            extent=map_extent,
-            aspect="auto",
-        )
-        axes[1, 1].set_title("Hanning apodization")
-        axes[1, 1].set_xlabel("Element lateral coordinate (mm)")
-        fig.colorbar(im2, ax=axes[1, 1], label="Weight")
-    else:
-        axes[1, 1].axis("off")
-
-    # Colorbars for maps (original two maps).
-    fig.colorbar(im0, ax=axes[0, 0], label="Weight")
-    fig.colorbar(im1, ax=axes[0, 1], label="Weight")
-
-    fig.suptitle(f"Apodization maps at x={x_fixed:.2f}")
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.savefig(output_path, dpi=150)
+    ax_prof.set_xlabel("Element lateral coordinate (mm)", fontsize=12)
+    ax_prof.set_ylabel("Apodization weight", fontsize=12)
+    ax_prof.tick_params(axis="both", labelsize=11)
+    ax_prof.grid(True, alpha=0.3)
+    ax_prof.legend(fontsize=11)
+    fig_prof.savefig(profiles_path, dpi=150)
+    plt.close(fig_prof)
 
 
 if __name__ == "__main__":
