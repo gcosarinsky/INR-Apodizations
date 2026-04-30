@@ -1,0 +1,32 @@
+io:
+  dataset_folder: data/delayed_samples_dataset/20260406_155448
+  model_path: sandbox/inr_das_experiment/outputs/train/20260423_113629
+  output_root: sandbox/inr_das_experiment/outputs/evaluation/fft_profiles
+
+model:
+  # Optional override. If null, reads train_config_info.yml next to model.
+  scaled_features: null
+  # Optional override. If missing, reads train_config_info.yml, then defaults to distance_depth_edge.
+  physical_feature_set: distance_depth_edge
+  feature_chunk_size: 65536
+
+analysis:
+  # If null, defaults to kp.f_number from dataset config.
+  baseline_f_number: 0.5
+  points_xz_mm:
+    - [0.0, 15.0]
+    - [0.0, 25.0]
+    - [0.0, 35.0]
+    - [8.0, 25.0]
+
+fft:
+  n_fft: 512
+  window: hann  # none | hann | hamming
+  freq_axis_max: 0.5
+  use_db: true
+  db_reference: pair_peak  # self_peak | pair_peak
+  db_eps: 1.0e-8
+  freq_axis_max: 0.2  # As fraction of Nyquist (0.5 means up to Nyquist)
+
+plots:
+  dpi: 150
