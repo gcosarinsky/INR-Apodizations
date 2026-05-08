@@ -2,7 +2,14 @@ io:
   simulation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/delayed_samples
   evaluation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/
   save_plot: true
-  model_path: sandbox/inr_das_experiment/outputs/train/20260429_153130
+  model_path: sandbox\inr_das_experiment\outputs\train\20260505_165143
+
+model_comparison:
+  model_1_path: sandbox\inr_das_experiment\outputs\train\20260423_113629
+  model_2_path: sandbox\inr_das_experiment\outputs\train\20260505_165143
+  model_1_label: inr_model_1
+  model_2_label: inr_model_2
+  feature_chunk_size: 65536
 
 phantom:
   mode: grid
@@ -53,7 +60,7 @@ reflector_lateral_profiles:
   enabled: true
   # Set inr_enabled to false to skip INR model loading and evaluate only reference apodizations.
   inr_enabled: true
-  methods: [uniform, hanning, inr]
+  methods: [uniform, boxcar, hanning, inr]
   reflector_indices: all
   half_width_lateral_mm: 1.5
   half_width_axial_mm: 1.0
@@ -65,7 +72,7 @@ reflector_lateral_profiles:
   profile_type: lateral
   snr_radius_mm: 1.5
   # Optional SNR summary y-axis limits in dB. Use null for automatic limits.
-  snr_y_lim_db: [40, 60]  # Example: [0.0, 60.0]
+  snr_y_lim_db: [50, 60]  # Example: [0.0, 60.0]
 
 plots:
   legend_fontsize: 10      # Tamaño de fuente para legendas (default: 8)
@@ -76,7 +83,7 @@ training_target:
   # When enabled, computes the training target (Gaussian-modulated uniform DAS) and
   # shows it as the last panel in the 2x2 comparison plot.
   # If the total number of images exceeds 4, 'boxcar' is dropped to preserve the 2x2 layout.
-  enabled: true
+  enabled: false
   sigma_x_mm: 0.2          # Lateral Gaussian std dev for the mask (mm)
   sigma_z_mm: 0.2          # Axial Gaussian std dev for the mask (mm)
   alpha: 0.0               # Relaxation factor in [0, 1): 0 = pure mask, >0 adds constant background
