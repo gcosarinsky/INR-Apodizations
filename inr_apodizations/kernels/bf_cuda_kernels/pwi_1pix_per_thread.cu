@@ -27,6 +27,7 @@ extern "C" __global__ void pwi_1pix_per_thread(
     int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
+    int wave_source_mode = int_params[WAVE_SOURCE_MODE];
     int nx = int_params[NX];
     int nz = int_params[NZ];
     if (iz >= nz || ix >= nx) return;  // Check index bounds
@@ -56,7 +57,10 @@ extern "C" __global__ void pwi_1pix_per_thread(
     for (unsigned short i = 0; i < nang; i++) {
 
         theta = angles[i];
-        wave_source = x0 * (theta < 0 ? 1 : -1);
+        // Calculate wave source position based on mode and angle. 
+        // If mode is 0, wave source is at -x0 for negative angles and +x0 for positive angles. 
+        // If mode is 1, wave source is at 0 for every angle.
+        wave_source = (1.0f - fminf(1.0f, fmaxf(0.0f, (float)wave_source_mode))) * (-copysignf(x0, theta));
         t1 = ((xf - wave_source) * sinf(theta) + zf * cosf(theta)) / c1 - t_start;
         x_rx = -x0;  // Initialize x_rx for the first element
         for (unsigned short e = 0; e < nel; e++) {
@@ -105,6 +109,7 @@ extern "C" __global__ void pwi_gather_delayed_samples(
     int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
+    int wave_source_mode = int_params[WAVE_SOURCE_MODE];
     int nx = int_params[NX];
     int nz = int_params[NZ];
     if (iz >= nz || ix >= nx) return;  // Check index bounds
@@ -134,7 +139,7 @@ extern "C" __global__ void pwi_gather_delayed_samples(
     for (unsigned short i = 0; i < nang; i++) {
 
         theta = angles[i];
-        wave_source = x0 * (theta < 0 ? 1 : -1);
+        wave_source = (1.0f - fminf(1.0f, fmaxf(0.0f, (float)wave_source_mode))) * (-copysignf(x0, theta));
         t1 = ((xf - wave_source) * sinf(theta) + zf * cosf(theta)) / c1 - t_start;
         x_rx = -x0;  // Initialize x_rx for the first element
 
@@ -181,6 +186,7 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
     int nel = int_params[N_ELEMENTS];
     int nang = int_params[N_ANGLES];
     int ns = int_params[N_SAMPLES];
+    int wave_source_mode = int_params[WAVE_SOURCE_MODE];
 
     // float params
     float fs = float_params[FS];
@@ -203,7 +209,7 @@ extern "C" __global__ void pwi_gather_delayed_samples_points(
 
     for (unsigned short i = 0; i < nang; i++) {
         theta = angles[i];
-        wave_source = x0 * (theta < 0 ? 1 : -1);
+        wave_source = (1.0f - fminf(1.0f, fmaxf(0.0f, (float)wave_source_mode))) * (-copysignf(x0, theta));
         t1 = ((xf - wave_source) * sinf(theta) + zf * cosf(theta)) / c1 - t_start;
         
         x_rx = -x0;

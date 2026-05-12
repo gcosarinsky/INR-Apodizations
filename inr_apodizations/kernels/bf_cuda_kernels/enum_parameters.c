@@ -23,5 +23,6 @@ enum IntParams {
     NX,
     NZ,
     N_SAMPLES,
+    WAVE_SOURCE_MODE,
     INT_PARAMS_COUNT // Total number of int parameters
 };
