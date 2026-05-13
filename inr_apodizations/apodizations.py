@@ -15,6 +15,7 @@ def compute_dynamic_apodizations_tf(
     f_number,
     methods=("boxcar", "hanning"),
     scaled=False,
+    chunk_size: int | None = None,
     eps=1e-8,
 ):
     """Compute dynamic apodizations from CoordinateManager feature tensors.
@@ -24,6 +25,8 @@ def compute_dynamic_apodizations_tf(
         f_number: F-number used for dynamic aperture, where ap_radius = z / (2 * f_number).
         methods: Iterable containing any of "boxcar" and "hanning".
         scaled: Whether to use scaled coordinates/features from CoordinateManager.
+        chunk_size: Optional number of z samples processed per chunk.
+            If ``None`` or non-positive, compute the full grid at once.
         eps: Small epsilon used to avoid division by zero.
 
     Returns:
@@ -32,27 +35,52 @@ def compute_dynamic_apodizations_tf(
 
     Raises:
         ZeroDivisionError: If f_number is zero.
+        ValueError: If chunk_size is invalid.
     """
-    features = cm.get_features_grid(scaled=scaled)
-    dist = tf.cast(features[..., 0], tf.float32)
-    depth = tf.cast(features[..., 1], tf.float32)
-
-    ap_radius = depth / (2.0 * float(f_number))
-
     out = {}
+    coords = cm.get_coordinates_1d(scaled=scaled)
+    x_coords = tf.constant(np.asarray(coords["x"], dtype=np.float32))
+    z_coords = tf.constant(np.asarray(coords["z"], dtype=np.float32))
+    x_elem_coords = tf.constant(np.asarray(coords["x_elem"], dtype=np.float32))
+
+    x_elem_grid = tf.reshape(x_elem_coords, [-1, 1, 1])
+    dist = tf.abs(tf.reshape(x_coords, [1, 1, -1]) - x_elem_grid)
+
     pi = tf.constant(math.pi, dtype=tf.float32)
 
+    if chunk_size is None or int(chunk_size) <= 0:
+        z_chunks = [z_coords]
+    else:
+        chunk_size = int(chunk_size)
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be a positive integer or None")
+        z_chunks = [z_coords[i : i + chunk_size] for i in range(0, int(z_coords.shape[0]), chunk_size)]
+
+    boxcar_chunks = []
+    hanning_chunks = []
+    need_boxcar = "boxcar" in methods
+    need_hanning = "hanning" in methods
+
+    for z_chunk in z_chunks:
+        z_grid = tf.reshape(z_chunk, [1, -1, 1])
+        ap_radius = z_grid / (2.0 * float(f_number))
+
+        if need_boxcar:
+            boxcar_chunks.append(tf.cast(dist <= ap_radius, tf.float32))
+
+        if need_hanning:
+            safe_ap = ap_radius + tf.cast(eps, tf.float32)
+            ratio = dist / safe_ap
+            mask = ratio <= 1.0
+            w_h = 0.5 * (1.0 + tf.cos(pi * ratio))
+            w_h = tf.where(mask, w_h, tf.zeros_like(w_h))
+            hanning_chunks.append(tf.cast(w_h, tf.float32))
+
     if "boxcar" in methods:
-        w_box = tf.cast(dist <= ap_radius, tf.float32)
-        out["boxcar"] = w_box
+        out["boxcar"] = tf.concat(boxcar_chunks, axis=1) if boxcar_chunks else tf.zeros((x_elem_coords.shape[0], 0, x_coords.shape[0]), dtype=tf.float32)
 
     if "hanning" in methods:
-        safe_ap = ap_radius + tf.cast(eps, tf.float32)
-        ratio = dist / safe_ap
-        mask = ratio <= 1.0
-        w_h = 0.5 * (1.0 + tf.cos(pi * ratio))
-        w_h = tf.where(mask, w_h, tf.zeros_like(w_h))
-        out["hanning"] = tf.cast(w_h, tf.float32)
+        out["hanning"] = tf.concat(hanning_chunks, axis=1) if hanning_chunks else tf.zeros((x_elem_coords.shape[0], 0, x_coords.shape[0]), dtype=tf.float32)
 
     return out
 

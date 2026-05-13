@@ -161,11 +161,12 @@ class KernelParameters2D(KernelParametersBase):
         "nx",
         "nz",
         "n_samples",
+        "wave_source_mode",
     ]
 
     # Names calculated internally
     dependent_float_names = ["x0_roi", "z0_roi", "x_0"]  # x_0 can be user-defined
-    dependent_int_names = ["nx", "nz"]
+    dependent_int_names = ["nx", "nz", "wave_source_mode"]
 
     # Default values for user parameters if not provided
     default_param_values = {
@@ -205,6 +206,10 @@ class KernelParameters2D(KernelParametersBase):
             self.x_0 = np.around((self.n_elements - 1) * self.pitch / 2, decimals=2)
         else:
             self.x_0 = self.param_dict["x_0"]
+
+        self.wave_source_mode = int(self.param_dict.get("wave_source_mode", 0))
+        if self.wave_source_mode not in (0, 1):
+            raise ValueError("wave_source_mode must be 0 (legacy) or 1 (force wave_source=0).")
 
     @staticmethod
     def calculate_image_size_and_roi(roi, x_step, z_step, blocksize):

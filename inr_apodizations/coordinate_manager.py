@@ -212,15 +212,15 @@ class CoordinateManager:
         z_mm_tf = tf.constant(self.z_coords_mm, dtype=tf.float32)
         x_elem_mm_tf = tf.constant(self.x_elem_coords_mm, dtype=tf.float32)
 
-        Z_mm, X_mm = tf.meshgrid(z_mm_tf, x_mm_tf, indexing='ij')
+        x_grid = tf.reshape(x_mm_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_mm_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        coords_list = []
-        for x_elem_mm in x_elem_mm_tf:
-            x_elem_grid = tf.fill(X_mm.shape, x_elem_mm)
-            coords = tf.stack([X_mm, Z_mm, x_elem_grid], axis=-1)  # (nz, nx, 3)
-            coords_list.append(coords)
+        x_grid = tf.broadcast_to(x_grid, [self.n_elem, self.nz, self.nx])
+        z_grid = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        x_elem_grid = tf.broadcast_to(x_elem_grid, [self.n_elem, self.nz, self.nx])
 
-        self._coords_grid_mm = tf.stack(coords_list, axis=0)  # (n_elem, nz, nx, 3)
+        self._coords_grid_mm = tf.stack([x_grid, z_grid, x_elem_grid], axis=-1)
         self._coords_flat_mm = tf.reshape(self._coords_grid_mm, [-1, 3])
 
     def _build_coordinates_grid_scaled(self):
@@ -229,15 +229,15 @@ class CoordinateManager:
         z_scaled_tf = tf.constant(self.z_coords_scaled, dtype=tf.float32)
         x_elem_scaled_tf = tf.constant(self.x_elem_coords_scaled, dtype=tf.float32)
 
-        Z_scaled, X_scaled = tf.meshgrid(z_scaled_tf, x_scaled_tf, indexing='ij')
+        x_grid = tf.reshape(x_scaled_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_scaled_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_scaled_tf, [-1, 1, 1])
 
-        coords_list = []
-        for x_elem_scaled in x_elem_scaled_tf:
-            x_elem_grid = tf.fill(X_scaled.shape, x_elem_scaled)
-            coords = tf.stack([X_scaled, Z_scaled, x_elem_grid], axis=-1)  # (nz, nx, 3)
-            coords_list.append(coords)
+        x_grid = tf.broadcast_to(x_grid, [self.n_elem, self.nz, self.nx])
+        z_grid = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        x_elem_grid = tf.broadcast_to(x_elem_grid, [self.n_elem, self.nz, self.nx])
 
-        self._coords_grid_scaled = tf.stack(coords_list, axis=0)  # (n_elem, nz, nx, 3)
+        self._coords_grid_scaled = tf.stack([x_grid, z_grid, x_elem_grid], axis=-1)
         self._coords_flat_scaled = tf.reshape(self._coords_grid_scaled, [-1, 3])
 
     def _build_features_grid_mm(self):
@@ -246,15 +246,24 @@ class CoordinateManager:
         z_mm_tf = tf.constant(self.z_coords_mm, dtype=tf.float32)
         x_elem_mm_tf = tf.constant(self.x_elem_coords_mm, dtype=tf.float32)
 
-        Z_mm, X_mm = tf.meshgrid(z_mm_tf, x_mm_tf, indexing='ij')
+        x_grid = tf.reshape(x_mm_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_mm_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        features_list = []
-        for x_elem_mm in x_elem_mm_tf:
-            feature_tensors = self._compute_physical_features_mm(X_mm, Z_mm, x_elem_mm)
-            features = self._stack_physical_features(feature_tensors)
-            features_list.append(features)
+        dist_to_elem = tf.abs(x_grid - x_elem_grid)
+        dist_to_elem = tf.broadcast_to(dist_to_elem, [self.n_elem, self.nz, self.nx])
+        depth = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        x_from_center = tf.broadcast_to(tf.abs(x_grid - self.x_center), [self.n_elem, self.nz, self.nx])
 
-        self._features_grid_mm = tf.stack(features_list, axis=0)
+        if self.physical_feature_set == "distance_depth":
+            feature_tensors = (dist_to_elem, depth)
+        elif self.physical_feature_set == "distance_depth_center":
+            feature_tensors = (dist_to_elem, depth, x_from_center)
+        else:
+            dist_to_edge = self.D_half - x_from_center
+            feature_tensors = (dist_to_elem, depth, dist_to_edge)
+
+        self._features_grid_mm = self._stack_physical_features(feature_tensors)
         self._features_flat_mm = tf.reshape(self._features_grid_mm, [-1, self.n_physical_features])
 
     def _build_features_grid_scaled(self):
@@ -263,15 +272,24 @@ class CoordinateManager:
         z_scaled_tf = tf.constant(self.z_coords_scaled, dtype=tf.float32)
         x_elem_mm_tf = tf.constant(self.x_elem_coords_mm, dtype=tf.float32)
 
-        Z_scaled, X_mm = tf.meshgrid(z_scaled_tf, x_mm_tf, indexing='ij')
+        x_grid = tf.reshape(x_mm_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_scaled_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        features_list = []
-        for x_elem_mm in x_elem_mm_tf:
-            feature_tensors = self._compute_physical_features_scaled(X_mm, Z_scaled, x_elem_mm)
-            features = self._stack_physical_features(feature_tensors)
-            features_list.append(features)
+        dist_to_elem = tf.abs(x_grid - x_elem_grid) / self.D
+        dist_to_elem = tf.broadcast_to(dist_to_elem, [self.n_elem, self.nz, self.nx])
+        depth = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        x_from_center = tf.broadcast_to(tf.abs(x_grid - self.x_center) / self.D, [self.n_elem, self.nz, self.nx])
 
-        self._features_grid_scaled = tf.stack(features_list, axis=0)
+        if self.physical_feature_set == "distance_depth":
+            feature_tensors = (dist_to_elem, depth)
+        elif self.physical_feature_set == "distance_depth_center":
+            feature_tensors = (dist_to_elem, depth, x_from_center)
+        else:
+            dist_to_edge_scaled = 0.5 - x_from_center
+            feature_tensors = (dist_to_elem, depth, dist_to_edge_scaled)
+
+        self._features_grid_scaled = self._stack_physical_features(feature_tensors)
         self._features_flat_scaled = tf.reshape(
             self._features_grid_scaled,
             [-1, self.n_physical_features]

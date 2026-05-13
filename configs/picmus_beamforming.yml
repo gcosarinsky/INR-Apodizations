@@ -1,0 +1,52 @@
+# PICMUS in-memory delayed-samples + uniform DAS configuration
+
+io:
+  # Base folder that contains PICMUS files
+  picmus_data_path: "C:/Users/ggc/PROYECTOS/Beamforming_experiments/PICMUS/archive_to_download/database/experiments"
+  rf_file: "resolution_distorsion/resolution_distorsion_expe_dataset_rf.hdf5"
+  scan_file: "resolution_distorsion/resolution_distorsion_expe_scan.hdf5"
+
+probe:
+  pitch: 0.3
+  element_width: 0.27
+  element_height: 5.0
+  n_elements: 128
+  fc: 5.208
+  bandwidth: 67.0
+  c1: 1.54
+
+acquisition:
+  fs: 20.832
+  n_pulses: 2.5
+  t_start: 0.0
+
+beamforming:
+  # If f1/f2 are omitted, they are derived from fc and bandwidth.
+  f1: 3.46332
+  f2: 6.95268
+  f_number: 1.0
+  taps: 62
+  n_batch: 0
+  n_ch: 128
+  blocksize_img: [16, 32]
+  wave_source_mode: 1
+  auto_grid_step: true
+  x_step: 0.1
+  z_step: 0.1
+
+angle_subset:
+  mode: "all"
+  indices: []
+
+apodizations:
+  hanning:
+    enabled: true
+    f_number: 1.0
+    z_chunk_size: 32
+    angle_chunk_size: 1
+  inr:
+    enabled: true
+    model_path: "sandbox\\inr_das_experiment\\outputs\\train\\20260505_165143\\model.keras"
+    feature_batch_size: 32768
+    z_chunk_size: 16
+    angle_chunk_size: 1
