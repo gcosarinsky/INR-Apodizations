@@ -27,7 +27,7 @@ import inr_apodizations.experiment_helpers as helpers
 import numpy as np
 import tensorflow as tf
 
-from inr_apodizations.modeling.trainer import DasInrTrainer
+from inr_apodizations.modeling.das_models import DasInrApod
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
@@ -188,7 +188,7 @@ apodization_model = helpers.build_mlp_inr(
     activation=cfg["model"]["activation"],
     output_activation=output_activation,
 )
-trainer = DasInrTrainer(
+trainer = DasInrApod(
     apodization_model=apodization_model,
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),

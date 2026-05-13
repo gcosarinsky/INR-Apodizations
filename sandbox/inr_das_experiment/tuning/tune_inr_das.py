@@ -34,7 +34,7 @@ import sys
 
 import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations import config
-from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
+from inr_apodizations.modeling.das_models import DasInrApod, build_mlp_inr
 from inr_apodizations.modeling.losses import ScaledLoss
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.evaluation import compute_scatterer_metrics
@@ -179,7 +179,7 @@ def build_model(hp):
     )
     
     # 2. Physical Trainer with Tunable Regularization
-    trainer = DasInrTrainer(
+    trainer = DasInrApod(
         apodization_model=inr_mlp,
         features_grid=cm.get_features_grid(scaled=cfg["model"]["scaled_features"]),
         feature_chunk_size=cfg["model"]["feature_chunk_size"],

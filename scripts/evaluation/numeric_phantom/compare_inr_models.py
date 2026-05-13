@@ -26,7 +26,7 @@ from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.kernels import KernelParameters2D
-from inr_apodizations.modeling.trainer import DasInrTrainer
+from inr_apodizations.modeling.das_models import DasInrApod
 import inr_apodizations.experiment_helpers as helpers
 
 plt.ion()
@@ -300,7 +300,7 @@ def _predict_model_image(
     scaled_features = _read_scaled_features_flag(model_artifact_path)
     features_grid = cm.get_features_grid(scaled=scaled_features)
 
-    trainer = DasInrTrainer(
+    trainer = DasInrApod(
         apodization_model=model,
         features_grid=features_grid,
         feature_chunk_size=feature_chunk_size,

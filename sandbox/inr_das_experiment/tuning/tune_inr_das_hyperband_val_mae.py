@@ -49,7 +49,7 @@ from inr_apodizations import config
 from inr_apodizations.modeling.metrics import RelativeMAE
 from inr_apodizations.modeling.metrics import PixelWeightedMAE
 from inr_apodizations.modeling.losses import PixelWeightedMAELoss
-from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
+from inr_apodizations.modeling.das_models import DasInrApod, build_mlp_inr
 
 
 # --- Configuration & Data Loading ---
@@ -508,7 +508,7 @@ def build_model(hp):
     # If auto-init is enabled, `reg_lambda` is treated as trial initial value and
     # then overwritten before the first optimizer step.
 
-    trainer = DasInrTrainer(
+    trainer = DasInrApod(
         apodization_model=inr_mlp,
         features_grid=cm.get_features_grid(scaled=cfg["model"]["scaled_features"]),
         feature_chunk_size=cfg["model"]["feature_chunk_size"],

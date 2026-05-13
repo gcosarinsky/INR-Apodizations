@@ -35,7 +35,7 @@ from inr_apodizations.evaluation import (
     load_validation_scatterers,
 )
 from inr_apodizations.modeling.losses import PixelWeightedMAELoss
-from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
+from inr_apodizations.modeling.das_models import DasInrApod, build_mlp_inr
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.utils import relative_mae
@@ -271,7 +271,7 @@ if weight_reg_auto_norm_fraction <= 0.0:
 
 resolved_weight_reg_type = "hinge_low_norm" if weight_reg_type == "hinge" else weight_reg_type
 
-trainer = DasInrTrainer(
+trainer = DasInrApod(
     apodization_model=apodization_model,
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),

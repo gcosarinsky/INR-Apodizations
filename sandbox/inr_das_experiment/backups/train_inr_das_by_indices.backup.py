@@ -28,7 +28,7 @@ import numpy as np
 import tensorflow as tf
 
 import inr_apodizations.experiment_helpers as helpers
-from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
+from inr_apodizations.modeling.das_models import DasInrApod, build_mlp_inr
 from inr_apodizations.modeling.metrics import MaskedMAE
 from inr_apodizations.modeling.metrics import ssim_metric
 from inr_apodizations.modeling.metrics import mae_db_factory
@@ -220,7 +220,7 @@ if weight_reg_epsilon <= 0.0:
 
 resolved_weight_reg_type = "hinge_low_norm" if weight_reg_type == "hinge" else weight_reg_type
 
-trainer = DasInrTrainer(
+trainer = DasInrApod(
     apodization_model=apodization_model,
     features_grid=features_grid,
     feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),

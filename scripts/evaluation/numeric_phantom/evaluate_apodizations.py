@@ -24,7 +24,7 @@ import tensorflow as tf
 
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.coordinate_manager import CoordinateManager
-from inr_apodizations.modeling.trainer import DasInrTrainer
+from inr_apodizations.modeling.das_models import DasInrApod
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
 from inr_apodizations.dataset import generate_das_modulated_target
@@ -319,7 +319,7 @@ if "boxcar" in dyn_apods:
 else:
     raise RuntimeError("compute_dynamic_apodizations_tf did not return 'boxcar' apodization. Ensure CoordinateManager features are available.")
 
-# INR via DasInrTrainer if model available
+# INR via DasInrApod if model available
 if model is not None:
     # `scaled_features` MUST be specified in a train_config_info.yml adjacent to the model.
     try:
@@ -353,7 +353,7 @@ if model is not None:
 
     features_grid = cm.get_features_grid(scaled=scaled_features)
     feature_chunk_size = int(65536)
-    trainer = DasInrTrainer(
+    trainer = DasInrApod(
         apodization_model=model,
         features_grid=features_grid,
         feature_chunk_size=feature_chunk_size,
