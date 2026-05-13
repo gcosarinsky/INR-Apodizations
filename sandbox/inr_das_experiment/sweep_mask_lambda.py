@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 

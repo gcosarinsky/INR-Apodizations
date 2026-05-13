@@ -72,12 +72,12 @@ run-delayed-samples:
 ## Run numeric phantom evaluation script
 .PHONY: run-phantom-eval
 run-phantom-eval:
-	$(PYTHON_INTERPRETER) sandbox\inr_das_experiment\evaluation\numeric_phantom\evaluate_apodizations.py
+	$(PYTHON_INTERPRETER) scripts/evaluation/numeric_phantom/evaluate_apodizations.py
 
 ## Run FFT profile evaluation script
 .PHONY: run-fft-profile-eval
 run-fft-profile-eval:
-	$(PYTHON_INTERPRETER) sandbox\inr_das_experiment\evaluation\evaluate_apodization_profile_fft.py
+	$(PYTHON_INTERPRETER) scripts/evaluation/fft_profile/evaluate_apodization_profile_fft.py
 
 #################################################################################
 # Self Documenting Commands                                                     #

@@ -1,12 +1,12 @@
 io:
-  simulation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/delayed_samples
-  evaluation_output_root: sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/
+  simulation_output_root: scripts/outputs/evaluation/numeric_phantom/delayed_samples
+  evaluation_output_root: scripts/outputs/evaluation/numeric_phantom/
   save_plot: true
-  model_path: sandbox\inr_das_experiment\outputs\train\20260505_165143
+  model_path: scripts/outputs/train/20260505_165143
 
 model_comparison:
-  model_1_path: sandbox\inr_das_experiment\outputs\train\20260423_113629
-  model_2_path: sandbox\inr_das_experiment\outputs\train\20260505_165143
+  model_1_path: scripts/outputs/train/20260423_113629
+  model_2_path: scripts/outputs/train/20260505_165143
   model_1_label: inr_model_1
   model_2_label: inr_model_2
   feature_chunk_size: 65536

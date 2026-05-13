@@ -33,7 +33,7 @@ print(f"Effective XLA env: XLA_FLAGS={os.environ.get('XLA_FLAGS', '(unset)')}")
 import tensorflow as tf
 import optuna
 
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.losses import ScaledLoss
@@ -205,10 +205,15 @@ val_ds = helpers.build_tf_dataset_by_indices(
 #     print("Smoke test failed with exception:", repr(e))
 #     raise
 
-# Output folder (use sandbox output root from config)
+# Output folder (use scripts output root from config)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 project_name = f"inr_das_optuna_{timestamp}"
-output_dir = Path(cfg["io"].get("sandbox_output_root", "sandbox/outputs/optuna_tuning"))
+output_dir = Path(
+    cfg["io"].get(
+        "scripts_output_root",
+        cfg["io"].get("sandbox_output_root", "scripts/outputs/tuning"),
+    )
+)
 if not output_dir.is_absolute():
     output_dir = config.PROJ_ROOT / output_dir
 output_dir = output_dir / project_name
