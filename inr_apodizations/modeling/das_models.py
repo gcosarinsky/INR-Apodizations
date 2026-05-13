@@ -6,6 +6,7 @@ combinación pixel-wise de múltiples apodizaciones.
 """
 from __future__ import annotations
 
+import numpy as np
 import tensorflow as tf
 
 
@@ -255,6 +256,35 @@ class DasInrApodMixer(DasInrApod):
             Tensor with shape ``(E, Z, X, N)`` or ``None`` if no forward pass has run yet.
         """
         return self._last_apodization_grids
+
+    @property
+    def mixer_coefficients(self) -> dict[str, np.ndarray]:
+        """Return the learned coefficients of the pixel-wise linear combiner layer.
+
+        The ``pixel_combiner`` Dense layer has a kernel of shape ``(N, 1)`` and a
+        bias of shape ``(1,)``, where ``N`` is ``n_apodizations``.  This property
+        exposes them as flat NumPy arrays for easy inspection and logging.
+
+        Returns:
+            Dict with keys:
+            - ``"weights"``: 1-D array of shape ``(N,)`` — one scalar weight per
+              apodization channel, squeezed from the kernel ``(N, 1)``.
+            - ``"bias"``: 1-D array of shape ``(1,)`` — the combiner bias term.
+
+        Raises:
+            RuntimeError: If the ``pixel_combiner`` layer has not been built yet
+                (i.e., no forward pass has been executed).
+        """
+        if not self.pixel_combiner.built:
+            raise RuntimeError(
+                "pixel_combiner has not been built yet. "
+                "Run at least one forward pass before accessing mixer_coefficients."
+            )
+        kernel, bias = self.pixel_combiner.get_weights()
+        return {
+            "weights": kernel.squeeze(axis=-1),  # (N, 1) -> (N,)
+            "bias": bias,                         # (1,)
+        }
 
     def predict_weights_grid(self, training: bool = False) -> tf.Tensor:
         """Run the INR on geometry features and reshape to ``(E, Z, X, N)``.
