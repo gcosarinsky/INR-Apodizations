@@ -27,7 +27,7 @@ from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.modeling.trainer import DasInrTrainer
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 
 plt.ion()
 
@@ -47,11 +47,34 @@ def _load_delayed_samples(path: Path) -> np.ndarray:
 
 
 def _resolve_path(path_cfg: str) -> Path:
-    """Resolve configured path against project root when needed."""
+    """Resolve configured path against project root when needed.
+
+    Also remaps legacy sandbox output roots to the new scripts output root.
+    """
+
+    def _remap_legacy_outputs_path(path: Path) -> Path:
+        legacy_marker = "sandbox/inr_das_experiment/outputs"
+        new_marker = "scripts/outputs"
+
+        path_norm = str(path).replace("\\", "/")
+        if legacy_marker not in path_norm:
+            return path
+
+        remapped_norm = path_norm.replace(legacy_marker, new_marker, 1)
+        return Path(remapped_norm)
+
     path = Path(path_cfg)
-    if path.is_absolute():
+    if not path.is_absolute():
+        path = (PROJ_ROOT / path).resolve()
+
+    if path.exists():
         return path
-    return (PROJ_ROOT / path).resolve()
+
+    remapped = _remap_legacy_outputs_path(path)
+    if remapped.exists():
+        return remapped
+
+    return path
 
 
 def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, Path]:
@@ -66,7 +89,7 @@ def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, 
     """
     simulation_root_cfg = io_cfg.get(
         "simulation_output_root",
-        "sandbox/inr_das_experiment/outputs/evaluation/numeric_phantom/delayed_samples",
+        "scripts/outputs/evaluation/numeric_phantom/delayed_samples",
     )
     simulation_root = _resolve_path(str(simulation_root_cfg))
 

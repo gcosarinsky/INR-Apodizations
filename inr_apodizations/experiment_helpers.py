@@ -1,6 +1,6 @@
-"""Helpers for sandbox INR DAS experiment workflows.
+"""Helpers for INR DAS experiment workflows.
 
-This module centralizes utilities used by sandbox training, tuning, and
+This module centralizes utilities used by training, tuning, and
 baseline-evaluation scripts, so all consumers import from the package namespace.
 """
 
@@ -32,7 +32,11 @@ from inr_apodizations.evaluation import (
     compute_scatterer_metrics,
     compute_validation_and_reference_metrics,
 )
-from inr_apodizations.evaluation.scatterers import select_reflector_scatterer
+from inr_apodizations.evaluation.scatterers import (
+    plot_scatterer_evaluation,
+    plot_scatterer_snr_ratio,
+    select_reflector_scatterer,
+)
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.plots import (
     plot_apodization_before_after,
@@ -40,12 +44,6 @@ from inr_apodizations.plots import (
     plot_training_curves,
     to_db,
 )
-from sandbox.inr_das_experiment.scatterer_metrics import (
-    plot_scatterer_evaluation,
-    plot_scatterer_snr_ratio,
-)
-
-
 BYTES_PER_GB = float(1024**3)
 
 
@@ -329,10 +327,10 @@ def load_delayed_samples_dataset(
 
 
 def get_target_regeneration_override(config: dict) -> tuple[float | None, float | None, float | None]:
-    """Extract optional target regeneration overrides from sandbox configuration.
+    """Extract optional target regeneration overrides from experiment configuration.
 
     Args:
-        config: Sandbox experiment configuration mapping.
+        config: Experiment configuration mapping.
 
     Returns:
         Tuple ``(sigma_x, sigma_z, alpha)`` or ``(None, None, None)`` when disabled.
@@ -427,19 +425,19 @@ def validate_dataset_shapes(
 
 
 def load_experiment_config(config_path: str) -> dict:
-    """Load the sandbox experiment YAML configuration."""
+    """Load the experiment YAML configuration."""
     with open(config_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
 
 
-def create_run_directories(processed_root: str, sandbox_root: str) -> tuple[str, str, str]:
-    """Create timestamped run directories for processed and sandbox outputs."""
+def create_run_directories(processed_root: str, output_root: str) -> tuple[str, str, str]:
+    """Create timestamped run directories for processed and experiment outputs."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     processed_dir = os.path.join(processed_root, timestamp)
-    sandbox_dir = os.path.join(sandbox_root, timestamp)
+    output_dir = os.path.join(output_root, timestamp)
     os.makedirs(processed_dir, exist_ok=True)
-    os.makedirs(sandbox_dir, exist_ok=True)
-    return timestamp, processed_dir, sandbox_dir
+    os.makedirs(output_dir, exist_ok=True)
+    return timestamp, processed_dir, output_dir
 
 
 def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config: dict) -> None:

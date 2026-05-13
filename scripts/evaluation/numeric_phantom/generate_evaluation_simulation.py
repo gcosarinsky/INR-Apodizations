@@ -13,7 +13,7 @@ import pymust
 import yaml
 from scipy import signal
 
-from inr_apodizations.config import CONFIGS_DIR, CUDA_DIR
+from inr_apodizations.config import CONFIGS_DIR, CUDA_DIR, PROJ_ROOT
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.utils import cfg_to_must_param, save_config_yaml, to_db
 
@@ -217,9 +217,14 @@ _require_keys(
 
 #%% ===== Output Folder =====
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_root = Path(io_cfg.get("simulation_output_root", script_dir.parent / "delayed_samples"))
+output_root = Path(
+    io_cfg.get(
+        "simulation_output_root",
+        "scripts/outputs/evaluation/numeric_phantom/delayed_samples",
+    )
+)
 if not output_root.is_absolute():
-    output_root = (Path.cwd() / output_root).resolve()
+    output_root = (PROJ_ROOT / output_root).resolve()
 
 run_folder = output_root / timestamp
 run_folder.mkdir(parents=True, exist_ok=True)

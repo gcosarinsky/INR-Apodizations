@@ -1,8 +1,8 @@
 io:
   dataset_folder: data/delayed_samples_dataset/20260406_155448
-  sandbox_output_root: sandbox/inr_das_experiment/outputs/train
-  baseline_output: sandbox/inr_das_experiment/evaluation/baseline
-  review_output_root: sandbox/inr_das_experiment/review_outputs
+  scripts_output_root: scripts/outputs/train
+  baseline_output: scripts/outputs/evaluation/baseline
+  review_output_root: scripts/outputs/review
   # dataset_noise removed: noise must be provided as precomputed files in the dataset folder
 
 target_regeneration:
@@ -82,5 +82,5 @@ reflector_profile_comparison:
   use_db: true
 
 results_review:
-  run_timestamp: ""  # Folder under sandbox_output_root that contains model.keras + train_config_info.yml
+  run_timestamp: ""  # Folder under scripts_output_root that contains model.keras + train_config_info.yml
   max_validation_examples: null

@@ -44,7 +44,7 @@ print("TF GPUs:", tf.config.list_physical_devices("GPU"))
 strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
 print(f"Using distribution strategy: {strategy}")
 
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations import config
 from inr_apodizations.modeling.metrics import RelativeMAE
 from inr_apodizations.modeling.metrics import PixelWeightedMAE
@@ -552,7 +552,15 @@ def build_model(hp):
 # --- Run Tuning ---
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 project_name = f"inr_das_tuning_{timestamp}"
-tuning_dir = Path(cfg["io"]["sandbox_output_root"]) / project_name
+tuning_output_root = Path(
+    cfg["io"].get(
+        "scripts_output_root",
+        cfg["io"].get("sandbox_output_root", "scripts/outputs/tuning"),
+    )
+)
+if not tuning_output_root.is_absolute():
+    tuning_output_root = config.PROJ_ROOT / tuning_output_root
+tuning_dir = tuning_output_root / project_name
 tuning_dir.mkdir(parents=True, exist_ok=True)
 live_score_plot = LiveTrialScorePlot(
     tuning_dir / "hyperband_relative_mae_progress.png",

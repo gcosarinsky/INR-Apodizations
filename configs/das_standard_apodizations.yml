@@ -35,7 +35,7 @@ reflector_lateral_profile:
 save: true
 show: true
 save_npy: false
-output_dir: sandbox/figures
+output_dir: scripts/outputs/evaluation/das_standard_apodizations
 
 # Scatterer evaluation (requires scatterers from RF dataset)
 scatterer_eval:

@@ -1,6 +1,6 @@
 """Evaluate FFT magnitude of apodization profiles (INR vs baselines).
 
-This sandbox script compares per-element apodization profiles at explicit
+This script compares per-element apodization profiles at explicit
 ``(x_mm, z_mm)`` points and evaluates their spectral magnitude using FFT.
 
 Workflow:
@@ -26,7 +26,7 @@ import yaml
 
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf, extract_profile_for_z
 from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
-from inr_apodizations.sandbox_helpers import build_coordinate_manager
+from inr_apodizations.experiment_helpers import build_coordinate_manager
 from inr_apodizations.utils import to_db
 
 

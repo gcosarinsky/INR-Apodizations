@@ -30,7 +30,7 @@ from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
 from inr_apodizations.dataset import generate_das_modulated_target
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 
 plt.ion()  # interactive mode for plotting
 
@@ -45,6 +45,22 @@ def _load_delayed_samples(path: Path) -> np.ndarray:
     return arr
 
 
+def _remap_legacy_outputs_path(path: Path) -> Path:
+    """Map legacy sandbox outputs paths to the new scripts outputs layout.
+
+    This keeps old simulation_info.yml files usable after moving outputs.
+    """
+    legacy_marker = "sandbox/inr_das_experiment/outputs"
+    new_marker = "scripts/outputs"
+
+    path_norm = str(path).replace("\\", "/")
+    if legacy_marker not in path_norm:
+        return path
+
+    remapped_norm = path_norm.replace(legacy_marker, new_marker, 1)
+    return Path(remapped_norm)
+
+
 def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, Path]:
     """Resolve delayed-samples artifact from latest simulation metadata.
 
@@ -56,7 +72,7 @@ def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, 
         ValueError: If metadata format/content is invalid.
     """
     simulation_root_cfg = io_cfg.get(
-        "simulation_output_root", "sandbox/inr_das_experiment/evaluation/delayed_samples"
+        "simulation_output_root", "scripts/outputs/evaluation/numeric_phantom/delayed_samples"
     )
     simulation_root = Path(PROJ_ROOT / simulation_root_cfg)
     if not simulation_root.exists() or not simulation_root.is_dir():
@@ -91,6 +107,11 @@ def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, 
     delayed_samples_path = Path(delayed_samples_cfg)
     if not delayed_samples_path.is_absolute():
         delayed_samples_path = (PROJ_ROOT / delayed_samples_path).resolve()
+
+    if not delayed_samples_path.exists() or delayed_samples_path.is_dir():
+        remapped_path = _remap_legacy_outputs_path(delayed_samples_path)
+        if remapped_path != delayed_samples_path and remapped_path.exists() and remapped_path.is_file():
+            delayed_samples_path = remapped_path
 
     if not delayed_samples_path.exists() or delayed_samples_path.is_dir():
         raise FileNotFoundError(

@@ -37,8 +37,8 @@ from inr_apodizations.evaluation import (
     select_reflector_scatterer_index,
 )
 from inr_apodizations.plots import plot_lateral_reflector_profiles, to_db
-from inr_apodizations.sandbox_helpers import build_reflector_profile_context
-import inr_apodizations.sandbox_helpers as helpers
+from inr_apodizations.experiment_helpers import build_reflector_profile_context
+import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations.utils import relative_mae
 
 
@@ -90,7 +90,7 @@ def resolve_baseline_output_root(cfg_user: dict) -> Path:
     io_cfg = cfg_user.get("io", {})
     baseline_output_cfg = io_cfg.get("baseline_output", io_cfg.get("baseline_ouput"))
     if baseline_output_cfg is None:
-        baseline_output_cfg = "sandbox/inr_das_experiment/evaluation/baseline"
+        baseline_output_cfg = "scripts/outputs/evaluation/baseline"
 
     baseline_output = Path(str(baseline_output_cfg).strip())
     if not baseline_output.is_absolute():

@@ -32,12 +32,12 @@ from inr_apodizations.tuning.utils import generate_candidate_architectures
 import yaml
 import sys
 
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.losses import ScaledLoss
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from scatterer_metrics import compute_scatterer_metrics
+from inr_apodizations.evaluation import compute_scatterer_metrics
 
 
 # Candidate generation is provided by inr_apodizations.tuning.utils.generate_candidate_architectures
@@ -209,7 +209,15 @@ def build_model(hp):
 # --- Run Tuning ---
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 project_name = f"inr_das_tuning_{timestamp}"
-tuning_dir = Path(cfg["io"]["sandbox_output_root"]) / project_name
+tuning_output_root = Path(
+    cfg["io"].get(
+        "scripts_output_root",
+        cfg["io"].get("sandbox_output_root", "scripts/outputs/tuning"),
+    )
+)
+if not tuning_output_root.is_absolute():
+    tuning_output_root = config.PROJ_ROOT / tuning_output_root
+tuning_dir = tuning_output_root / project_name
 
 tuner = kt.BayesianOptimization(
     build_model,

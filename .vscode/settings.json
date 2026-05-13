@@ -1,6 +1,5 @@
 {
     "python.terminal.launchArgs": ["-m", "IPython", "-i", "--"],
-    "python.terminal.activateEnvironment": false,
-    
-    "chat.tools.terminal.terminalProfile.windows": "Command Prompt"
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.defaultProfile.windows": "Command Prompt"
 }

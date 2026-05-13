@@ -27,7 +27,7 @@ from inr_apodizations import config
 import numpy as np
 import tensorflow as tf
 
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.metrics import MaskedMAE
 from inr_apodizations.modeling.metrics import ssim_metric

@@ -1,6 +1,6 @@
 io:
   dataset_folder: "data/delayed_samples_dataset/20260406_155448"
-  sandbox_output_root: "sandbox/inr_das_experiment/outputs/tuning"
+  scripts_output_root: "scripts/outputs/tuning"
 
 model:
   scaled_features: true

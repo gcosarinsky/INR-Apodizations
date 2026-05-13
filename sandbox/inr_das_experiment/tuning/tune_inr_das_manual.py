@@ -23,12 +23,12 @@ if conda_prefix:
 
 import tensorflow as tf
 
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.tuning.utils import generate_candidate_architectures
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from scatterer_metrics import compute_scatterer_metrics
+from inr_apodizations.evaluation import compute_scatterer_metrics
 
 
 CONFIG_PATH = Path("configs/tune_inr_das_manual.yml")
@@ -135,7 +135,15 @@ def evaluate_on_val(trainer):
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 project_name = f"inr_das_manual_{timestamp}"
-tuning_dir = Path(cfg["io"]["sandbox_output_root"]) / project_name
+tuning_output_root = Path(
+    cfg["io"].get(
+        "scripts_output_root",
+        cfg["io"].get("sandbox_output_root", "scripts/outputs/manual_tuning"),
+    )
+)
+if not tuning_output_root.is_absolute():
+    tuning_output_root = config.PROJ_ROOT / tuning_output_root
+tuning_dir = tuning_output_root / project_name
 tuning_dir.mkdir(parents=True, exist_ok=True)
 
 # Search history structures (persisted after each candidate)
