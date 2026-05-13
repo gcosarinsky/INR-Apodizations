@@ -1,7 +1,7 @@
 io:
   dataset_folder: data/delayed_samples_dataset/20260406_155448
-  model_path: sandbox/inr_das_experiment/outputs/train/20260423_113629
-  output_root: sandbox/inr_das_experiment/outputs/evaluation/fft_profiles
+  model_path: scripts/outputs/train/20260423_113629
+  output_root: scripts/outputs/evaluation/fft_profiles
 
 model:
   # Optional override. If null, reads train_config_info.yml next to model.

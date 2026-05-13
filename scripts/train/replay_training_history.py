@@ -17,13 +17,13 @@ from pathlib import Path
 import yaml
 
 from inr_apodizations import config
-from inr_apodizations.sandbox_helpers import plot_training_curves
+from inr_apodizations.experiment_helpers import plot_training_curves
 
 # ============================================================================
 # Configuration — edit RUN_DIR to point to the training run to replay
 # ============================================================================
 
-RUN_DIR = config.PROJ_ROOT / "sandbox" / "inr_das_experiment" / "outputs" / "train" / "20260429_153130"
+RUN_DIR = config.PROJ_ROOT / "scripts" / "outputs" / "train" / "20260429_153130"
 
 
 # ============================================================================

@@ -1,4 +1,4 @@
-"""Sandbox script: unified apodization visualization and DAS reconstruction.
+"""Unified apodization visualization and DAS reconstruction script.
 
 This script reads all runtime options from `configs/das_apodizations.yml`.
 No CLI arguments are used.
@@ -31,7 +31,7 @@ from inr_apodizations.plots import (
     generate_das_comparison_figure,
     plot_lateral_reflector_profiles,
 )
-from inr_apodizations.sandbox_helpers import (
+from inr_apodizations.experiment_helpers import (
     build_reflector_profile_context,
     compute_scatterer_metrics,
 )
@@ -84,7 +84,7 @@ def load_scatterers_for_example(cfg_dataset: dict, example_idx: int) -> np.ndarr
 
 
 def load_yaml_config(config_path: Path) -> dict:
-    """Load and validate YAML configuration for the combined sandbox script.
+    """Load and validate YAML configuration for the combined evaluation script.
 
     Args:
         config_path: Absolute path to YAML file.
@@ -101,7 +101,7 @@ def load_yaml_config(config_path: Path) -> dict:
             f"Config file not found at {config_path}. "
             "Create it from configs/das_standard_apodizations_example.yml"
         )
-
+    from inr_apodizations.experiment_helpers import (
     with config_path.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
 

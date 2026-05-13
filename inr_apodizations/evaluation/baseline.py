@@ -24,7 +24,7 @@ from inr_apodizations.evaluation.summary import (
     extract_snr_from_metrics,
 )
 from inr_apodizations.modeling.metrics import PixelWeightedMAE
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 
 
 def load_validation_scatterers(

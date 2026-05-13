@@ -18,12 +18,12 @@ import numpy as np
 import tensorflow as tf
 import yaml
 
-# Add sandbox to path for imports
+# Add script folders to path for local imports when run directly
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from inr_apodizations import config
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 from inr_apodizations.config import PROJ_ROOT
 from inr_apodizations.interactive_navigator import InteractiveImageNavigator
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
@@ -142,7 +142,7 @@ def generate_inr_comparison_figure(
 # MAIN: Load trained model and enable interactive review
 # ============================================================================
 
-CONFIG_PATH = Path("configs/train_config.yml")
+CONFIG_PATH = config.CONFIGS_DIR / "train_config.yml"
 if not CONFIG_PATH.exists():
     print(f"Error: config file not found at {CONFIG_PATH}")
     sys.exit(1)
@@ -153,15 +153,20 @@ run_timestamp = str(review_cfg.get("run_timestamp", "")).strip()
 if not run_timestamp:
     raise ValueError("results_review.run_timestamp must be set to the training run timestamp.")
 
-# Resolve sandbox root (where training outputs are stored)
-sandbox_root_cfg = Path(cfg["io"]["sandbox_output_root"])
-if not sandbox_root_cfg.is_absolute():
-    sandbox_root = config.PROJ_ROOT / sandbox_root_cfg
+# Resolve output root (where training outputs are stored)
+scripts_output_root_cfg = Path(
+    cfg["io"].get(
+        "scripts_output_root",
+        cfg["io"].get("sandbox_output_root", "scripts/outputs/train"),
+    )
+)
+if not scripts_output_root_cfg.is_absolute():
+    sandbox_root = config.PROJ_ROOT / scripts_output_root_cfg
 else:
-    sandbox_root = sandbox_root_cfg
+    sandbox_root = scripts_output_root_cfg
 
 if not sandbox_root.exists():
-    print(f"Error: sandbox output root not found at {sandbox_root}")
+    print(f"Error: training output root not found at {sandbox_root}")
     sys.exit(1)
 
 artifacts_dir = sandbox_root / run_timestamp
@@ -255,7 +260,7 @@ example_indices = val_idx if max_examples is None else val_idx[:int(max_examples
 print(f"\nPrepared {len(example_indices)} validation examples for interactive review...")
 
 review_output_root_cfg = cfg["io"].get(
-    "review_output_root", "sandbox/inr_das_experiment/review_outputs"
+    "review_output_root", "scripts/outputs/review"
 )
 review_output_root = Path(review_output_root_cfg)
 if not review_output_root.is_absolute():

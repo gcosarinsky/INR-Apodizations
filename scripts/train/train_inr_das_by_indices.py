@@ -24,7 +24,7 @@ from pathlib import Path
 os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
 
 from inr_apodizations import config
-import inr_apodizations.sandbox_helpers as helpers
+import inr_apodizations.experiment_helpers as helpers
 
 import numpy as np
 import tensorflow as tf
@@ -47,7 +47,7 @@ import matplotlib.pyplot as plt
 # 1) Configuration, reproducibility, and dataset loading
 # ============================================================================
 
-CONFIG_PATH = Path("configs/train_config.yml")
+CONFIG_PATH = config.CONFIGS_DIR / "train_config.yml"
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
 seed = int(cfg["training"]["seed"])
 tf.keras.utils.set_random_seed(seed)
@@ -408,12 +408,17 @@ if hanning_weights_np is None or boxcar_weights_np is None:
 # 7) Output folders, callbacks, and model training
 # ============================================================================
 
-# Resolve sandbox output root and create a timestamped sandbox outputs folder.
-sandbox_root_cfg = Path(cfg["io"]["sandbox_output_root"])
-if not sandbox_root_cfg.is_absolute():
-    sandbox_root = config.PROJ_ROOT / sandbox_root_cfg
+# Resolve scripts output root and create a timestamped outputs folder.
+scripts_output_root_cfg = Path(
+    cfg["io"].get(
+        "scripts_output_root",
+        cfg["io"].get("sandbox_output_root", "scripts/outputs/train"),
+    )
+)
+if not scripts_output_root_cfg.is_absolute():
+    sandbox_root = config.PROJ_ROOT / scripts_output_root_cfg
 else:
-    sandbox_root = sandbox_root_cfg
+    sandbox_root = scripts_output_root_cfg
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 sandbox_dir = str(Path(sandbox_root) / timestamp)
@@ -738,7 +743,10 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
         baseline_reference_summary, baseline_reference_arrays = find_latest_baseline_reference(
             dataset_folder=dataset_folder,
             baseline_f_number=baseline_f_number,
-            baseline_output_root=cfg["io"].get("baseline_output", cfg["io"]["sandbox_output_root"]),
+            baseline_output_root=cfg["io"].get(
+                "baseline_output",
+                cfg["io"].get("scripts_output_root", "scripts/outputs/train"),
+            ),
         )
 
         if baseline_reference_arrays is not None:

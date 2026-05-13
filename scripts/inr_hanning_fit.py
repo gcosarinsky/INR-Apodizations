@@ -15,7 +15,7 @@ import numpy as np
 import tensorflow as tf
 
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf, extract_map_for_x
-from inr_apodizations.config import DATA_DIR
+from inr_apodizations.config import DATA_DIR, PROJ_ROOT
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.utils import find_latest_dataset_folder
@@ -27,7 +27,7 @@ BATCH_SIZE = 8192
 LEARNING_RATE = 1e-3
 SCALED_FEATURES = True
 TRAIN_SUBSET_FRACTION = 0.1  # Set to None to use the full dataset for training
-FIGURE_PATH = Path("sandbox/figures/INR_hanning_fit/")
+FIGURE_PATH = PROJ_ROOT / "scripts" / "outputs" / "inr_hanning_fit"
 RANDOM_SEED = 42
 
 
