@@ -1,0 +1,84 @@
+io:
+  dataset_folder: data/delayed_samples_dataset/20260406_155448
+  scripts_output_root: scripts/outputs/train_mixer
+  baseline_output: scripts/outputs/evaluation/baseline
+  review_output_root: scripts/outputs/review
+
+target_regeneration:
+  enabled: true
+  sigma_x: 0.2
+  sigma_z: 0.2
+  alpha: 0
+
+model:
+  physical_feature_set: distance_depth_edge
+  # hidden_units: Specifies hidden layer sizes for the MLP INR.
+  #   Mode 1 (uniform): int value, requires n_hidden_layers
+  #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
+  hidden_units: [8, 8, 8]
+  n_hidden_layers: 4
+  activation: relu
+  output_activation: sigmoid
+  scaled_features: true
+  feature_chunk_size: 65536
+  # n_apodizations: number of independent apodization channels output by the INR.
+  # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
+  # via a trainable linear layer inside DasInrApodMixer.
+  n_apodizations: 2
+
+eval_noise:
+  enabled: false
+  scale: 1.0
+
+training:
+  batch_size: 2
+  epochs: 40
+  learning_rate: 0.001
+  loss: mae
+  metric: mae
+  weight_decay: 0.001
+  weight_regularization:
+    enabled: false
+    type: hinge_low_norm
+    lambda: 333000
+    tau: 0.7
+    epsilon: 1.0e-8
+    normalize_norm: true
+    auto_init:
+      enabled: false
+      ratio: 0.2
+      norm_fraction: 0.8
+      epsilon: 1.0e-12
+  mae_db_ref: null
+  mae_db_eps: 1.0e-8
+  baseline_f_number: 0.5
+  mask_weighting:
+    enabled: true
+    pixel_weight_lambda: 1.
+  train_fraction: 0.8
+  seed: 42
+  max_examples: null
+  early_stopping_patience: 4
+  reduce_lr_patience: 3
+
+plots:
+  cmap: gray
+  vmin_db: -60.0
+  vmax_db: 0.0
+  normalize_each_image: true
+  x_values_apod: [0.0, -10.0, 10.0]
+  z_profiles_mm: [15.0, 25.0, 35.0]
+  apod_cmap: viridis
+
+scatterer_eval:
+  enabled: true
+  radius_mm: 1.25
+  hist_bins: 50
+
+reflector_profile_comparison:
+  enabled: true
+  scatterer_selection: strongest
+  scatterer_idx: [0, 6, 12]
+
+results_review:
+  run_timestamp: ""
