@@ -28,7 +28,7 @@ from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.tuning.utils import generate_candidate_architectures
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from scatterer_metrics import compute_scatterer_metrics
+from inr_apodizations.evaluation import compute_scatterer_metrics
 
 
 CONFIG_PATH = Path("configs/tune_inr_das_manual.yml")

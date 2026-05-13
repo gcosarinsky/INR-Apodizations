@@ -43,7 +43,7 @@ from inr_apodizations import config
 from inr_apodizations.modeling.trainer import DasInrTrainer, build_mlp_inr
 from inr_apodizations.modeling.losses import ScaledLoss
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from scatterer_metrics import compute_scatterer_metrics
+from inr_apodizations.evaluation import compute_scatterer_metrics
 
 
 # --- Configuration & Data Loading ---

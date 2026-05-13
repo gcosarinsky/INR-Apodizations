@@ -1,8 +1,7 @@
 """High-level orchestrator for per-scatterer evaluation.
 
 This module combines region masks, profile extraction, background statistics,
-and SNR computation into the public API that was previously split across
-sandbox/inr_das_experiment/scatterer_metrics.py and baseline_evaluation.py.
+and SNR computation into a unified public API.
 """
 
 from __future__ import annotations

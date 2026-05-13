@@ -50,6 +50,8 @@ from inr_apodizations.evaluation.baseline import (
 from inr_apodizations.evaluation.scatterers import (
     select_reflector_scatterer_index,
     select_reflector_scatterer,
+    plot_scatterer_evaluation,
+    plot_scatterer_snr_ratio,
 )
 
 __all__ = [
@@ -85,4 +87,6 @@ __all__ = [
     # scatterers
     "select_reflector_scatterer_index",
     "select_reflector_scatterer",
+    "plot_scatterer_evaluation",
+    "plot_scatterer_snr_ratio",
 ]

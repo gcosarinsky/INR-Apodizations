@@ -32,7 +32,11 @@ from inr_apodizations.evaluation import (
     compute_scatterer_metrics,
     compute_validation_and_reference_metrics,
 )
-from inr_apodizations.evaluation.scatterers import select_reflector_scatterer
+from inr_apodizations.evaluation.scatterers import (
+    plot_scatterer_evaluation,
+    plot_scatterer_snr_ratio,
+    select_reflector_scatterer,
+)
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.plots import (
     plot_apodization_before_after,
@@ -40,12 +44,6 @@ from inr_apodizations.plots import (
     plot_training_curves,
     to_db,
 )
-from sandbox.inr_das_experiment.scatterer_metrics import (
-    plot_scatterer_evaluation,
-    plot_scatterer_snr_ratio,
-)
-
-
 BYTES_PER_GB = float(1024**3)
 
 
