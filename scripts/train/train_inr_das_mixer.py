@@ -48,45 +48,16 @@ import matplotlib.pyplot as plt
 
 CONFIG_PATH = config.CONFIGS_DIR / "train_mixer_config.yml"
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
-resume_cfg = dict(cfg.get("resume", {}))
-resume_enabled = bool(resume_cfg.get("enabled", False))
 
+# Resume configuration parsing using helpers
+resume_cfg = helpers.parse_resume_config(cfg.get("resume", {}))
+(resume_enabled, initial_epoch, target_epochs, resume_model_path, previous_history, history_stages) = helpers.setup_resume_state(
+    resume_cfg, int(cfg["training"]["epochs"]), cfg
+)
 
-def _resolve_optional_path(raw_value: str | None) -> Path | None:
-    """Resolve optional config path as absolute Path, preserving None/empty."""
-    if raw_value is None:
-        return None
-    token = str(raw_value).strip()
-    if not token:
-        return None
-    path = Path(token)
-    return path if path.is_absolute() else (config.PROJ_ROOT / path)
-
-
-resume_source_run_dir = _resolve_optional_path(resume_cfg.get("source_run_dir"))
-resume_source_model_path = _resolve_optional_path(resume_cfg.get("source_model_path"))
+# Extract commonly used resume values for backward compatibility with existing code
+resume_source_run_dir = resume_cfg.get("source_run_dir")
 resume_restore_optimizer = bool(resume_cfg.get("restore_optimizer", True))
-resume_epochs_mode = str(resume_cfg.get("epochs_mode", "additional")).strip().lower()
-resume_additional_epochs = int(resume_cfg.get("additional_epochs", 0))
-
-if resume_epochs_mode not in {"additional", "target_total"}:
-    raise ValueError("resume.epochs_mode must be 'additional' or 'target_total'")
-if resume_additional_epochs < 0:
-    raise ValueError("resume.additional_epochs must be >= 0")
-if resume_enabled and resume_source_run_dir is None and resume_source_model_path is None:
-    raise ValueError(
-        "resume.enabled=true requires at least one source: "
-        "resume.source_run_dir or resume.source_model_path"
-    )
-
-resume_model_path = resume_source_model_path
-if resume_source_run_dir is not None and resume_model_path is None:
-    resume_model_path = resume_source_run_dir / "model.keras"
-
-if resume_enabled and resume_model_path is None:
-    raise ValueError("Could not resolve model path for resume mode")
-if resume_enabled and not resume_model_path.is_file():
-    raise FileNotFoundError(f"Resume model file not found: {resume_model_path}")
 
 seed = int(cfg["training"]["seed"])
 tf.keras.utils.set_random_seed(seed)
@@ -371,37 +342,8 @@ trainer.compile(
     weighted_metrics=weighted_metrics_list,
 )
 
-previous_history: dict[str, list] = {}
-history_stages: list[dict] = []
-initial_epoch = 0
-target_epochs = int(cfg["training"]["epochs"])
-if resume_enabled and resume_source_run_dir is not None:
-    previous_history, history_stages = helpers.load_previous_history(str(resume_source_run_dir))
-    initial_epoch = helpers.history_length(previous_history)
-
-    if resume_epochs_mode == "additional":
-        resolved_additional_epochs = resume_additional_epochs
-        if resolved_additional_epochs == 0:
-            resolved_additional_epochs = int(cfg["training"]["epochs"])
-        target_epochs = initial_epoch + resolved_additional_epochs
-    else:
-        target_epochs = int(cfg["training"]["epochs"])
-
-    if target_epochs <= initial_epoch:
-        raise ValueError(
-            "Resume target epochs must be greater than previously recorded epochs. "
-            f"initial_epoch={initial_epoch}, target_epochs={target_epochs}"
-        )
-
-    print(
-        "Resume schedule:",
-        {
-            "initial_epoch": initial_epoch,
-            "target_epochs": target_epochs,
-            "epochs_mode": resume_epochs_mode,
-            "additional_epochs": resume_additional_epochs,
-        },
-    )
+# Note: initial_epoch, target_epochs, previous_history, history_stages are already
+# initialized by setup_resume_state() above. No further setup needed here.
 
 
 # ============================================================================

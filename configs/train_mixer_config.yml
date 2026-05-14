@@ -72,7 +72,7 @@ resume:
   # additional: train N extra epochs from previous history length.
   # target_total: use training.epochs as total global epoch target.
   epochs_mode: additional
-  additional_epochs: 0
+  additional_epochs: 5
   strict_compatibility: true
 
 plots:

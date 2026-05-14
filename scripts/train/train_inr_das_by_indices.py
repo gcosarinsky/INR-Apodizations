@@ -55,6 +55,12 @@ tf.config.experimental.enable_op_determinism()
 random.seed(seed)
 np.random.seed(seed)
 
+# Resume configuration parsing
+resume_cfg = helpers.parse_resume_config(cfg.get("resume", {}))
+(resume_enabled, initial_epoch, target_epochs, resume_model_path, previous_history, history_stages) = helpers.setup_resume_state(
+    resume_cfg, int(cfg["training"]["epochs"]), cfg
+)
+
 # Resolve dataset folder relative to project root when given as a relative path
 dataset_folder = Path(cfg["io"]["dataset_folder"])
 if not dataset_folder.is_absolute():
@@ -234,13 +240,17 @@ features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]
 output_activation = cfg["model"].get("output_activation", "sigmoid")
 hidden_units_raw = cfg["model"].get("hidden_units")
 n_hidden_layers_raw = cfg["model"].get("n_hidden_layers")
-apodization_model = build_mlp_inr(
-    input_dim=cm.n_physical_features,
-    hidden_units_config=hidden_units_raw,
-    n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
-    activation=cfg["model"]["activation"],
-    output_activation=output_activation,
-)
+if resume_enabled:
+    print(f"Resume enabled. Loading model from: {resume_model_path}")
+    apodization_model = tf.keras.models.load_model(str(resume_model_path), compile=False)
+else:
+    apodization_model = build_mlp_inr(
+        input_dim=cm.n_physical_features,
+        hidden_units_config=hidden_units_raw,
+        n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
+        activation=cfg["model"]["activation"],
+        output_activation=output_activation,
+    )
 weight_reg_cfg = dict(cfg["training"].get("weight_regularization", {}))
 weight_reg_enabled = bool(weight_reg_cfg.get("enabled", False))
 weight_reg_type = str(weight_reg_cfg.get("type", "hinge_low_norm")).strip().lower()
@@ -448,7 +458,8 @@ print("Starting physical-forward training...")
 history = trainer.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=int(cfg["training"]["epochs"]),
+    epochs=target_epochs,
+    initial_epoch=initial_epoch,
     callbacks=callbacks,
     verbose=1,
 )
@@ -539,6 +550,25 @@ else:
 # 9) Persist artifacts and generate main figures
 # ============================================================================
 
+# Merge training histories if resuming
+stage_history = dict(history.history)
+full_history = helpers.merge_training_histories(previous_history, stage_history)
+stage_start_epoch = initial_epoch
+stage_epochs = helpers.history_length(stage_history)
+stage_end_epoch = stage_start_epoch + stage_epochs - 1 if stage_epochs > 0 else stage_start_epoch
+history_stages = list(history_stages)
+history_stages.append(
+    {
+        "stage_id": len(history_stages) + 1,
+        "run_timestamp": timestamp,
+        "source_run_dir": str(resume_cfg.get("source_run_dir")) if resume_cfg.get("source_run_dir") else None,
+        "epoch_start_global": int(stage_start_epoch),
+        "epoch_end_global": int(stage_end_epoch),
+        "epochs_trained": int(stage_epochs),
+        "resume_enabled": bool(resume_enabled),
+    }
+)
+
 effective_cfg = {
     "config_path": str(CONFIG_PATH),
     "dataset_folder": dataset_folder,
@@ -551,6 +581,17 @@ effective_cfg = {
         "baseline_f_number_used": float(baseline_f_number),
     },
     "experiment": cfg,
+    "resume": {
+        "enabled": resume_enabled,
+        "source_run_dir": str(resume_cfg.get("source_run_dir")) if resume_cfg.get("source_run_dir") else None,
+        "source_model_path": str(resume_cfg.get("source_model_path")) if resume_cfg.get("source_model_path") else None,
+        "resolved_model_path": str(resume_model_path) if resume_enabled else None,
+        "restore_optimizer": resume_cfg.get("restore_optimizer", True),
+        "epochs_mode": resume_cfg.get("epochs_mode", "additional"),
+        "additional_epochs": resume_cfg.get("additional_epochs", 0),
+        "initial_epoch": int(initial_epoch),
+        "target_epochs": int(target_epochs),
+    },
     "resolved_weight_regularization": {
         "enabled": weight_reg_enabled,
         "type": resolved_weight_reg_type,
@@ -569,7 +610,10 @@ effective_cfg = {
         },
     },
 }
-helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
+helpers.save_artifacts(sandbox_dir, apodization_model, full_history, effective_cfg)
+helpers.save_json_artifact(str(Path(sandbox_dir) / "history_stage.json"), stage_history)
+helpers.save_json_artifact(str(Path(sandbox_dir) / "history_full.json"), full_history)
+helpers.save_json_artifact(str(Path(sandbox_dir) / "history_stages.json"), history_stages)
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))

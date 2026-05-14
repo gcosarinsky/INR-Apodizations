@@ -62,9 +62,9 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: false
+  enabled: true
   # Preferred source: previous run directory with model.keras + history artifacts.
-  source_run_dir: ""
+  source_run_dir: scripts\outputs\train\20260505_165143
   # Optional fallback when only a model file is available.
   source_model_path: ""
   # Reserved for future optimizer-state persistence. Currently weights-only resume.
@@ -72,7 +72,7 @@ resume:
   # additional: train N extra epochs from previous history length.
   # target_total: use training.epochs as total global epoch target.
   epochs_mode: additional
-  additional_epochs: 0
+  additional_epochs: 2
   strict_compatibility: true
 
 plots:

@@ -13,6 +13,7 @@ import os
 import statistics
 import subprocess
 from datetime import datetime
+from pathlib import Path
 from typing import Mapping, Tuple
 
 import matplotlib.pyplot as plt
@@ -960,3 +961,184 @@ def build_reflector_profile_context(
         "use_db_profiles": use_db_profiles,
         "selected_profile_images": selected_profile_images,
     }
+
+
+# ============================================================================
+# Resume Training Utilities
+# ============================================================================
+
+
+def _resolve_optional_path(raw_value: str | None) -> Path | None:
+    """Resolve optional config path as absolute Path, preserving None/empty.
+
+    Args:
+        raw_value: Optional config value (may be None, empty string, or a path).
+
+    Returns:
+        Absolute Path object, or None if input is None/empty.
+    """
+    if raw_value is None:
+        return None
+    token = str(raw_value).strip()
+    if not token:
+        return None
+    path = Path(token)
+    # Import config here to avoid circular imports at module load time
+    from inr_apodizations import config
+    return path if path.is_absolute() else (config.PROJ_ROOT / path)
+
+
+def parse_resume_config(config: dict) -> dict:
+    """Parse and validate resume configuration from experiment config.
+
+    Args:
+        config: Experiment configuration dict.
+
+    Returns:
+        Dictionary with parsed resume settings:
+        - enabled: bool
+        - source_run_dir: Path | None (absolute, resolved)
+        - source_model_path: Path | None (absolute, resolved)
+        - restore_optimizer: bool
+        - epochs_mode: str ("additional" or "target_total")
+        - additional_epochs: int
+        - resolved_model_path: Path | None (final model path to load)
+
+    Raises:
+        ValueError: If configuration is invalid or inconsistent.
+        FileNotFoundError: If model file does not exist when resume is enabled.
+    """
+    resume_cfg = dict(config.get("resume", {}))
+    resume_enabled = bool(resume_cfg.get("enabled", False))
+
+    if not resume_enabled:
+        return {
+            "enabled": False,
+            "source_run_dir": None,
+            "source_model_path": None,
+            "restore_optimizer": True,
+            "epochs_mode": "additional",
+            "additional_epochs": 0,
+            "resolved_model_path": None,
+        }
+
+    # Resolve source paths
+    resume_source_run_dir = _resolve_optional_path(resume_cfg.get("source_run_dir"))
+    resume_source_model_path = _resolve_optional_path(resume_cfg.get("source_model_path"))
+    resume_restore_optimizer = bool(resume_cfg.get("restore_optimizer", True))
+    resume_epochs_mode = str(resume_cfg.get("epochs_mode", "additional")).strip().lower()
+    resume_additional_epochs = int(resume_cfg.get("additional_epochs", 0))
+
+    # Validate epoch mode
+    if resume_epochs_mode not in {"additional", "target_total"}:
+        raise ValueError("resume.epochs_mode must be 'additional' or 'target_total'")
+
+    # Validate additional epochs
+    if resume_additional_epochs < 0:
+        raise ValueError("resume.additional_epochs must be >= 0")
+
+    # Validate that at least one source is provided
+    if resume_source_run_dir is None and resume_source_model_path is None:
+        raise ValueError(
+            "resume.enabled=true requires at least one source: "
+            "resume.source_run_dir or resume.source_model_path"
+        )
+
+    # Resolve final model path
+    resume_model_path = resume_source_model_path
+    if resume_source_run_dir is not None and resume_model_path is None:
+        resume_model_path = resume_source_run_dir / "model.keras"
+
+    if resume_model_path is None:
+        raise ValueError("Could not resolve model path for resume mode")
+
+    if not resume_model_path.is_file():
+        raise FileNotFoundError(f"Resume model file not found: {resume_model_path}")
+
+    return {
+        "enabled": True,
+        "source_run_dir": resume_source_run_dir,
+        "source_model_path": resume_source_model_path,
+        "restore_optimizer": resume_restore_optimizer,
+        "epochs_mode": resume_epochs_mode,
+        "additional_epochs": resume_additional_epochs,
+        "resolved_model_path": resume_model_path,
+    }
+
+
+def setup_resume_state(
+    resume_cfg: dict, target_epochs_from_config: int, config: dict
+) -> tuple[bool, int, int, Path | None, dict, list]:
+    """Setup resume training state: load model, history, and compute epoch schedule.
+
+    This is the primary entry point for resume functionality. It handles:
+    - Loading previous training history
+    - Computing initial and target epochs based on epochs_mode
+    - Validation of epoch progression
+
+    Args:
+        resume_cfg: Parsed resume config dict (from parse_resume_config).
+        target_epochs_from_config: Target epochs value from training config.
+        config: Full experiment config dict (used for logging).
+
+    Returns:
+        Tuple ``(resume_enabled, initial_epoch, target_epochs, resume_model_path, previous_history, history_stages)``:
+        - resume_enabled: bool
+        - initial_epoch: int (0 if not resuming)
+        - target_epochs: int (final epoch target for this training stage)
+        - resume_model_path: Path | None (path to model to load, or None if not resuming)
+        - previous_history: dict (empty if not resuming)
+        - history_stages: list[dict] (empty if not resuming)
+
+    Raises:
+        ValueError: If epoch progression is invalid.
+        FileNotFoundError: If history files are not found in resume source.
+    """
+    resume_enabled = bool(resume_cfg.get("enabled", False))
+
+    if not resume_enabled:
+        return (False, 0, int(target_epochs_from_config), None, {}, [])
+
+    resume_source_run_dir = resume_cfg.get("source_run_dir")
+    resume_epochs_mode = str(resume_cfg.get("epochs_mode", "additional"))
+    resume_additional_epochs = int(resume_cfg.get("additional_epochs", 0))
+    resume_model_path = resume_cfg.get("resolved_model_path")
+
+    initial_epoch = 0
+    target_epochs = int(target_epochs_from_config)
+    previous_history = {}
+    history_stages = []
+
+    # Load previous history if source_run_dir provided
+    if resume_source_run_dir is not None:
+        previous_history, history_stages = load_previous_history(str(resume_source_run_dir))
+        initial_epoch = history_length(previous_history)
+
+        # Compute target epochs based on epochs_mode
+        if resume_epochs_mode == "additional":
+            resolved_additional_epochs = resume_additional_epochs
+            if resolved_additional_epochs == 0:
+                resolved_additional_epochs = int(target_epochs_from_config)
+            target_epochs = initial_epoch + resolved_additional_epochs
+        else:
+            # epochs_mode == "target_total"
+            target_epochs = int(target_epochs_from_config)
+
+        # Validate epoch progression
+        if target_epochs <= initial_epoch:
+            raise ValueError(
+                "Resume target epochs must be greater than previously recorded epochs. "
+                f"initial_epoch={initial_epoch}, target_epochs={target_epochs}"
+            )
+
+        print(
+            "Resume schedule:",
+            {
+                "initial_epoch": initial_epoch,
+                "target_epochs": target_epochs,
+                "epochs_mode": resume_epochs_mode,
+                "additional_epochs": resume_additional_epochs,
+            },
+        )
+
+    return (resume_enabled, initial_epoch, target_epochs, resume_model_path, previous_history, history_stages)
