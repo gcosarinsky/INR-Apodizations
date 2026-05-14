@@ -254,11 +254,15 @@ def main() -> None:
     sigma_x_override, sigma_z_override, alpha_override = helpers.get_target_regeneration_override(
         cfg_user
     )
+    eval_noise_cfg = dict(cfg_user.get("eval_noise", {}))
+    eval_noise_enabled = bool(eval_noise_cfg.get("enabled", False))
+    eval_noise_scale = float(eval_noise_cfg.get("scale", 1.0)) if eval_noise_enabled else 1.0
     delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
         str(dataset_folder),
         sigma_x=sigma_x_override,
         sigma_z=sigma_z_override,
         alpha_override=alpha_override,
+        load_noise=eval_noise_enabled,
     )
 
     if info.get("precomputed_noise_source", {}):
@@ -290,10 +294,6 @@ def main() -> None:
     )
 
     train_loss_weights = build_validation_weights(gaussian_masks, cfg_user)
-
-    eval_noise_cfg = dict(cfg_user.get("eval_noise", {}))
-    eval_noise_enabled = bool(eval_noise_cfg.get("enabled", False))
-    eval_noise_scale = float(eval_noise_cfg.get("scale", 1.0)) if eval_noise_enabled else 1.0
 
     baseline_f_number = resolve_baseline_f_number(cfg_user, kp)
 

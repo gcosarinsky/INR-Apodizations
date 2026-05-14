@@ -11,7 +11,7 @@ target_regeneration:
   alpha: 0
 
 model:
-  physical_feature_set: x_rel_depth_edge
+  physical_feature_set: distance_depth_edge
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
@@ -24,7 +24,7 @@ model:
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
-  n_apodizations: 2
+  n_apodizations: 3
 
 eval_noise:
   enabled: false
@@ -32,7 +32,7 @@ eval_noise:
 
 training:
   batch_size: 2
-  epochs: 30
+  epochs: 15
   learning_rate: 0.001
   loss: mae
   metric: mae
@@ -54,7 +54,7 @@ training:
   baseline_f_number: 0.5
   mask_weighting:
     enabled: true
-    pixel_weight_lambda: 1.
+    pixel_weight_lambda: 1.5
   train_fraction: 0.8
   seed: 42
   max_examples: null

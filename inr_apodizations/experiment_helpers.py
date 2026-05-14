@@ -181,6 +181,7 @@ def load_delayed_samples_dataset(
     sigma_x: float | None = None,
     sigma_z: float | None = None,
     alpha_override: float | None = None,
+    load_noise: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray | None, np.ndarray, np.ndarray, dict]:
     """
     Load delayed samples dataset, targets, gaussian masks and metadata from a dataset folder.
@@ -206,6 +207,8 @@ def load_delayed_samples_dataset(
             the same sigma overrides and the relaxed target formula
             ``alpha + (1-alpha) * gauss``. ``alpha_override=0`` reproduces the
             default behavior.
+        load_noise: If ``True``, load or derive precomputed noise when available.
+            If ``False``, skip noise loading and return ``None`` for ``noise``.
 
     Raises:
         FileNotFoundError: If delayed samples, targets or gaussian masks files are missing.
@@ -259,7 +262,7 @@ def load_delayed_samples_dataset(
     noise_path = os.path.join(folder, "delayed_samples_noise.npy")
 
     noise = None
-    if os.path.exists(noise_path):
+    if load_noise and os.path.exists(noise_path):
         print("Loading precomputed noise")
         noise = np.load(noise_path, allow_pickle=False)
         info = copy.deepcopy(info)
@@ -268,20 +271,23 @@ def load_delayed_samples_dataset(
 
     print("Loading signal and/or combined delayed samples")
     if os.path.exists(combined_path):
-        combined = np.load(combined_path, allow_pickle=False)
-        if signal_path is not None:
+        if signal_path is not None and load_noise:
+            combined = np.load(combined_path, allow_pickle=False)
             signal = np.load(signal_path, allow_pickle=False)
             noise = combined.astype(np.complex64, copy=False) - signal.astype(np.complex64, copy=False)
             delayed = signal.astype(np.complex64, copy=False)
             info = copy.deepcopy(info)
             info.setdefault("precomputed_noise_source", {})
             info["precomputed_noise_source"].update({"source": "combined_minus_signal"})
+        elif signal_path is not None:
+            delayed = np.load(signal_path, allow_pickle=False).astype(np.complex64, copy=False)
         else:
-            delayed = combined.astype(np.complex64, copy=False)
-            noise = None
-            info = copy.deepcopy(info)
-            info.setdefault("precomputed_noise_source", {})
-            info["precomputed_noise_source"].update({"source": "combined_only"})
+            delayed = np.load(combined_path, allow_pickle=False).astype(np.complex64, copy=False)
+            if load_noise:
+                noise = None
+                info = copy.deepcopy(info)
+                info.setdefault("precomputed_noise_source", {})
+                info["precomputed_noise_source"].update({"source": "combined_only"})
     else:
         if signal_path is not None:
             delayed = np.load(signal_path, allow_pickle=False).astype(np.complex64, copy=False)

@@ -61,12 +61,15 @@ if not dataset_folder.is_absolute():
     dataset_folder = config.PROJ_ROOT / dataset_folder
 dataset_folder = str(dataset_folder)
 sigma_x_override, sigma_z_override, alpha_override = helpers.get_target_regeneration_override(cfg)
+eval_noise_cfg = dict(cfg.get("eval_noise", {}))
+eval_noise_enabled = bool(eval_noise_cfg.get("enabled", False))
 print("Loading dataset from:", dataset_folder)
 delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
     dataset_folder,
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
     alpha_override=alpha_override,
+    load_noise=eval_noise_enabled,
 )
 
 # Log noise provenance when present

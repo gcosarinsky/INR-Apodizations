@@ -211,6 +211,7 @@ delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dat
     sigma_x=sigma_x_override,
     sigma_z=sigma_z_override,
     alpha_override=alpha_override,
+    load_noise=False,
 )
 physical_feature_set = str(
     run_experiment_cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
