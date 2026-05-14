@@ -48,6 +48,46 @@ import matplotlib.pyplot as plt
 
 CONFIG_PATH = config.CONFIGS_DIR / "train_mixer_config.yml"
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
+resume_cfg = dict(cfg.get("resume", {}))
+resume_enabled = bool(resume_cfg.get("enabled", False))
+
+
+def _resolve_optional_path(raw_value: str | None) -> Path | None:
+    """Resolve optional config path as absolute Path, preserving None/empty."""
+    if raw_value is None:
+        return None
+    token = str(raw_value).strip()
+    if not token:
+        return None
+    path = Path(token)
+    return path if path.is_absolute() else (config.PROJ_ROOT / path)
+
+
+resume_source_run_dir = _resolve_optional_path(resume_cfg.get("source_run_dir"))
+resume_source_model_path = _resolve_optional_path(resume_cfg.get("source_model_path"))
+resume_restore_optimizer = bool(resume_cfg.get("restore_optimizer", True))
+resume_epochs_mode = str(resume_cfg.get("epochs_mode", "additional")).strip().lower()
+resume_additional_epochs = int(resume_cfg.get("additional_epochs", 0))
+
+if resume_epochs_mode not in {"additional", "target_total"}:
+    raise ValueError("resume.epochs_mode must be 'additional' or 'target_total'")
+if resume_additional_epochs < 0:
+    raise ValueError("resume.additional_epochs must be >= 0")
+if resume_enabled and resume_source_run_dir is None and resume_source_model_path is None:
+    raise ValueError(
+        "resume.enabled=true requires at least one source: "
+        "resume.source_run_dir or resume.source_model_path"
+    )
+
+resume_model_path = resume_source_model_path
+if resume_source_run_dir is not None and resume_model_path is None:
+    resume_model_path = resume_source_run_dir / "model.keras"
+
+if resume_enabled and resume_model_path is None:
+    raise ValueError("Could not resolve model path for resume mode")
+if resume_enabled and not resume_model_path.is_file():
+    raise FileNotFoundError(f"Resume model file not found: {resume_model_path}")
+
 seed = int(cfg["training"]["seed"])
 tf.keras.utils.set_random_seed(seed)
 tf.config.experimental.enable_op_determinism()
@@ -236,14 +276,18 @@ n_hidden_layers_raw = cfg["model"].get("n_hidden_layers")
 n_apodizations = int(cfg["model"].get("n_apodizations", 1))
 if n_apodizations <= 0:
     raise ValueError("model.n_apodizations must be > 0")
-apodization_model = build_mlp_inr(
-    input_dim=cm.n_physical_features,
-    hidden_units_config=hidden_units_raw,
-    n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
-    activation=cfg["model"]["activation"],
-    output_activation=output_activation,
-    n_apodizations=n_apodizations,
-)
+if resume_enabled:
+    print(f"Resume enabled. Loading model from: {resume_model_path}")
+    apodization_model = tf.keras.models.load_model(str(resume_model_path), compile=False)
+else:
+    apodization_model = build_mlp_inr(
+        input_dim=cm.n_physical_features,
+        hidden_units_config=hidden_units_raw,
+        n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
+        activation=cfg["model"]["activation"],
+        output_activation=output_activation,
+        n_apodizations=n_apodizations,
+    )
 weight_reg_cfg = dict(cfg["training"].get("weight_regularization", {}))
 weight_reg_enabled = bool(weight_reg_cfg.get("enabled", False))
 weight_reg_type = str(weight_reg_cfg.get("type", "hinge_low_norm")).strip().lower()
@@ -326,6 +370,38 @@ trainer.compile(
     metrics=metrics_list,
     weighted_metrics=weighted_metrics_list,
 )
+
+previous_history: dict[str, list] = {}
+history_stages: list[dict] = []
+initial_epoch = 0
+target_epochs = int(cfg["training"]["epochs"])
+if resume_enabled and resume_source_run_dir is not None:
+    previous_history, history_stages = helpers.load_previous_history(str(resume_source_run_dir))
+    initial_epoch = helpers.history_length(previous_history)
+
+    if resume_epochs_mode == "additional":
+        resolved_additional_epochs = resume_additional_epochs
+        if resolved_additional_epochs == 0:
+            resolved_additional_epochs = int(cfg["training"]["epochs"])
+        target_epochs = initial_epoch + resolved_additional_epochs
+    else:
+        target_epochs = int(cfg["training"]["epochs"])
+
+    if target_epochs <= initial_epoch:
+        raise ValueError(
+            "Resume target epochs must be greater than previously recorded epochs. "
+            f"initial_epoch={initial_epoch}, target_epochs={target_epochs}"
+        )
+
+    print(
+        "Resume schedule:",
+        {
+            "initial_epoch": initial_epoch,
+            "target_epochs": target_epochs,
+            "epochs_mode": resume_epochs_mode,
+            "additional_epochs": resume_additional_epochs,
+        },
+    )
 
 
 # ============================================================================
@@ -452,11 +528,18 @@ callbacks = [
     ),
 ]
 
+if resume_enabled and resume_restore_optimizer:
+    print(
+        "Warning: optimizer state restore is not yet persisted in artifacts; "
+        "resume will continue from model weights with a freshly initialized optimizer."
+    )
+
 print("Starting physical-forward training (DasInrApodMixer)...")
 history = trainer.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=int(cfg["training"]["epochs"]),
+    epochs=target_epochs,
+    initial_epoch=initial_epoch,
     callbacks=callbacks,
     verbose=1,
 )
@@ -542,6 +625,24 @@ else:
 # 9) Persist artifacts and generate main figures
 # ============================================================================
 
+stage_history = dict(history.history)
+full_history = helpers.merge_training_histories(previous_history, stage_history)
+stage_start_epoch = initial_epoch
+stage_epochs = helpers.history_length(stage_history)
+stage_end_epoch = stage_start_epoch + stage_epochs - 1 if stage_epochs > 0 else stage_start_epoch
+history_stages = list(history_stages)
+history_stages.append(
+    {
+        "stage_id": len(history_stages) + 1,
+        "run_timestamp": timestamp,
+        "source_run_dir": str(resume_source_run_dir) if resume_source_run_dir else None,
+        "epoch_start_global": int(stage_start_epoch),
+        "epoch_end_global": int(stage_end_epoch),
+        "epochs_trained": int(stage_epochs),
+        "resume_enabled": bool(resume_enabled),
+    }
+)
+
 effective_cfg = {
     "config_path": str(CONFIG_PATH),
     "dataset_folder": dataset_folder,
@@ -554,6 +655,17 @@ effective_cfg = {
         "baseline_f_number_used": float(baseline_f_number),
     },
     "experiment": cfg,
+    "resume": {
+        "enabled": resume_enabled,
+        "source_run_dir": str(resume_source_run_dir) if resume_source_run_dir else None,
+        "source_model_path": str(resume_source_model_path) if resume_source_model_path else None,
+        "resolved_model_path": str(resume_model_path) if resume_enabled else None,
+        "restore_optimizer": resume_restore_optimizer,
+        "epochs_mode": resume_epochs_mode,
+        "additional_epochs": resume_additional_epochs,
+        "initial_epoch": int(initial_epoch),
+        "target_epochs": int(target_epochs),
+    },
     "resolved_mixer": {
         "n_apodizations": n_apodizations,
     },
@@ -575,7 +687,10 @@ effective_cfg = {
         },
     },
 }
-helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
+helpers.save_artifacts(sandbox_dir, apodization_model, full_history, effective_cfg)
+helpers.save_json_artifact(str(Path(sandbox_dir) / "history_stage.json"), stage_history)
+helpers.save_json_artifact(str(Path(sandbox_dir) / "history_full.json"), full_history)
+helpers.save_json_artifact(str(Path(sandbox_dir) / "history_stages.json"), history_stages)
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))
@@ -1082,11 +1197,23 @@ print("Training finished.")
 print("Sandbox artifacts:", sandbox_dir)
 
 # Save training curves with hanning reference lines (absolute and relative metrics)
+reference_mae_plot = {"hanning": validation_bundle.get("masked_mae_by_method", {}).get("hanning")}
+reference_relative_y_pred_plot = {"hanning": relative_mae_y_pred_by_method.get("hanning")}
+reference_relative_y_true_plot = {"hanning": relative_mae_y_true_by_method.get("hanning")}
+
 helpers.plot_training_curves(
-    history.history,
+    full_history,
     output_path=str(history_dir / "training_history.png"),
-    reference_mae={"hanning": validation_bundle.get("masked_mae_by_method", {}).get("hanning")},
-    reference_relative_y_pred={"hanning": relative_mae_y_pred_by_method.get("hanning")},
-    reference_relative_y_true={"hanning": relative_mae_y_true_by_method.get("hanning")},
+    reference_mae=reference_mae_plot,
+    reference_relative_y_pred=reference_relative_y_pred_plot,
+    reference_relative_y_true=reference_relative_y_true_plot,
+    weight_reg_lambda=weight_reg_lambda if weight_reg_enabled else None,
+)
+helpers.plot_training_curves(
+    stage_history,
+    output_path=str(history_dir / "training_history_stage.png"),
+    reference_mae=reference_mae_plot,
+    reference_relative_y_pred=reference_relative_y_pred_plot,
+    reference_relative_y_true=reference_relative_y_true_plot,
     weight_reg_lambda=weight_reg_lambda if weight_reg_enabled else None,
 )

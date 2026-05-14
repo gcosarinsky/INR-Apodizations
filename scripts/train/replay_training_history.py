@@ -1,9 +1,10 @@
 """Replay training history plots from a saved training run.
 
-Loads ``history.json`` from an existing run directory and regenerates all
-training-curve figures using ``plot_training_curves``. Optionally reads
-``train_config_info.yml`` (for the regularization lambda) and
-``validation_mae_summary.json`` (for hanning reference lines).
+Loads ``history_full.json`` (preferred) or ``history.json`` from an existing
+run directory and regenerates all training-curve figures using
+``plot_training_curves``. Optionally reads ``train_config_info.yml``
+(for the regularization lambda) and ``validation_mae_summary.json``
+(for hanning reference lines).
 
 Usage:
     Edit the ``RUN_DIR`` variable below to point to the desired training run
@@ -27,21 +28,23 @@ RUN_DIR = config.PROJ_ROOT / "scripts" / "outputs" / "train" / "20260429_153130"
 
 
 # ============================================================================
-# Load history.json
+# Load history artifact (prefer accumulated history_full.json)
 # ============================================================================
 
 run_dir = Path(RUN_DIR)
 if not run_dir.is_dir():
     raise FileNotFoundError(f"RUN_DIR does not exist: {run_dir}")
 
-history_json_path = run_dir / "history.json"
+history_json_path = run_dir / "history_full.json"
 if not history_json_path.is_file():
-    raise FileNotFoundError(f"history.json not found in: {run_dir}")
+    history_json_path = run_dir / "history.json"
+if not history_json_path.is_file():
+    raise FileNotFoundError(f"history_full.json/history.json not found in: {run_dir}")
 
 with open(history_json_path, encoding="utf-8") as f:
     history: dict = json.load(f)
 
-print(f"Loaded history.json from: {history_json_path}")
+print(f"Loaded history artifact from: {history_json_path}")
 print(f"  Keys: {list(history.keys())}")
 print(f"  Epochs recorded: {len(next(iter(history.values()), []))}")
 

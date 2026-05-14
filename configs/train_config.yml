@@ -61,6 +61,20 @@ training:
   early_stopping_patience: 4
   reduce_lr_patience: 3
 
+resume:
+  enabled: false
+  # Preferred source: previous run directory with model.keras + history artifacts.
+  source_run_dir: ""
+  # Optional fallback when only a model file is available.
+  source_model_path: ""
+  # Reserved for future optimizer-state persistence. Currently weights-only resume.
+  restore_optimizer: true
+  # additional: train N extra epochs from previous history length.
+  # target_total: use training.epochs as total global epoch target.
+  epochs_mode: additional
+  additional_epochs: 0
+  strict_compatibility: true
+
 plots:
   cmap: gray
   vmin_db: -60.0
