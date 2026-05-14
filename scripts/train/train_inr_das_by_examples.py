@@ -300,6 +300,10 @@ else:
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 sandbox_dir = str(Path(sandbox_root) / timestamp)
 os.makedirs(sandbox_dir, exist_ok=True)
+apodization_dir = Path(sandbox_dir) / "apodization"
+snr_dir = Path(sandbox_dir) / "snr"
+apodization_dir.mkdir(parents=True, exist_ok=True)
+snr_dir.mkdir(parents=True, exist_ok=True)
 
 callbacks = [
     tf.keras.callbacks.EarlyStopping(
@@ -476,7 +480,7 @@ helpers.plot_das_comparison_db(
 helpers.plot_apodization_energy_comparison(
     hanning_apod=hanning_weights.numpy(),
     inr_apod_after=weights_after_grid.numpy(),
-    output_path=str(Path(sandbox_dir) / "apodization_energy_comparison_hanning_vs_inr_after.png"),
+    output_path=str(apodization_dir / "apodization_energy_comparison_hanning_vs_inr_after.png"),
     extent=kp.get_imshow_extent(),
     cmap=str(plot_cfg.get("apod_cmap", "viridis")),
 )
@@ -504,7 +508,7 @@ for x_value in x_values_apod:
         cm=cm,
         apod_before=weights_before_grid.numpy(),
         apod_after=weights_after_grid.numpy(),
-        output_path=str(Path(sandbox_dir) / f"apodization_map_x_{x_token}_with_hanning.png"),
+        output_path=str(apodization_dir / f"apodization_map_x_{x_token}_with_hanning.png"),
         x_fixed=float(x_value),
         z_profiles=z_profiles_mm,
         cmap=str(plot_cfg.get("apod_cmap", "viridis")),
@@ -589,7 +593,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             images_abs=images_abs_eval,
             scatterers_xy=scatterers_batch,
             cm=cm,
-            output_dir=sandbox_dir,
+            output_dir=str(snr_dir),
             radius_mm=radius_mm_eval,
             hist_bins=hist_bins_eval,
             compare_pairs=[("uniform", "inr_after"), ("hanning", "inr_after")],
@@ -623,14 +627,14 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
                 label = res.get("ratio_label", f"{cmp_name}/{ref_name}")
                 label_fname = label.replace('/', '_')
                 if fig is not None:
-                    out_path = str(Path(sandbox_dir) / f"scatt_snr_ratio_{label_fname}_val_{len(val_idx_full)}.png")
+                    out_path = str(snr_dir / f"scatt_snr_ratio_{label_fname}_val_{len(val_idx_full)}.png")
                     fig.savefig(out_path, dpi=150, bbox_inches="tight")
                     plt.close(fig)
             except FileNotFoundError as e:
                 print(f"Warning: scatterer_snr_ratio skipped — {e}")
             except Exception as e:
                 print(f"Warning: scatterer_snr_ratio failed — {e}")
-        print(f"Scatterer evaluation figures saved to: {sandbox_dir}")
+        print(f"Scatterer evaluation figures saved to: {snr_dir}")
     except FileNotFoundError as e:
         print(f"Warning: scatterer_eval skipped — {e}")
     except Exception as e:

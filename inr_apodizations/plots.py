@@ -786,6 +786,80 @@ def plot_lateral_reflector_profiles(
     return sampled_x, profiles
 
 
+def plot_apodization_profiles_multichannel(
+    cm: CoordinateManager,
+    apod_after: np.ndarray,
+    output_path: str,
+    x_fixed: float = 0.0,
+    z_profiles: list[float] | tuple[float, ...] | None = None,
+) -> None:
+    """Save a single profile figure with all mixer channels in shared axes.
+
+    Args:
+        cm: Coordinate manager used to extract geometry coordinates.
+        apod_after: INR apodization array with shape ``(E, Z, X, N)`` where
+            ``N`` is the number of channels.
+        output_path: Output PNG file path.
+        x_fixed: Lateral x value used for profile extraction.
+        z_profiles: Optional list/tuple of depths (mm) used for profile
+            extraction. If omitted, the middle depth is used.
+
+    Raises:
+        ValueError: If ``apod_after`` does not have shape ``(E, Z, X, N)``.
+    """
+    apod_after_np = np.asarray(apod_after)
+    if apod_after_np.ndim != 4:
+        raise ValueError("apod_after must have shape (E, Z, X, N)")
+
+    coords_phys = cm.get_coordinates_1d(scaled=False)
+    x_elems = np.asarray(coords_phys["x_elem"])
+    z_coords = np.asarray(coords_phys["z"])
+    x_coords = np.asarray(coords_phys["x"])
+    x_idx = int(np.argmin(np.abs(x_coords - float(x_fixed))))
+
+    if z_profiles is None or len(z_profiles) == 0:
+        z_indices = [len(z_coords) // 2]
+    else:
+        z_indices = [int(np.argmin(np.abs(z_coords - float(z)))) for z in z_profiles]
+        z_indices = list(dict.fromkeys(z_indices))
+    z_values = [float(z_coords[idx]) for idx in z_indices]
+
+    n_channels = int(apod_after_np.shape[-1])
+    depth_colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(z_indices))))
+    channel_styles = ["-", "--", "-.", ":"]
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
+    for ch_idx in range(n_channels):
+        style = channel_styles[ch_idx % len(channel_styles)]
+        for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
+            profile = apod_after_np[:, z_idx, x_idx, ch_idx]
+            ax.plot(
+                x_elems,
+                profile,
+                color=color,
+                linestyle=style,
+                linewidth=2,
+                label=f"Channel {ch_idx} z={z_value:.2f} mm",
+            )
+
+    depth_list_text = ", ".join(f"{z:.2f}" for z in z_values)
+    ax.set_title(
+        f"Mixer channel profiles at x={x_fixed:.2f} mm, z=[{depth_list_text}] mm",
+        fontsize=13,
+    )
+    ax.set_xlabel("Element lateral coordinate (mm)", fontsize=12)
+    ax.set_ylabel("Apodization weight", fontsize=12)
+    ax.tick_params(axis="both", labelsize=11)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=10, ncol=2)
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 def plot_apodization_before_after(
     cm: CoordinateManager,
     apod_before: np.ndarray,

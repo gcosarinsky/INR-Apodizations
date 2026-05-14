@@ -36,6 +36,7 @@ from inr_apodizations.modeling.losses import PixelWeightedMAELoss
 from inr_apodizations.modeling.das_models import DasInrApodMixer, build_mlp_inr
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
+from inr_apodizations.plots import plot_apodization_profiles_multichannel
 from inr_apodizations.utils import relative_mae
 
 import matplotlib.pyplot as plt
@@ -433,6 +434,10 @@ else:
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 sandbox_dir = str(Path(sandbox_root) / timestamp)
 os.makedirs(sandbox_dir, exist_ok=True)
+apodization_dir = Path(sandbox_dir) / "apodization"
+snr_dir = Path(sandbox_dir) / "snr"
+apodization_dir.mkdir(parents=True, exist_ok=True)
+snr_dir.mkdir(parents=True, exist_ok=True)
 
 callbacks = [
     tf.keras.callbacks.EarlyStopping(
@@ -620,18 +625,42 @@ helpers.plot_das_comparison_db(
 # weights_after_grid shape: (E, Z, X, N); weights_before_grid shape: (E, Z, X, N).
 weights_after_grid_np = weights_after_grid.numpy()
 weights_before_grid_np = weights_before_grid.numpy()
-for ch_idx in range(n_apodizations):
-    apod_after_ch = weights_after_grid_np[..., ch_idx]   # (E, Z, X)
-    apod_before_ch = weights_before_grid_np[..., ch_idx]  # (E, Z, X)
-    helpers.plot_apodization_energy_comparison(
-        hanning_apod=hanning_weights_np,
-        inr_apod_after=apod_after_ch,
-        output_path=str(
-            Path(sandbox_dir) / f"apodization_energy_comparison_hanning_vs_inr_ch{ch_idx}.png"
-        ),
-        extent=kp.get_imshow_extent(),
+# Mixer-specific apodization energy map without Hanning reference.
+n_energy_channels = int(weights_after_grid_np.shape[-1])
+energy_fig, energy_axes = plt.subplots(
+    1,
+    n_energy_channels,
+    figsize=(5 * n_energy_channels, 4),
+    constrained_layout=True,
+)
+energy_axes_arr = np.atleast_1d(energy_axes)
+channel_energies = [
+    np.sum(np.abs(weights_after_grid_np[..., ch_idx]), axis=0)
+    for ch_idx in range(n_energy_channels)
+]
+energy_vmin = float(min(float(ch.min()) for ch in channel_energies))
+energy_vmax = float(max(float(ch.max()) for ch in channel_energies))
+if energy_vmax <= energy_vmin:
+    energy_vmax = energy_vmin + 1e-6
+for ch_idx, (ax, channel_energy) in enumerate(zip(energy_axes_arr, channel_energies, strict=False)):
+    im_energy = ax.imshow(
+        channel_energy,
         cmap=str(plot_cfg.get("apod_cmap", "viridis")),
+        extent=kp.get_imshow_extent(),
+        aspect="auto",
+        vmin=energy_vmin,
+        vmax=energy_vmax,
     )
+    ax.set_title(f"INR channel {ch_idx} energy")
+    ax.set_xlabel("x (mm)")
+    if ch_idx == 0:
+        ax.set_ylabel("z (mm)")
+    energy_fig.colorbar(im_energy, ax=ax, label="Energy")
+energy_fig.savefig(
+    str(apodization_dir / "apodization_energy_comparison_inr_channels.png"),
+    dpi=150,
+)
+plt.close(energy_fig)
 
 # Save one apodization figure per selected x value, per channel.
 x_values_cfg = plot_cfg.get("x_values_apod", None)
@@ -660,13 +689,23 @@ for ch_idx in range(n_apodizations):
             apod_before=apod_before_ch,
             apod_after=apod_after_ch,
             output_path=str(
-                Path(sandbox_dir) / f"apodization_map_ch{ch_idx}_x_{x_token}_with_hanning.png"
+                apodization_dir / f"apodization_map_ch{ch_idx}_x_{x_token}.png"
             ),
             x_fixed=float(x_value),
             z_profiles=z_profiles_mm,
             cmap=str(plot_cfg.get("apod_cmap", "viridis")),
-            hanning_apod=hanning_weights_np,
+            hanning_apod=None,
         )
+
+for x_value in x_values_apod:
+    x_token = f"{x_value:.2f}".replace("-", "m").replace(".", "p")
+    plot_apodization_profiles_multichannel(
+        cm=cm,
+        apod_after=weights_after_grid_np,
+        output_path=str(apodization_dir / f"apodization_profiles_all_channels_x_{x_token}.png"),
+        x_fixed=float(x_value),
+        z_profiles=z_profiles_mm,
+    )
 
 
 # ============================================================================
@@ -850,18 +889,18 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
                 ax_ratio_hist.grid(True, alpha=0.3)
                 fig_ratio_hist.tight_layout()
                 fig_ratio_hist.savefig(
-                    str(Path(sandbox_dir) / f"snr_ratio_hist_inr_vs_{ref_name}.png"),
+                    str(snr_dir / f"snr_ratio_hist_inr_vs_{ref_name}.png"),
                     dpi=150,
                     bbox_inches="tight",
                 )
                 plt.close(fig_ratio_hist)
 
             if ratio_summary:
-                with open(Path(sandbox_dir) / "snr_ratio_summary.json", "w", encoding="utf-8") as handle:
+                with open(snr_dir / "snr_ratio_summary.json", "w", encoding="utf-8") as handle:
                     json.dump(ratio_summary, handle, indent=2)
 
             if ratio_rows:
-                with open(Path(sandbox_dir) / "snr_ratio_points.csv", "w", encoding="utf-8", newline="") as csv_file:
+                with open(snr_dir / "snr_ratio_points.csv", "w", encoding="utf-8", newline="") as csv_file:
                     writer = csv.DictWriter(
                         csv_file,
                         fieldnames=[
@@ -878,7 +917,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
                     writer.writerows(ratio_rows)
 
                 np.savez(
-                    Path(sandbox_dir) / "snr_ratio_points.npz",
+                    snr_dir / "snr_ratio_points.npz",
                     snr_inr=inr_after_snr.astype(np.float32, copy=False),
                     **{
                         f"snr_ref_{name}": np.asarray(
@@ -893,7 +932,7 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
             images_abs=images_abs_eval,
             scatterers_xy=scatterers_batch,
             cm=cm,
-            output_dir=sandbox_dir,
+            output_dir=str(snr_dir),
             radius_mm=radius_mm_eval,
             hist_bins=hist_bins_eval,
             compare_pairs=[("uniform", "inr_after"), ("hanning", "inr_after")],
@@ -929,14 +968,14 @@ if bool(scatterer_eval_cfg.get("enabled", False)):
                 label = res.get("ratio_label", f"{cmp_name}/{ref_name}")
                 label_fname = label.replace('/', '_')
                 if fig is not None:
-                    out_path = str(Path(sandbox_dir) / f"scatt_snr_ratio_{label_fname}_val_{len(val_idx)}.png")
+                    out_path = str(snr_dir / f"scatt_snr_ratio_{label_fname}_val_{len(val_idx)}.png")
                     fig.savefig(out_path, dpi=150, bbox_inches="tight")
                     plt.close(fig)
             except FileNotFoundError as e:
                 print(f"Warning: scatterer_snr_ratio skipped — {e}")
             except Exception as e:
                 print(f"Warning: scatterer_snr_ratio failed — {e}")
-        print(f"Scatterer evaluation figures saved to: {sandbox_dir}")
+        print(f"Scatterer evaluation figures saved to: {snr_dir}")
     except FileNotFoundError as e:
         print(f"Warning: scatterer_eval skipped — {e}")
     except Exception as e:
