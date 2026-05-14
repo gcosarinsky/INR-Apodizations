@@ -12,6 +12,7 @@ class CoordinateManager:
             - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
             - 'distance_depth_center': [|x - x_elem|, z, |x|]
             - 'distance_depth': [|x - x_elem|, z]
+            - 'x_rel_depth_edge': [x - x_elem, z, D/2 - |x|]
 
     Scaling: all coordinates are scaled by dividing by D (array aperture)
 
@@ -31,6 +32,7 @@ class CoordinateManager:
                 - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
                 - 'distance_depth_center': [|x - x_elem|, z, |x|]
                 - 'distance_depth': [|x - x_elem|, z]
+                - 'x_rel_depth_edge': [x - x_elem, z, D/2 - |x|]
 
         Raises:
             ValueError: If the requested physical feature set is not supported.
@@ -42,6 +44,7 @@ class CoordinateManager:
             "distance_depth_edge": ("dist_to_elem", "depth", "dist_to_edge"),
             "distance_depth_center": ("dist_to_elem", "depth", "dist_to_center"),
             "distance_depth": ("dist_to_elem", "depth"),
+            "x_rel_depth_edge": ("x_rel", "depth", "dist_to_edge"),
         }
         if self.physical_feature_set not in valid_feature_sets:
             raise ValueError(
@@ -163,6 +166,11 @@ class CoordinateManager:
         if self.physical_feature_set == "distance_depth_center":
             return dist_to_elem, depth, x_from_center
 
+        if self.physical_feature_set == "x_rel_depth_edge":
+            x_rel = X_mm - x_elem_mm
+            dist_to_edge = self.D_half - x_from_center
+            return x_rel, depth, dist_to_edge
+
         # Feature 3: D/2 - |x - x_center| in mm
         dist_to_edge = self.D_half - x_from_center
 
@@ -196,6 +204,12 @@ class CoordinateManager:
 
         if self.physical_feature_set == "distance_depth_center":
             return dist_to_elem_scaled, depth_scaled, dist_to_center_scaled
+
+        if self.physical_feature_set == "x_rel_depth_edge":
+            x_rel_scaled = (X_mm - x_elem_mm) / self.D
+            dist_to_edge = self.D_half - x_from_center
+            dist_to_edge_scaled = dist_to_edge / self.D
+            return x_rel_scaled, depth_scaled, dist_to_edge_scaled
 
         # Feature 3: (D/2 - |x - x_center|) / D = 0.5 - |x - x_center| / D
         dist_to_edge = self.D_half - x_from_center
@@ -259,6 +273,10 @@ class CoordinateManager:
             feature_tensors = (dist_to_elem, depth)
         elif self.physical_feature_set == "distance_depth_center":
             feature_tensors = (dist_to_elem, depth, x_from_center)
+        elif self.physical_feature_set == "x_rel_depth_edge":
+            x_rel = tf.broadcast_to(x_grid - x_elem_grid, [self.n_elem, self.nz, self.nx])
+            dist_to_edge = self.D_half - x_from_center
+            feature_tensors = (x_rel, depth, dist_to_edge)
         else:
             dist_to_edge = self.D_half - x_from_center
             feature_tensors = (dist_to_elem, depth, dist_to_edge)
@@ -285,6 +303,10 @@ class CoordinateManager:
             feature_tensors = (dist_to_elem, depth)
         elif self.physical_feature_set == "distance_depth_center":
             feature_tensors = (dist_to_elem, depth, x_from_center)
+        elif self.physical_feature_set == "x_rel_depth_edge":
+            x_rel_scaled = tf.broadcast_to((x_grid - x_elem_grid) / self.D, [self.n_elem, self.nz, self.nx])
+            dist_to_edge_scaled = 0.5 - x_from_center
+            feature_tensors = (x_rel_scaled, depth, dist_to_edge_scaled)
         else:
             dist_to_edge_scaled = 0.5 - x_from_center
             feature_tensors = (dist_to_elem, depth, dist_to_edge_scaled)
