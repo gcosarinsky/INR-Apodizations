@@ -10,7 +10,11 @@ experiment:
 
 The script keeps logic direct and sandbox-oriented. Configuration lives in
 ``configs/train_config.yml``.
+
+NOTE: this script fails with GPU memory if images are too large. Use train_inr_das_by_indices.py instead, which implements the same 
+training logic but with per-index samples and a custom training loop to keep memory usage low.
 """
+
 from __future__ import annotations
 
 import os
