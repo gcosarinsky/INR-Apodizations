@@ -56,7 +56,7 @@ random.seed(seed)
 np.random.seed(seed)
 
 # Resume configuration parsing
-resume_cfg = helpers.parse_resume_config(cfg.get("resume", {}))
+resume_cfg = helpers.parse_resume_config(cfg)
 (resume_enabled, initial_epoch, target_epochs, resume_model_path, previous_history, history_stages) = helpers.setup_resume_state(
     resume_cfg, int(cfg["training"]["epochs"]), cfg
 )

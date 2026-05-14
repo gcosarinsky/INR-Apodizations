@@ -50,7 +50,7 @@ CONFIG_PATH = config.CONFIGS_DIR / "train_mixer_config.yml"
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
 
 # Resume configuration parsing using helpers
-resume_cfg = helpers.parse_resume_config(cfg.get("resume", {}))
+resume_cfg = helpers.parse_resume_config(cfg)
 (resume_enabled, initial_epoch, target_epochs, resume_model_path, previous_history, history_stages) = helpers.setup_resume_state(
     resume_cfg, int(cfg["training"]["epochs"]), cfg
 )
@@ -599,12 +599,12 @@ effective_cfg = {
     "experiment": cfg,
     "resume": {
         "enabled": resume_enabled,
-        "source_run_dir": str(resume_source_run_dir) if resume_source_run_dir else None,
-        "source_model_path": str(resume_source_model_path) if resume_source_model_path else None,
+        "source_run_dir": str(resume_cfg.get("source_run_dir")) if resume_cfg.get("source_run_dir") else None,
+        "source_model_path": str(resume_cfg.get("source_model_path")) if resume_cfg.get("source_model_path") else None,
         "resolved_model_path": str(resume_model_path) if resume_enabled else None,
-        "restore_optimizer": resume_restore_optimizer,
-        "epochs_mode": resume_epochs_mode,
-        "additional_epochs": resume_additional_epochs,
+        "restore_optimizer": resume_cfg.get("restore_optimizer", True),
+        "epochs_mode": resume_cfg.get("epochs_mode", "additional"),
+        "additional_epochs": resume_cfg.get("additional_epochs", 0),
         "initial_epoch": int(initial_epoch),
         "target_epochs": int(target_epochs),
     },
