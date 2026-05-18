@@ -6,7 +6,10 @@ io:
 model:
   # Optional override. If null, reads train_config_info.yml next to model.
   scaled_features: null
-  # Optional override. If missing, reads train_config_info.yml, then defaults to distance_depth_edge.
+  # Optional override. If null/missing, reads train_config_info.yml next to model.
+  # Allowed: z, x, abs_x, xrel, abs_xrel, dist_to_edge
+  physical_feature_components: null
+  # Legacy fallback (deprecated): used only when physical_feature_components is null.
   physical_feature_set: distance_depth_edge
   feature_chunk_size: 65536
 

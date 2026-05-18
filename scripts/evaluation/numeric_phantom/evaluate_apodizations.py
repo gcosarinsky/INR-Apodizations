@@ -342,16 +342,30 @@ if model is not None:
         if not isinstance(train_info_dict, dict):
             sys.exit(f"Error: invalid format in {train_info}; expected a YAML mapping.")
 
-        scaled_features = bool(train_info_dict["experiment"]["model"].get("scaled_features"))
-        
-        if not scaled_features:
+        model_cfg = train_info_dict.get("experiment", {}).get("model", {})
+        if not isinstance(model_cfg, dict) or "scaled_features" not in model_cfg:
             sys.exit(
-                f"Error: `scaled_features` not found in {train_info}; it must be defined at top-level or under 'model'."
+                f"Error: `experiment.model.scaled_features` not found in {train_info}."
             )
+        scaled_features = bool(model_cfg.get("scaled_features"))
     except Exception as _e:
         sys.exit(f"Error reading {train_info}: {_e}")
 
-    features_grid = cm.get_features_grid(scaled=scaled_features)
+    physical_feature_set = str(model_cfg.get("physical_feature_set", "distance_depth_edge"))
+    raw_components = model_cfg.get("physical_feature_components")
+    physical_feature_components = (
+        [str(token) for token in raw_components]
+        if isinstance(raw_components, list)
+        else None
+    )
+
+    cm_inr = CoordinateManager(
+        kp,
+        physical_feature_set=physical_feature_set,
+        physical_feature_components=physical_feature_components,
+    )
+
+    features_grid = cm_inr.get_features_grid(scaled=scaled_features)
     feature_chunk_size = int(65536)
     trainer = DasInrApod(
         apodization_model=model,

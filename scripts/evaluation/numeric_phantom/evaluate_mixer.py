@@ -221,7 +221,7 @@ def _resolve_mixer_artifacts(model_path_cfg: str | Path) -> tuple[Path, Path, Pa
     return model_file, combiner_weights_file, train_info, run_dir
 
 
-def _extract_mixer_train_metadata(train_info_path: Path) -> tuple[bool, int]:
+def _extract_mixer_train_metadata(train_info_path: Path) -> tuple[bool, int, str, list[str] | None]:
     train_info = _load_config(train_info_path)
     experiment_cfg = train_info.get("experiment")
     if not isinstance(experiment_cfg, dict):
@@ -236,6 +236,11 @@ def _extract_mixer_train_metadata(train_info_path: Path) -> tuple[bool, int]:
             f"Missing `experiment.model.scaled_features` in {train_info_path}."
         )
     scaled_features = bool(model_cfg["scaled_features"])
+    physical_feature_set = str(model_cfg.get("physical_feature_set", "distance_depth_edge"))
+    raw_components = model_cfg.get("physical_feature_components")
+    physical_feature_components = (
+        [str(token) for token in raw_components] if isinstance(raw_components, list) else None
+    )
 
     resolved_mixer = train_info.get("resolved_mixer")
     n_apodizations = None
@@ -250,7 +255,7 @@ def _extract_mixer_train_metadata(train_info_path: Path) -> tuple[bool, int]:
             "(checked `resolved_mixer` and `experiment.model`)."
         )
 
-    return scaled_features, n_apodizations
+    return scaled_features, n_apodizations, physical_feature_set, physical_feature_components
 
 
 def _build_coordinate_manager(
@@ -258,9 +263,15 @@ def _build_coordinate_manager(
     sim_cfg: dict[str, Any],
     bf_cfg: dict[str, Any],
     n_elements: int,
+    physical_feature_set: str,
+    physical_feature_components: list[str] | None,
 ) -> tuple[KernelParameters2D, CoordinateManager]:
     try:
-        kp, cm = helpers.build_coordinate_manager(str(dataset_folder))
+        kp, cm = helpers.build_coordinate_manager(
+            str(dataset_folder),
+            physical_feature_set=physical_feature_set,
+            physical_feature_components=physical_feature_components,
+        )
         return kp, cm
     except FileNotFoundError:
         kp_cfg = {
@@ -283,7 +294,11 @@ def _build_coordinate_manager(
             "blocksize_img": tuple(bf_cfg.get("blocksize_img", [32, 8])),
         }
         kp = KernelParameters2D(kp_cfg)
-        cm = CoordinateManager(kp)
+        cm = CoordinateManager(
+            kp,
+            physical_feature_set=physical_feature_set,
+            physical_feature_components=physical_feature_components,
+        )
         return kp, cm
 
 
@@ -313,7 +328,7 @@ if not bool(mixer_cfg.get("eval_combined", True)):
     sys.exit("Error: `mixer_model.eval_combined` must be true for this evaluator.")
 
 model_file, combiner_weights_file, train_info_file, model_run_dir = _resolve_mixer_artifacts(io_cfg.get("model_path", ""))
-scaled_features, n_apodizations = _extract_mixer_train_metadata(train_info_file)
+scaled_features, n_apodizations, physical_feature_set, physical_feature_components = _extract_mixer_train_metadata(train_info_file)
 print("Using mixer run:", model_run_dir)
 print("Using model:", model_file)
 print("Using combiner weights:", combiner_weights_file)
@@ -340,7 +355,14 @@ delayed0 = delayed[0]
 n_elements = int(delayed0.shape[0])
 dataset_folder = delayed_samples_path.parent
 
-kp, cm = _build_coordinate_manager(dataset_folder, sim_cfg, bf_cfg, n_elements=n_elements)
+kp, cm = _build_coordinate_manager(
+    dataset_folder,
+    sim_cfg,
+    bf_cfg,
+    n_elements=n_elements,
+    physical_feature_set=physical_feature_set,
+    physical_feature_components=physical_feature_components,
+)
 
 feature_chunk_size = int(mixer_cfg.get("feature_chunk_size", 65536))
 features_grid = cm.get_features_grid(scaled=scaled_features)
