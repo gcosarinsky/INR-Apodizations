@@ -1,6 +1,6 @@
 """Experimental training script for INR-based DAS apodization.
 
-This sandbox script implements the physical forward requested for the first
+This script implements the physical forward requested for the first
 experiment:
 
 1. Build INR weights for every (element, z, x) position from geometry-only features.
@@ -8,7 +8,7 @@ experiment:
 3. Sum over the element axis to reconstruct a complex DAS image.
 4. Compare ``abs(image)`` against the provided target with RMSE.
 
-The script keeps logic direct and sandbox-oriented. Configuration lives in
+The script keeps logic direct and experiment-oriented. Configuration lives in
 ``configs/train_config.yml``.
 """
 from __future__ import annotations
@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import csv
 import os
-import pprint
 import random
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +37,7 @@ from inr_apodizations.modeling.losses import PixelWeightedMAELoss
 from inr_apodizations.modeling.das_models import DasInrApod, build_mlp_inr
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
+from inr_apodizations.training_console import get_console
 from inr_apodizations.utils import relative_mae
 
 import matplotlib.pyplot as plt
@@ -49,104 +49,47 @@ import matplotlib.pyplot as plt
 
 CONFIG_PATH = config.CONFIGS_DIR / "train_config.yml"
 cfg = helpers.load_experiment_config(str(CONFIG_PATH))
+console = get_console()
 seed = int(cfg["training"]["seed"])
 tf.keras.utils.set_random_seed(seed)
 tf.config.experimental.enable_op_determinism()
 random.seed(seed)
 np.random.seed(seed)
 
-# Resolve dataset folder relative to project root when given as a relative path
-dataset_folder = Path(cfg["io"]["dataset_folder"])
-if not dataset_folder.is_absolute():
-    dataset_folder = config.PROJ_ROOT / dataset_folder
-dataset_folder = str(dataset_folder)
-sigma_x_override, sigma_z_override, alpha_override = helpers.get_target_regeneration_override(cfg)
-eval_noise_cfg = dict(cfg.get("eval_noise", {}))
-eval_noise_enabled = bool(eval_noise_cfg.get("enabled", False))
-print("Loading dataset from:", dataset_folder)
-delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dataset(
-    dataset_folder,
-    sigma_x=sigma_x_override,
-    sigma_z=sigma_z_override,
-    alpha_override=alpha_override,
-    load_noise=eval_noise_enabled,
+# Resume configuration parsing
+resume_cfg = helpers.parse_resume_config(cfg)
+(resume_enabled, initial_epoch, target_epochs, resume_model_path, previous_history, history_stages) = helpers.setup_resume_state(
+    resume_cfg, int(cfg["training"]["epochs"]), cfg
 )
 
-# Log noise provenance when present
+# Resolve dataset folder relative to project root when given as a relative path
+dataset_ctx = helpers.prepare_training_dataset(cfg)
+dataset_folder = str(dataset_ctx["dataset_folder"])
+delayed = dataset_ctx["delayed"]
+noise = dataset_ctx["noise"]
+targets = dataset_ctx["targets"]
+gaussian_masks = dataset_ctx["gaussian_masks"]
+info = dataset_ctx["info"]
+kp = dataset_ctx["kp"]
+cm = dataset_ctx["cm"]
+train_loss_weights = dataset_ctx["train_loss_weights"]
+train_idx = dataset_ctx["train_idx"]
+val_idx = dataset_ctx["val_idx"]
+memory_ctx = dataset_ctx["memory"]
+
+console.section("Dataset Loading")
+console.info(f"Loading dataset from: {dataset_folder}")
 if info.get("precomputed_noise_source", {}):
     pinfo = info.get("precomputed_noise_source", {})
-    print("Dataset contains precomputed noise information:")
-    print(f"  source={pinfo.get('source')}")
-helpers.validate_dataset_shapes(delayed, targets, gaussian_masks)
-physical_feature_set = str(
-    cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
-)
-kp, cm = helpers.build_coordinate_manager(
-    dataset_folder,
-    physical_feature_set=physical_feature_set,
-)
+    console.info("Dataset contains precomputed noise information:")
+    console.info(f"  source={pinfo.get('source')}")
 
 # ============================================================================
 # 2) Dataset slicing, weighting, and memory diagnostics
 # ============================================================================
 
-delayed_dataset_bytes = int(delayed.nbytes)
-delayed_example_bytes = int(np.prod(delayed.shape[1:], dtype=np.int64) * delayed.dtype.itemsize)
-
-max_examples = cfg["training"].get("max_examples")
-if max_examples is not None:
-    max_examples = int(max_examples)
-    delayed = delayed[:max_examples]
-    targets = targets[:max_examples]
-    gaussian_masks = gaussian_masks[:max_examples]
-    if noise is not None:
-        noise = noise[:max_examples]
-
-mask_weighting_cfg = dict(cfg["training"].get("mask_weighting", {}))
-pixel_weight_lambda = float(
-    mask_weighting_cfg.get(
-        "pixel_weight_lambda",
-        mask_weighting_cfg.get("lambda", 0.0),
-    )
-)
-if pixel_weight_lambda < 0.0:
-    raise ValueError(
-        "training.mask_weighting.pixel_weight_lambda must be >= 0 "
-        "(legacy key training.mask_weighting.lambda is also accepted)"
-    )
-train_loss_weights = 1.0 + pixel_weight_lambda * gaussian_masks.astype(np.float32, copy=False)
-train_loss_weights = train_loss_weights.astype(np.float32, copy=False)
-use_pixelwise_weights = True
-
-train_idx, val_idx = helpers.split_train_validation_indices(
-    n_examples=delayed.shape[0],
-    train_fraction=float(cfg["training"]["train_fraction"]),
-    seed=int(cfg["training"]["seed"]),
-)
-
-configured_batch_size = int(cfg["training"]["batch_size"])
-effective_batch_examples = min(configured_batch_size, int(train_idx.shape[0]))
-configured_batch_bytes = delayed_example_bytes * configured_batch_size
-effective_batch_bytes = delayed_example_bytes * effective_batch_examples
-
-gpu_mem_info = helpers.gpu_mem()
-if isinstance(gpu_mem_info, list) and gpu_mem_info:
-    gpu_vram_source = "nvidia-smi"
-    gpu_total_vram_bytes = int(gpu_mem_info[0]["total"] * 1024 * 1024)
-    gpu_free_vram_bytes = int(gpu_mem_info[0]["free"] * 1024 * 1024)
-    gpu_used_vram_bytes = gpu_total_vram_bytes - gpu_free_vram_bytes
-    half_free_vram_bytes = int(0.5 * gpu_free_vram_bytes)
-    batch_exceeds_half_free_vram = configured_batch_bytes > half_free_vram_bytes
-else:
-    gpu_vram_source = "unavailable"
-    gpu_total_vram_bytes = None
-    gpu_free_vram_bytes = None
-    gpu_used_vram_bytes = None
-    half_free_vram_bytes = None
-    batch_exceeds_half_free_vram = None
-
-print("Dataset loaded. Shapes:")
-pprint.pprint(
+console.subsection("Dataset loaded")
+console.pretty(
     {
         "delayed.shape": delayed.shape,
         "targets.shape": targets.shape,
@@ -155,35 +98,39 @@ pprint.pprint(
         "n_elements": kp.n_elements,
         "nz": kp.nz,
         "nx": kp.nx,
-    }
+    },
+    title="Shapes",
 )
-print("Memory diagnostics:")
-print(f"  delayed_samples_dataset (full): {helpers.bytes_to_gb(delayed_dataset_bytes):.3f} GiB")
-print(
+console.subsection("Memory diagnostics")
+console.info(
+    "  delayed_samples_dataset (full): "
+    f"{helpers.bytes_to_gb(memory_ctx['delayed_dataset_bytes']):.3f} GiB"
+)
+console.info(
     "  delayed_samples_dataset (one configured batch): "
-    f"{helpers.bytes_to_gb(configured_batch_bytes):.3f} GiB "
-    f"(batch_size={configured_batch_size})"
+    f"{helpers.bytes_to_gb(memory_ctx['configured_batch_bytes']):.3f} GiB "
+    f"(batch_size={memory_ctx['configured_batch_size']})"
 )
-print(
+console.info(
     "  delayed_samples_dataset (one effective train batch): "
-    f"{helpers.bytes_to_gb(effective_batch_bytes):.3f} GiB "
-    f"(examples={effective_batch_examples})"
+    f"{helpers.bytes_to_gb(memory_ctx['effective_batch_bytes']):.3f} GiB "
+    f"(examples={memory_ctx['effective_batch_examples']})"
 )
-if gpu_free_vram_bytes is None:
-    print("  GPU VRAM check: unavailable (could not query nvidia-smi free VRAM).")
+if memory_ctx["gpu_free_vram_bytes"] is None:
+    console.warn("GPU VRAM check unavailable (could not query nvidia-smi free VRAM).")
 else:
-    print(
+    console.info(
         "  GPU VRAM (GPU:0): "
-        f"total={helpers.bytes_to_gb(gpu_total_vram_bytes):.3f} GiB; "
-        f"free={helpers.bytes_to_gb(gpu_free_vram_bytes):.3f} GiB; "
-        f"used={helpers.bytes_to_gb(gpu_used_vram_bytes):.3f} GiB; "
-        f"source: {gpu_vram_source}"
+        f"total={helpers.bytes_to_gb(memory_ctx['gpu_total_vram_bytes']):.3f} GiB; "
+        f"free={helpers.bytes_to_gb(memory_ctx['gpu_free_vram_bytes']):.3f} GiB; "
+        f"used={helpers.bytes_to_gb(memory_ctx['gpu_used_vram_bytes']):.3f} GiB; "
+        f"source: {memory_ctx['gpu_vram_source']}"
     )
-    print(
+    console.info(
         "  Batch > 50% free VRAM: "
-        f"{'YES' if batch_exceeds_half_free_vram else 'NO'} "
-        f"(50% free threshold={helpers.bytes_to_gb(half_free_vram_bytes):.3f} GiB; "
-        f"configured batch uses {helpers.bytes_to_gb(configured_batch_bytes):.3f} GiB)"
+        f"{'YES' if memory_ctx['batch_exceeds_half_free_vram'] else 'NO'} "
+        f"(50% free threshold={helpers.bytes_to_gb(memory_ctx['half_free_vram_bytes']):.3f} GiB; "
+        f"configured batch uses {helpers.bytes_to_gb(memory_ctx['configured_batch_bytes']):.3f} GiB)"
     )
 
 
@@ -191,22 +138,13 @@ else:
 # 3) Build tf.data pipelines and evaluation-noise policy
 # ============================================================================
 
-train_ds = helpers.build_tf_dataset_by_indices(
+train_ds, val_ds = helpers.build_training_pipelines(
     delayed,
     targets,
-    indices=train_idx,
-    sample_weights=train_loss_weights,
+    train_idx,
+    val_idx,
+    train_loss_weights,
     batch_size=int(cfg["training"]["batch_size"]),
-    shuffle=True,
-    seed=int(cfg["training"]["seed"]),
-)
-val_ds = helpers.build_tf_dataset_by_indices(
-    delayed,
-    targets,
-    indices=val_idx,
-    sample_weights=train_loss_weights,
-    batch_size=int(cfg["training"]["batch_size"]),
-    shuffle=False,
     seed=int(cfg["training"]["seed"]),
 )
 
@@ -234,45 +172,29 @@ features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]
 output_activation = cfg["model"].get("output_activation", "sigmoid")
 hidden_units_raw = cfg["model"].get("hidden_units")
 n_hidden_layers_raw = cfg["model"].get("n_hidden_layers")
-apodization_model = build_mlp_inr(
-    input_dim=cm.n_physical_features,
-    hidden_units_config=hidden_units_raw,
-    n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
-    activation=cfg["model"]["activation"],
-    output_activation=output_activation,
-)
-weight_reg_cfg = dict(cfg["training"].get("weight_regularization", {}))
-weight_reg_enabled = bool(weight_reg_cfg.get("enabled", False))
-weight_reg_type = str(weight_reg_cfg.get("type", "hinge_low_norm")).strip().lower()
-if weight_reg_enabled and weight_reg_type not in ("hinge_low_norm", "hinge"):
-    raise ValueError(
-        "training.weight_regularization.type must be 'hinge_low_norm' or 'hinge'"
+if resume_enabled:
+    print(f"Resume enabled. Loading model from: {resume_model_path}")
+    apodization_model = tf.keras.models.load_model(str(resume_model_path), compile=False)
+else:
+    apodization_model = build_mlp_inr(
+        input_dim=cm.n_physical_features,
+        hidden_units_config=hidden_units_raw,
+        n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
+        activation=cfg["model"]["activation"],
+        output_activation=output_activation,
     )
-
-weight_reg_lambda = float(weight_reg_cfg.get("lambda", 1e-3))
-weight_reg_tau = float(weight_reg_cfg.get("tau", 0.30))
-weight_reg_epsilon = float(weight_reg_cfg.get("epsilon", 1e-8))
-weight_reg_normalize = bool(weight_reg_cfg.get("normalize_norm", True))
-weight_reg_auto_cfg = dict(weight_reg_cfg.get("auto_init", {}))
+weight_reg_resolved = helpers.parse_weight_regularization_config(cfg)
+weight_reg_enabled = bool(weight_reg_resolved["enabled"])
+weight_reg_lambda = float(weight_reg_resolved["lambda"])
+weight_reg_tau = float(weight_reg_resolved["tau"])
+weight_reg_epsilon = float(weight_reg_resolved["epsilon"])
+weight_reg_normalize = bool(weight_reg_resolved["normalize_norm"])
+weight_reg_auto_cfg = dict(weight_reg_resolved["auto_init"])
 weight_reg_auto_enabled = bool(weight_reg_auto_cfg.get("enabled", False))
 weight_reg_auto_ratio = float(weight_reg_auto_cfg.get("ratio", 0.5))
 weight_reg_auto_eps = float(weight_reg_auto_cfg.get("epsilon", 1e-12))
 weight_reg_auto_norm_fraction = float(weight_reg_auto_cfg.get("norm_fraction", 0.5))
-
-if weight_reg_lambda < 0.0:
-    raise ValueError("training.weight_regularization.lambda must be >= 0")
-if weight_reg_tau < 0.0:
-    raise ValueError("training.weight_regularization.tau must be >= 0")
-if weight_reg_epsilon <= 0.0:
-    raise ValueError("training.weight_regularization.epsilon must be > 0")
-if weight_reg_auto_ratio < 0.0:
-    raise ValueError("training.weight_regularization.auto_init.ratio must be >= 0")
-if weight_reg_auto_eps <= 0.0:
-    raise ValueError("training.weight_regularization.auto_init.epsilon must be > 0")
-if weight_reg_auto_norm_fraction <= 0.0:
-    raise ValueError("training.weight_regularization.auto_init.norm_fraction must be > 0")
-
-resolved_weight_reg_type = "hinge_low_norm" if weight_reg_type == "hinge" else weight_reg_type
+resolved_weight_reg_type = str(weight_reg_resolved["type"])
 
 trainer = DasInrApod(
     apodization_model=apodization_model,
@@ -284,8 +206,8 @@ trainer = DasInrApod(
     weight_regularization_epsilon=weight_reg_epsilon,
     weight_regularization_normalize=weight_reg_normalize,
 )
-print("Weight regularization configuration:")
-print(
+console.subsection("Weight regularization")
+console.pretty(
     {
         "enabled": weight_reg_enabled,
         "type": resolved_weight_reg_type,
@@ -299,7 +221,8 @@ print(
             "epsilon": weight_reg_auto_eps,
             "norm_fraction": weight_reg_auto_norm_fraction,
         },
-    }
+    },
+    title="Configuration",
 )
 weight_decay = float(cfg["training"].get("weight_decay", 0.0))
 loss_obj = PixelWeightedMAELoss(name="pixel_weighted_mae_loss")
@@ -411,44 +334,18 @@ if hanning_weights_np is None or boxcar_weights_np is None:
 # 7) Output folders, callbacks, and model training
 # ============================================================================
 
-# Resolve scripts output root and create a timestamped outputs folder.
-scripts_output_root_cfg = Path(
-    cfg["io"].get(
-        "scripts_output_root",
-        cfg["io"].get("sandbox_output_root", "scripts/outputs/train"),
-    )
+output_dir, apodization_dir, snr_dir, callbacks, timestamp = helpers.setup_output_directories_and_callbacks(
+    cfg,
+    default_output_root="scripts/outputs/train",
 )
-if not scripts_output_root_cfg.is_absolute():
-    sandbox_root = config.PROJ_ROOT / scripts_output_root_cfg
-else:
-    sandbox_root = scripts_output_root_cfg
 
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-sandbox_dir = str(Path(sandbox_root) / timestamp)
-os.makedirs(sandbox_dir, exist_ok=True)
-apodization_dir = Path(sandbox_dir) / "apodization"
-snr_dir = Path(sandbox_dir) / "snr"
-apodization_dir.mkdir(parents=True, exist_ok=True)
-snr_dir.mkdir(parents=True, exist_ok=True)
-
-callbacks = [
-    tf.keras.callbacks.EarlyStopping(
-        monitor="val_loss",
-        patience=int(cfg["training"]["early_stopping_patience"]),
-        restore_best_weights=True,
-    ),
-    tf.keras.callbacks.ReduceLROnPlateau(
-        monitor="val_loss",
-        patience=int(cfg["training"]["reduce_lr_patience"]),
-        factor=0.5,
-    ),
-]
-
-print("Starting physical-forward training...")
+console.section("Training")
+console.info("Starting physical-forward training...")
 history = trainer.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=int(cfg["training"]["epochs"]),
+    epochs=target_epochs,
+    initial_epoch=initial_epoch,
     callbacks=callbacks,
     verbose=1,
 )
@@ -539,6 +436,25 @@ else:
 # 9) Persist artifacts and generate main figures
 # ============================================================================
 
+# Merge training histories if resuming
+stage_history = dict(history.history)
+full_history = helpers.merge_training_histories(previous_history, stage_history)
+stage_start_epoch = initial_epoch
+stage_epochs = helpers.history_length(stage_history)
+stage_end_epoch = stage_start_epoch + stage_epochs - 1 if stage_epochs > 0 else stage_start_epoch
+history_stages = list(history_stages)
+history_stages.append(
+    {
+        "stage_id": len(history_stages) + 1,
+        "run_timestamp": timestamp,
+        "source_run_dir": str(resume_cfg.get("source_run_dir")) if resume_cfg.get("source_run_dir") else None,
+        "epoch_start_global": int(stage_start_epoch),
+        "epoch_end_global": int(stage_end_epoch),
+        "epochs_trained": int(stage_epochs),
+        "resume_enabled": bool(resume_enabled),
+    }
+)
+
 effective_cfg = {
     "config_path": str(CONFIG_PATH),
     "dataset_folder": dataset_folder,
@@ -551,6 +467,17 @@ effective_cfg = {
         "baseline_f_number_used": float(baseline_f_number),
     },
     "experiment": cfg,
+    "resume": {
+        "enabled": resume_enabled,
+        "source_run_dir": str(resume_cfg.get("source_run_dir")) if resume_cfg.get("source_run_dir") else None,
+        "source_model_path": str(resume_cfg.get("source_model_path")) if resume_cfg.get("source_model_path") else None,
+        "resolved_model_path": str(resume_model_path) if resume_enabled else None,
+        "restore_optimizer": resume_cfg.get("restore_optimizer", True),
+        "epochs_mode": resume_cfg.get("epochs_mode", "additional"),
+        "additional_epochs": resume_cfg.get("additional_epochs", 0),
+        "initial_epoch": int(initial_epoch),
+        "target_epochs": int(target_epochs),
+    },
     "resolved_weight_regularization": {
         "enabled": weight_reg_enabled,
         "type": resolved_weight_reg_type,
@@ -569,11 +496,14 @@ effective_cfg = {
         },
     },
 }
-helpers.save_artifacts(sandbox_dir, apodization_model, history.history, effective_cfg)
+helpers.save_artifacts(output_dir, apodization_model, full_history, effective_cfg)
+helpers.save_json_artifact(str(Path(output_dir) / "history_stage.json"), stage_history)
+helpers.save_json_artifact(str(Path(output_dir) / "history_full.json"), full_history)
+helpers.save_json_artifact(str(Path(output_dir) / "history_stages.json"), history_stages)
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))
-history_dir = Path(sandbox_dir) / "history"
+history_dir = Path(output_dir) / "history"
 history_dir.mkdir(parents=True, exist_ok=True)
 
 helpers.plot_das_comparison_db(
@@ -581,7 +511,7 @@ helpers.plot_das_comparison_db(
     inr_before_image=inr_before_for_plot.numpy()[0],
     inr_after_image=inr_after_for_plot.numpy()[0],
     target_image=sample_target[0],
-    output_path=str(Path(sandbox_dir) / "das_images_comparison_db.png"),
+    output_path=str(Path(output_dir) / "das_images_comparison_db.png"),
     extent=kp.get_imshow_extent(),
     cmap=str(plot_cfg.get("cmap", "gray")),
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
@@ -594,7 +524,7 @@ helpers.plot_das_comparison_db(
     inr_before_image=inr_before_for_plot.numpy()[0],
     inr_after_image=inr_after_for_plot.numpy()[0],
     target_image=sample_target[0],
-    output_path=str(Path(sandbox_dir) / "das_images_comparison_db_hanning.png"),
+    output_path=str(Path(output_dir) / "das_images_comparison_db_hanning.png"),
     extent=kp.get_imshow_extent(),
     cmap=str(plot_cfg.get("cmap", "gray")),
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
@@ -609,7 +539,7 @@ helpers.plot_das_comparison_db(
     inr_before_image=inr_before_for_plot.numpy()[0],
     inr_after_image=inr_after_for_plot.numpy()[0],
     target_image=sample_target[0],
-    output_path=str(Path(sandbox_dir) / "das_images_comparison_db_boxcar.png"),
+    output_path=str(Path(output_dir) / "das_images_comparison_db_boxcar.png"),
     extent=kp.get_imshow_extent(),
     cmap=str(plot_cfg.get("cmap", "gray")),
     vmin_db=float(plot_cfg.get("vmin_db", -60.0)),
@@ -990,44 +920,39 @@ comparison_summary = {
     ),
 }
 
-with open(Path(sandbox_dir) / "validation_mae_summary.json", "w", encoding="utf-8") as file:
+with open(Path(output_dir) / "validation_mae_summary.json", "w", encoding="utf-8") as file:
     json.dump(comparison_summary, file, indent=2)
 
-print("Validation MAE summary:")
-for method_name in method_order:
-    mae_value = validation_bundle["mae_by_method"].get(method_name)
-    if mae_value is not None:
-        print(f"  {method_name:>10}: {mae_value:.6g}")
+console.section("Validation Summary")
+console.metrics_table("Validation MAE", validation_bundle["mae_by_method"])
 if validation_bundle.get("masked_mae_by_method"):
-    print("Validation PixelWeightedMAE summary:")
-    for method_name in method_order:
-        mae_value = validation_bundle["masked_mae_by_method"].get(method_name)
-        if mae_value is not None:
-            print(f"  {method_name:>10}: {mae_value:.6g}")
+    console.metrics_table(
+        "Validation PixelWeightedMAE",
+        validation_bundle["masked_mae_by_method"],
+    )
 if relative_mae_y_pred_by_method:
-    print("Validation RelativeMAE (normalize_by=y_pred) summary:")
-    for method_name in method_order:
-        rel_value = relative_mae_y_pred_by_method.get(method_name)
-        if rel_value is not None:
-            print(f"  {method_name:>10}: {rel_value:.6g}")
+    console.metrics_table(
+        "Validation RelativeMAE (normalize_by=y_pred)",
+        relative_mae_y_pred_by_method,
+    )
 if relative_mae_y_true_by_method:
-    print("Validation RelativeMAE (normalize_by=y_true) summary:")
-    for method_name in method_order:
-        rel_value = relative_mae_y_true_by_method.get(method_name)
-        if rel_value is not None:
-            print(f"  {method_name:>10}: {rel_value:.6g}")
+    console.metrics_table(
+        "Validation RelativeMAE (normalize_by=y_true)",
+        relative_mae_y_true_by_method,
+    )
 if reference_pixel_weighted_mae_for_plot:
-    print("Reference PixelWeightedMAE (derived, not persisted):")
-    for ref_name, ref_val in reference_pixel_weighted_mae_for_plot.items():
-        print(f"  ref_{ref_name:>7}: {ref_val:.6g}")
-print(f"  {'history_val_mae':>10}: {history_val_mae:.6g}")
-print(
-    f"  {'delta_inr_after_vs_history':>10}: "
+    console.metrics_table(
+        "Reference PixelWeightedMAE (derived, not persisted)",
+        {f"ref_{name}": value for name, value in reference_pixel_weighted_mae_for_plot.items()},
+    )
+console.info(f"history_val_mae: {history_val_mae:.6g}")
+console.info(
+    "delta_inr_after_vs_history: "
     f"{comparison_summary['delta_inr_after_vs_history']:.6g}"
 )
 
-print("Training finished.")
-print("Sandbox artifacts:", sandbox_dir)
+console.success("Training finished.")
+console.info(f"Output artifacts: {output_dir}")
 
 # Save training curves with hanning reference lines (absolute and relative metrics)
 helpers.plot_training_curves(

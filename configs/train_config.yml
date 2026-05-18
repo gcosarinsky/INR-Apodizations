@@ -32,7 +32,7 @@ eval_noise:
 
 training:
   batch_size: 1
-  epochs: 60
+  epochs: 5
   learning_rate: 0.001
   loss: mae
   metric: mae
@@ -60,6 +60,20 @@ training:
   max_examples: null
   early_stopping_patience: 4
   reduce_lr_patience: 3
+
+resume:
+  enabled: true
+  # Preferred source: previous run directory with model.keras + history artifacts.
+  source_run_dir: scripts\outputs\train\20260514_140814
+  # Optional fallback when only a model file is available.
+  source_model_path: ""
+  # Reserved for future optimizer-state persistence. Currently weights-only resume.
+  restore_optimizer: true
+  # additional: train N extra epochs from previous history length.
+  # target_total: use training.epochs as total global epoch target.
+  epochs_mode: additional
+  additional_epochs: 2
+  strict_compatibility: true
 
 plots:
   cmap: gray
