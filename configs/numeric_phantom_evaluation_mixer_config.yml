@@ -3,7 +3,7 @@ io:
   evaluation_output_root: scripts/outputs/evaluation/numeric_phantom/mixer
   save_plot: true
   # Mixer evaluation expects a run directory containing model.keras and mixer_combiner_weights.npz.
-  model_path: scripts\outputs\train_mixer\20260518_131411
+  model_path: scripts\outputs\train_mixer\20260518_152756
 
 mixer_model:
   eval_combined: true

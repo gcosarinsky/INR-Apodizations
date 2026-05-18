@@ -1,5 +1,23 @@
 import tensorflow as tf
 import numpy as np
+import warnings
+
+
+ALLOWED_PHYSICAL_FEATURE_COMPONENTS = (
+    "z",
+    "x",
+    "abs_x",
+    "xrel",
+    "abs_xrel",
+    "dist_to_edge",
+)
+
+LEGACY_FEATURE_SET_TO_COMPONENTS = {
+    "distance_depth_edge": ("abs_xrel", "z", "dist_to_edge"),
+    "distance_depth_center": ("abs_xrel", "z", "abs_x"),
+    "distance_depth": ("abs_xrel", "z"),
+    "x_rel_depth_edge": ("xrel", "z", "dist_to_edge"),
+}
 
 
 class CoordinateManager:
@@ -8,11 +26,13 @@ class CoordinateManager:
 
     Generates and stores:
     - Spatial coordinates: x, z, x_elem (in mm and scaled by D)
-        - Physical features, configurable by feature set:
-            - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
-            - 'distance_depth_center': [|x - x_elem|, z, |x|]
-            - 'distance_depth': [|x - x_elem|, z]
-            - 'x_rel_depth_edge': [x - x_elem, z, D/2 - |x|]
+        - Physical features, configurable by ordered component tokens:
+            - 'z': z
+            - 'x': x
+            - 'abs_x': |x|
+            - 'xrel': x - x_elem
+            - 'abs_xrel': |x - x_elem|
+            - 'dist_to_edge': D/2 - |x| (legacy-compatible)
 
     Scaling: all coordinates are scaled by dividing by D (array aperture)
 
@@ -22,36 +42,32 @@ class CoordinateManager:
     - Points: (n_elem * n_points, 3) - for arbitrary points
     """
 
-    def __init__(self, kp, physical_feature_set="distance_depth_edge"):
+    def __init__(
+        self,
+        kp,
+        physical_feature_set="distance_depth_edge",
+        physical_feature_components=None,
+    ):
         """
         Initializes the coordinate manager.
 
         Args:
             kp: KernelParameters object (2D or 3D) with system parameters.
-            physical_feature_set: Physical feature variant to generate.
-                - 'distance_depth_edge': [|x - x_elem|, z, D/2 - |x|]
-                - 'distance_depth_center': [|x - x_elem|, z, |x|]
-                - 'distance_depth': [|x - x_elem|, z]
-                - 'x_rel_depth_edge': [x - x_elem, z, D/2 - |x|]
+            physical_feature_set: Legacy physical feature preset.
+            physical_feature_components: Optional ordered feature token list.
+                Allowed tokens: ('z', 'x', 'abs_x', 'xrel', 'abs_xrel', 'dist_to_edge').
+                If provided, this takes precedence over `physical_feature_set`.
 
         Raises:
-            ValueError: If the requested physical feature set is not supported.
+            ValueError: If the requested feature configuration is invalid.
         """
         self.kp = kp
-        self.physical_feature_set = physical_feature_set
-
-        valid_feature_sets = {
-            "distance_depth_edge": ("dist_to_elem", "depth", "dist_to_edge"),
-            "distance_depth_center": ("dist_to_elem", "depth", "dist_to_center"),
-            "distance_depth": ("dist_to_elem", "depth"),
-            "x_rel_depth_edge": ("x_rel", "depth", "dist_to_edge"),
-        }
-        if self.physical_feature_set not in valid_feature_sets:
-            raise ValueError(
-                "physical_feature_set must be one of "
-                f"{tuple(valid_feature_sets.keys())}"
-            )
-        self.physical_feature_names = valid_feature_sets[self.physical_feature_set]
+        self.physical_feature_set = str(physical_feature_set)
+        self.physical_feature_components = self._resolve_physical_feature_components(
+            physical_feature_set=self.physical_feature_set,
+            physical_feature_components=physical_feature_components,
+        )
+        self.physical_feature_names = self.physical_feature_components
         self.n_physical_features = len(self.physical_feature_names)
 
         # Verify that it is 2D (for now)
@@ -103,6 +119,50 @@ class CoordinateManager:
         print(f"   Elements: {self.n_elem}")
         print(f"   Aperture D: {self.D:.2f} mm")
         print(f"   Physical feature set: {self.physical_feature_set}")
+        print(f"   Physical feature components: {self.physical_feature_components}")
+
+    def _resolve_physical_feature_components(self, physical_feature_set, physical_feature_components):
+        """Resolve selected physical feature components from explicit list or legacy preset."""
+        if physical_feature_components is not None:
+            if not isinstance(physical_feature_components, (list, tuple)):
+                raise ValueError(
+                    "physical_feature_components must be a list/tuple of strings "
+                    f"from {ALLOWED_PHYSICAL_FEATURE_COMPONENTS}"
+                )
+
+            resolved = tuple(str(token).strip() for token in physical_feature_components)
+            if len(resolved) not in (2, 3):
+                raise ValueError(
+                    "physical_feature_components must contain exactly 2 or 3 tokens"
+                )
+            if len(set(resolved)) != len(resolved):
+                raise ValueError("physical_feature_components cannot contain duplicate tokens")
+
+            invalid_tokens = [
+                token for token in resolved if token not in ALLOWED_PHYSICAL_FEATURE_COMPONENTS
+            ]
+            if invalid_tokens:
+                raise ValueError(
+                    "Invalid physical feature tokens: "
+                    f"{invalid_tokens}. Allowed tokens: {ALLOWED_PHYSICAL_FEATURE_COMPONENTS}"
+                )
+
+            self.physical_feature_set = "components_list"
+            return resolved
+
+        if physical_feature_set not in LEGACY_FEATURE_SET_TO_COMPONENTS:
+            raise ValueError(
+                "physical_feature_set must be one of "
+                f"{tuple(LEGACY_FEATURE_SET_TO_COMPONENTS.keys())} "
+                "when physical_feature_components is not provided"
+            )
+
+        warnings.warn(
+            "physical_feature_set is deprecated. Use physical_feature_components in YAML.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return LEGACY_FEATURE_SET_TO_COMPONENTS[physical_feature_set]
 
     # ========================================================================
     # PRIVATE METHODS: Base coordinate creation
@@ -139,82 +199,41 @@ class CoordinateManager:
         """
         return tf.stack(feature_tensors, axis=-1)
 
-    def _compute_physical_features_mm(self, X_mm, Z_mm, x_elem_mm):
-        """
-        Computes physical features IN MILLIMETERS.
+    def _component_tensor_mm(self, token, x_grid, z_grid, x_elem_grid):
+        """Return one physical feature tensor in millimeters for the selected token."""
+        if token == "z":
+            return tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        if token == "x":
+            return tf.broadcast_to(x_grid, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x":
+            return tf.broadcast_to(tf.abs(x_grid - self.x_center), [self.n_elem, self.nz, self.nx])
+        if token == "xrel":
+            return tf.broadcast_to(x_grid - x_elem_grid, [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel":
+            return tf.broadcast_to(tf.abs(x_grid - x_elem_grid), [self.n_elem, self.nz, self.nx])
+        if token == "dist_to_edge":
+            return tf.broadcast_to(self.D_half - tf.abs(x_grid - self.x_center), [self.n_elem, self.nz, self.nx])
+        raise ValueError(f"Unsupported physical feature token: {token}")
 
-        Args:
-            X_mm: grid of x coordinates (nz, nx) in mm
-            Z_mm: grid of z coordinates (nz, nx) in mm
-            x_elem_mm: x coordinate of the element in mm (scalar)
-
-        Returns:
-            tuple: Physical features in mm according to the selected feature set.
-        """
-        # Feature 1: |x - x_elem| in mm
-        dist_to_elem = tf.abs(X_mm - x_elem_mm)
-
-        # Feature 2: z in mm
-        depth = Z_mm
-
-        # Feature 3 base: |x - x_center| in mm (|x| when x_center = 0)
-        x_from_center = tf.abs(X_mm - self.x_center)
-
-        if self.physical_feature_set == "distance_depth":
-            return dist_to_elem, depth
-
-        if self.physical_feature_set == "distance_depth_center":
-            return dist_to_elem, depth, x_from_center
-
-        if self.physical_feature_set == "x_rel_depth_edge":
-            x_rel = X_mm - x_elem_mm
-            dist_to_edge = self.D_half - x_from_center
-            return x_rel, depth, dist_to_edge
-
-        # Feature 3: D/2 - |x - x_center| in mm
-        dist_to_edge = self.D_half - x_from_center
-
-        return dist_to_elem, depth, dist_to_edge
-
-    def _compute_physical_features_scaled(self, X_mm, Z_scaled, x_elem_mm):
-        """
-        Computes physical features SCALED by D.
-
-        Args:
-            X_mm: grid of x coordinates (nz, nx) in mm
-            Z_scaled: grid of z coordinates (nz, nx) scaled by D
-            x_elem_mm: x coordinate of the element in mm (scalar)
-
-        Returns:
-            tuple: Physical features scaled by D according to the selected feature set.
-        """
-        # Feature 1: |x - x_elem| / D
-        dist_to_elem = tf.abs(X_mm - x_elem_mm)
-        dist_to_elem_scaled = dist_to_elem / self.D
-
-        # Feature 2: z / D (already scaled)
-        depth_scaled = Z_scaled
-
-        # Feature 3 base: |x - x_center| / D
-        x_from_center = tf.abs(X_mm - self.x_center)
-        dist_to_center_scaled = x_from_center / self.D
-
-        if self.physical_feature_set == "distance_depth":
-            return dist_to_elem_scaled, depth_scaled
-
-        if self.physical_feature_set == "distance_depth_center":
-            return dist_to_elem_scaled, depth_scaled, dist_to_center_scaled
-
-        if self.physical_feature_set == "x_rel_depth_edge":
-            x_rel_scaled = (X_mm - x_elem_mm) / self.D
-            dist_to_edge = self.D_half - x_from_center
-            dist_to_edge_scaled = dist_to_edge / self.D
-            return x_rel_scaled, depth_scaled, dist_to_edge_scaled
-
-        # Feature 3: (D/2 - |x - x_center|) / D = 0.5 - |x - x_center| / D
-        dist_to_edge = self.D_half - x_from_center
-        dist_to_edge_scaled = dist_to_edge / self.D
-        return dist_to_elem_scaled, depth_scaled, dist_to_edge_scaled
+    def _component_tensor_scaled(self, token, x_grid_mm, z_grid_scaled, x_elem_grid_mm):
+        """Return one D-scaled physical feature tensor for the selected token."""
+        if token == "z":
+            return tf.broadcast_to(z_grid_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "x":
+            return tf.broadcast_to(x_grid_mm / self.D, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x":
+            abs_x_scaled = tf.abs(x_grid_mm - self.x_center) / self.D
+            return tf.broadcast_to(abs_x_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "xrel":
+            xrel_scaled = (x_grid_mm - x_elem_grid_mm) / self.D
+            return tf.broadcast_to(xrel_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel":
+            abs_xrel_scaled = tf.abs(x_grid_mm - x_elem_grid_mm) / self.D
+            return tf.broadcast_to(abs_xrel_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "dist_to_edge":
+            dist_to_edge_scaled = (self.D_half - tf.abs(x_grid_mm - self.x_center)) / self.D
+            return tf.broadcast_to(dist_to_edge_scaled, [self.n_elem, self.nz, self.nx])
+        raise ValueError(f"Unsupported physical feature token: {token}")
 
     # ========================================================================
     # PRIVATE METHODS: Grid construction
@@ -264,22 +283,10 @@ class CoordinateManager:
         z_grid = tf.reshape(z_mm_tf, [1, -1, 1])
         x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        dist_to_elem = tf.abs(x_grid - x_elem_grid)
-        dist_to_elem = tf.broadcast_to(dist_to_elem, [self.n_elem, self.nz, self.nx])
-        depth = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
-        x_from_center = tf.broadcast_to(tf.abs(x_grid - self.x_center), [self.n_elem, self.nz, self.nx])
-
-        if self.physical_feature_set == "distance_depth":
-            feature_tensors = (dist_to_elem, depth)
-        elif self.physical_feature_set == "distance_depth_center":
-            feature_tensors = (dist_to_elem, depth, x_from_center)
-        elif self.physical_feature_set == "x_rel_depth_edge":
-            x_rel = tf.broadcast_to(x_grid - x_elem_grid, [self.n_elem, self.nz, self.nx])
-            dist_to_edge = self.D_half - x_from_center
-            feature_tensors = (x_rel, depth, dist_to_edge)
-        else:
-            dist_to_edge = self.D_half - x_from_center
-            feature_tensors = (dist_to_elem, depth, dist_to_edge)
+        feature_tensors = tuple(
+            self._component_tensor_mm(token, x_grid, z_grid, x_elem_grid)
+            for token in self.physical_feature_components
+        )
 
         self._features_grid_mm = self._stack_physical_features(feature_tensors)
         self._features_flat_mm = tf.reshape(self._features_grid_mm, [-1, self.n_physical_features])
@@ -294,22 +301,10 @@ class CoordinateManager:
         z_grid = tf.reshape(z_scaled_tf, [1, -1, 1])
         x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        dist_to_elem = tf.abs(x_grid - x_elem_grid) / self.D
-        dist_to_elem = tf.broadcast_to(dist_to_elem, [self.n_elem, self.nz, self.nx])
-        depth = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
-        x_from_center = tf.broadcast_to(tf.abs(x_grid - self.x_center) / self.D, [self.n_elem, self.nz, self.nx])
-
-        if self.physical_feature_set == "distance_depth":
-            feature_tensors = (dist_to_elem, depth)
-        elif self.physical_feature_set == "distance_depth_center":
-            feature_tensors = (dist_to_elem, depth, x_from_center)
-        elif self.physical_feature_set == "x_rel_depth_edge":
-            x_rel_scaled = tf.broadcast_to((x_grid - x_elem_grid) / self.D, [self.n_elem, self.nz, self.nx])
-            dist_to_edge_scaled = 0.5 - x_from_center
-            feature_tensors = (x_rel_scaled, depth, dist_to_edge_scaled)
-        else:
-            dist_to_edge_scaled = 0.5 - x_from_center
-            feature_tensors = (dist_to_elem, depth, dist_to_edge_scaled)
+        feature_tensors = tuple(
+            self._component_tensor_scaled(token, x_grid, z_grid, x_elem_grid)
+            for token in self.physical_feature_components
+        )
 
         self._features_grid_scaled = self._stack_physical_features(feature_tensors)
         self._features_flat_scaled = tf.reshape(
@@ -499,12 +494,14 @@ class CoordinateManager:
         Returns:
             dict: {
                 'physical_feature_set': str,
+                'physical_feature_components': tuple[str, ...],
                 'physical_feature_names': tuple[str, ...],
                 'n_physical_features': int
             }
         """
         return {
             'physical_feature_set': self.physical_feature_set,
+            'physical_feature_components': self.physical_feature_components,
             'physical_feature_names': self.physical_feature_names,
             'n_physical_features': self.n_physical_features,
         }

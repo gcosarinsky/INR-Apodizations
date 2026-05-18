@@ -135,11 +135,11 @@ def load_train_info(model_file: Path) -> dict:
     return payload
 
 
-def resolve_model_feature_settings(cfg: dict, train_info: dict) -> tuple[bool, str, int]:
+def resolve_model_feature_settings(cfg: dict, train_info: dict) -> tuple[bool, str, list[str] | None, int]:
     """Resolve model-related feature settings with config override precedence.
 
     Returns:
-        Tuple ``(scaled_features, physical_feature_set, feature_chunk_size)``.
+        Tuple ``(scaled_features, physical_feature_set, physical_feature_components, feature_chunk_size)``.
     """
     model_cfg = cfg.get("model", {})
 
@@ -160,11 +160,24 @@ def resolve_model_feature_settings(cfg: dict, train_info: dict) -> tuple[bool, s
         )
     )
 
+    components_cfg = model_cfg.get("physical_feature_components")
+    if isinstance(components_cfg, list):
+        physical_feature_components = [str(token) for token in components_cfg]
+    else:
+        train_components = train_info.get("experiment", {}).get("model", {}).get(
+            "physical_feature_components"
+        )
+        physical_feature_components = (
+            [str(token) for token in train_components]
+            if isinstance(train_components, list)
+            else None
+        )
+
     feature_chunk_size = int(model_cfg.get("feature_chunk_size", 65536))
     if feature_chunk_size <= 0:
         raise ValueError("model.feature_chunk_size must be > 0")
 
-    return scaled_features, physical_feature_set, feature_chunk_size
+    return scaled_features, physical_feature_set, physical_feature_components, feature_chunk_size
 
 
 def infer_inr_apodization_map(
@@ -350,13 +363,14 @@ def main() -> None:
 
     model_file = resolve_model_file(cfg["io"]["model_path"])
     train_info = load_train_info(model_file)
-    scaled_features, physical_feature_set, feature_chunk_size = resolve_model_feature_settings(
+    scaled_features, physical_feature_set, physical_feature_components, feature_chunk_size = resolve_model_feature_settings(
         cfg, train_info
     )
 
     kp, cm = build_coordinate_manager(
         dataset_folder=str(dataset_folder),
         physical_feature_set=physical_feature_set,
+        physical_feature_components=physical_feature_components,
     )
 
     print(f"Using YAML config: {CONFIG_PATH}")
@@ -367,6 +381,7 @@ def main() -> None:
         "Feature settings: "
         f"scaled_features={scaled_features}, "
         f"physical_feature_set={physical_feature_set}, "
+        f"physical_feature_components={physical_feature_components}, "
         f"feature_chunk_size={feature_chunk_size}"
     )
 

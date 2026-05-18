@@ -12,7 +12,6 @@ Design decisions:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 import csv
 from datetime import datetime
 import sys
@@ -28,15 +27,19 @@ from inr_apodizations.modeling.das_models import DasInrApod
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
 from inr_apodizations.dataset import generate_das_modulated_target
+from inr_apodizations.evaluation.config_utils import (
+    build_grid_reflector_points,
+    resolve_reflector_indices,
+)
+from inr_apodizations.evaluation.io_utils import (
+    load_config_yaml,
+    resolve_latest_delayed_samples_path,
+)
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
 import inr_apodizations.experiment_helpers as helpers
 
 plt.ion()  # interactive mode for plotting
-
-def _load_config(cfg_path: Path) -> dict[str, Any]:
-    with open(cfg_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def _load_delayed_samples(path: Path) -> np.ndarray:
@@ -45,163 +48,13 @@ def _load_delayed_samples(path: Path) -> np.ndarray:
     return arr
 
 
-def _remap_legacy_outputs_path(path: Path) -> Path:
-    """Map legacy sandbox outputs paths to the new scripts outputs layout.
-
-    This keeps old simulation_info.yml files usable after moving outputs.
-    """
-    legacy_marker = "sandbox/inr_das_experiment/outputs"
-    new_marker = "scripts/outputs"
-
-    path_norm = str(path).replace("\\", "/")
-    if legacy_marker not in path_norm:
-        return path
-
-    remapped_norm = path_norm.replace(legacy_marker, new_marker, 1)
-    return Path(remapped_norm)
-
-
-def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, Path]:
-    """Resolve delayed-samples artifact from latest simulation metadata.
-
-    Returns:
-        Tuple ``(delayed_samples_file, latest_run_folder)``.
-
-    Raises:
-        FileNotFoundError: If expected folders/files are missing.
-        ValueError: If metadata format/content is invalid.
-    """
-    simulation_root_cfg = io_cfg.get(
-        "simulation_output_root", "scripts/outputs/evaluation/numeric_phantom/delayed_samples"
-    )
-    simulation_root = Path(PROJ_ROOT / simulation_root_cfg)
-    if not simulation_root.exists() or not simulation_root.is_dir():
-        raise FileNotFoundError(
-            "No existe `io.simulation_output_root` o no es carpeta: "
-            f"{simulation_root}"
-        )
-
-    run_folders = [path for path in simulation_root.iterdir() if path.is_dir()]
-    if len(run_folders) == 0:
-        raise FileNotFoundError(
-            "No se encontraron corridas en `io.simulation_output_root`: "
-            f"{simulation_root}"
-        )
-
-    latest_run = max(run_folders, key=lambda path: path.stat().st_mtime)
-    simulation_info_path = latest_run / "simulation_info.yml"
-    if not simulation_info_path.exists():
-        raise FileNotFoundError(
-            "No se encontro simulation_info.yml en la corrida mas reciente: "
-            f"{simulation_info_path}"
-        )
-
-    simulation_info = _load_config(simulation_info_path)
-    delayed_samples_cfg = simulation_info.get("delayed_samples_path")
-    if not isinstance(delayed_samples_cfg, str) or len(delayed_samples_cfg.strip()) == 0:
-        raise ValueError(
-            "Falta `delayed_samples_path` valido en simulation_info.yml: "
-            f"{simulation_info_path}"
-        )
-
-    delayed_samples_path = Path(delayed_samples_cfg)
-    if not delayed_samples_path.is_absolute():
-        delayed_samples_path = (PROJ_ROOT / delayed_samples_path).resolve()
-
-    if not delayed_samples_path.exists() or delayed_samples_path.is_dir():
-        remapped_path = _remap_legacy_outputs_path(delayed_samples_path)
-        if remapped_path != delayed_samples_path and remapped_path.exists() and remapped_path.is_file():
-            delayed_samples_path = remapped_path
-
-    if not delayed_samples_path.exists() or delayed_samples_path.is_dir():
-        raise FileNotFoundError(
-            "`delayed_samples_path` en simulation_info.yml no apunta a un archivo valido: "
-            f"{delayed_samples_path}"
-        )
-
-    return delayed_samples_path, latest_run
-
-
-def _build_grid_reflector_points(cfg: dict[str, Any]) -> np.ndarray:
-    """Build reflector positions ``(N, 2)`` in mm from ``phantom.grid`` config."""
-    phantom_cfg = cfg.get("phantom", {})
-    mode = str(phantom_cfg.get("mode", "")).strip().lower()
-    if mode != "grid":
-        raise ValueError(
-            "Este flujo de perfiles por reflector requiere `phantom.mode: grid` en numeric_phantom_evaluation_config.yml."
-        )
-
-    grid_cfg = phantom_cfg.get("grid")
-    if not isinstance(grid_cfg, dict):
-        raise ValueError("Falta el bloque `phantom.grid` en numeric_phantom_evaluation_config.yml.")
-
-    required = (
-        "x_count",
-        "z_count",
-        "x_center_mm",
-        "z_start_mm",
-        "x_spacing_mm",
-        "z_spacing_mm",
-    )
-    missing = [name for name in required if name not in grid_cfg]
-    if missing:
-        raise ValueError(f"Faltan campos requeridos en `phantom.grid`: {missing}")
-
-    x_count = int(grid_cfg["x_count"])
-    z_count = int(grid_cfg["z_count"])
-    x_center_mm = float(grid_cfg["x_center_mm"])
-    z_start_mm = float(grid_cfg["z_start_mm"])
-    x_spacing_mm = float(grid_cfg["x_spacing_mm"])
-    z_spacing_mm = float(grid_cfg["z_spacing_mm"])
-
-    if x_count <= 0 or z_count <= 0:
-        raise ValueError("`x_count` y `z_count` deben ser enteros positivos en `phantom.grid`.")
-    if x_spacing_mm <= 0.0 or z_spacing_mm <= 0.0:
-        raise ValueError("`x_spacing_mm` y `z_spacing_mm` deben ser > 0 en `phantom.grid`.")
-
-    x_indices = np.arange(x_count, dtype=np.float64)
-    x_offsets = (x_indices - (x_count - 1) / 2.0) * x_spacing_mm
-    x_positions = x_center_mm + x_offsets
-
-    points: list[list[float]] = []
-    for z_idx in range(z_count):
-        z_pos = z_start_mm + z_idx * z_spacing_mm
-        for x_pos in x_positions:
-            points.append([float(x_pos), float(z_pos)])
-
-    return np.asarray(points, dtype=np.float64)
-
-
-def _resolve_reflector_indices(indices_cfg: Any, n_reflectors: int) -> np.ndarray:
-    """Resolve user-selected reflector indices from YAML.
-
-    Accepted values are ``"all"`` (default), or a list of integer indices.
-    """
-    if isinstance(indices_cfg, str) and indices_cfg.strip().lower() == "all":
-        return np.arange(n_reflectors, dtype=np.int32)
-    if indices_cfg is None:
-        return np.arange(n_reflectors, dtype=np.int32)
-    if not isinstance(indices_cfg, list) or len(indices_cfg) == 0:
-        raise ValueError(
-            "`reflector_lateral_profiles.reflector_indices` debe ser 'all' o una lista no vacia de enteros."
-        )
-
-    resolved = np.asarray(indices_cfg, dtype=np.int32)
-    if np.any(resolved < 0) or np.any(resolved >= n_reflectors):
-        raise ValueError(
-            "`reflector_lateral_profiles.reflector_indices` contiene indices fuera de rango. "
-            f"Rango valido: [0, {n_reflectors - 1}]"
-        )
-    return np.unique(resolved)
-
-
 # Note: apodization helpers removed — use compute_dynamic_apodizations_tf and
 # the INR trainer outputs. Fallback 1D windows are intentionally disabled.
 
 
 # ===== Load config =====
 script_dir = Path(__file__).resolve().parent
-cfg = _load_config(CONFIGS_DIR / "numeric_phantom_evaluation_config.yml")
+cfg = load_config_yaml(CONFIGS_DIR / "numeric_phantom_evaluation_config.yml")
 
 io_cfg = cfg.get("io", {})
 sim_cfg = cfg.get("simulation", {})
@@ -226,7 +79,7 @@ if target_train_enabled:
         raise ValueError("`training_target.sigma_x_mm` and `sigma_z_mm` must be > 0.")
 
 model_path = Path(PROJ_ROOT / io_cfg.get("model_path"))
-delayed_samples_path, latest_simulation_run = _resolve_latest_delayed_samples_path(io_cfg)
+delayed_samples_path, latest_simulation_run = resolve_latest_delayed_samples_path(io_cfg)
 print("Corrida de simulacion seleccionada:", latest_simulation_run)
 print("Usando delayed samples:", delayed_samples_path)
 
@@ -342,16 +195,30 @@ if model is not None:
         if not isinstance(train_info_dict, dict):
             sys.exit(f"Error: invalid format in {train_info}; expected a YAML mapping.")
 
-        scaled_features = bool(train_info_dict["experiment"]["model"].get("scaled_features"))
-        
-        if not scaled_features:
+        model_cfg = train_info_dict.get("experiment", {}).get("model", {})
+        if not isinstance(model_cfg, dict) or "scaled_features" not in model_cfg:
             sys.exit(
-                f"Error: `scaled_features` not found in {train_info}; it must be defined at top-level or under 'model'."
+                f"Error: `experiment.model.scaled_features` not found in {train_info}."
             )
+        scaled_features = bool(model_cfg.get("scaled_features"))
     except Exception as _e:
         sys.exit(f"Error reading {train_info}: {_e}")
 
-    features_grid = cm.get_features_grid(scaled=scaled_features)
+    physical_feature_set = str(model_cfg.get("physical_feature_set", "distance_depth_edge"))
+    raw_components = model_cfg.get("physical_feature_components")
+    physical_feature_components = (
+        [str(token) for token in raw_components]
+        if isinstance(raw_components, list)
+        else None
+    )
+
+    cm_inr = CoordinateManager(
+        kp,
+        physical_feature_set=physical_feature_set,
+        physical_feature_components=physical_feature_components,
+    )
+
+    features_grid = cm_inr.get_features_grid(scaled=scaled_features)
     feature_chunk_size = int(65536)
     trainer = DasInrApod(
         apodization_model=model,
@@ -365,7 +232,7 @@ if model is not None:
 
 # Training target: Gaussian-modulated uniform DAS (mirrors the dataset creation pipeline)
 if target_train_enabled:
-    _reflector_points_for_target = _build_grid_reflector_points(cfg)
+    _reflector_points_for_target = build_grid_reflector_points(cfg)
     target_img = generate_das_modulated_target(
         images["uniform"],
         _reflector_points_for_target,
@@ -497,8 +364,8 @@ if profiles_enabled:
             )
         snr_y_lim_db = (snr_y_min, snr_y_max)
 
-    reflector_points = _build_grid_reflector_points(cfg)
-    selected_indices = _resolve_reflector_indices(
+    reflector_points = build_grid_reflector_points(cfg)
+    selected_indices = resolve_reflector_indices(
         profile_cfg.get("reflector_indices", "all"),
         n_reflectors=int(reflector_points.shape[0]),
     )

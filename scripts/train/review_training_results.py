@@ -216,9 +216,12 @@ delayed, noise, targets, gaussian_masks, info = helpers.load_delayed_samples_dat
 physical_feature_set = str(
     run_experiment_cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
 )
+raw_components = run_experiment_cfg.get("model", {}).get("physical_feature_components")
+physical_feature_components = raw_components if isinstance(raw_components, (list, tuple)) else None
 kp, cm = helpers.build_coordinate_manager(
     dataset_folder,
     physical_feature_set=physical_feature_set,
+    physical_feature_components=physical_feature_components,
 )
 
 train_fraction = float(training_cfg.get("train_fraction", 0.7))

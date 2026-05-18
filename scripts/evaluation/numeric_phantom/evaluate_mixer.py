@@ -29,9 +29,20 @@ import tensorflow as tf
 import yaml
 
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from inr_apodizations.config import CONFIGS_DIR, PROJ_ROOT
+from inr_apodizations.config import CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
+from inr_apodizations.evaluation.config_utils import (
+    build_grid_reflector_points,
+    resolve_reflector_indices,
+)
 from inr_apodizations.evaluation import compute_reflector_snr, compute_scatterer_metrics
+from inr_apodizations.evaluation.io_utils import (
+    extract_mixer_train_metadata,
+    load_config_yaml,
+    resolve_latest_delayed_samples_path,
+    resolve_mixer_artifacts,
+    resolve_project_path,
+)
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.modeling.das_models import DasInrApodMixer
@@ -40,227 +51,20 @@ import inr_apodizations.experiment_helpers as helpers
 plt.ion()
 
 
-def _load_config(cfg_path: Path) -> dict[str, Any]:
-    with open(cfg_path, encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle)
-    return loaded if isinstance(loaded, dict) else {}
-
-
-def _resolve_project_path(path_value: str | Path) -> Path:
-    path = Path(path_value)
-    if path.is_absolute():
-        return path
-    return (PROJ_ROOT / path).resolve()
-
-
-def _remap_legacy_outputs_path(path: Path) -> Path:
-    legacy_marker = "sandbox/inr_das_experiment/outputs"
-    new_marker = "scripts/outputs"
-
-    path_norm = str(path).replace("\\", "/")
-    if legacy_marker not in path_norm:
-        return path
-
-    remapped_norm = path_norm.replace(legacy_marker, new_marker, 1)
-    return Path(remapped_norm)
-
-
-def _resolve_latest_delayed_samples_path(io_cfg: dict[str, Any]) -> tuple[Path, Path]:
-    simulation_root_cfg = io_cfg.get(
-        "simulation_output_root", "scripts/outputs/evaluation/numeric_phantom/delayed_samples"
-    )
-    simulation_root = _resolve_project_path(simulation_root_cfg)
-    if not simulation_root.exists() or not simulation_root.is_dir():
-        raise FileNotFoundError(
-            "Missing `io.simulation_output_root` or it is not a folder: "
-            f"{simulation_root}"
-        )
-
-    run_folders = [path for path in simulation_root.iterdir() if path.is_dir()]
-    if len(run_folders) == 0:
-        raise FileNotFoundError(
-            "No simulation runs found in `io.simulation_output_root`: "
-            f"{simulation_root}"
-        )
-
-    latest_run = max(run_folders, key=lambda path: path.stat().st_mtime)
-    simulation_info_path = latest_run / "simulation_info.yml"
-    if not simulation_info_path.exists():
-        raise FileNotFoundError(
-            "simulation_info.yml not found in latest simulation run: "
-            f"{simulation_info_path}"
-        )
-
-    simulation_info = _load_config(simulation_info_path)
-    delayed_samples_cfg = simulation_info.get("delayed_samples_path")
-    if not isinstance(delayed_samples_cfg, str) or len(delayed_samples_cfg.strip()) == 0:
-        raise ValueError(
-            "Missing valid `delayed_samples_path` in simulation_info.yml: "
-            f"{simulation_info_path}"
-        )
-
-    delayed_samples_path = Path(delayed_samples_cfg)
-    if not delayed_samples_path.is_absolute():
-        delayed_samples_path = _resolve_project_path(delayed_samples_path)
-
-    if not delayed_samples_path.exists() or delayed_samples_path.is_dir():
-        remapped_path = _remap_legacy_outputs_path(delayed_samples_path)
-        if remapped_path != delayed_samples_path and remapped_path.exists() and remapped_path.is_file():
-            delayed_samples_path = remapped_path
-
-    if not delayed_samples_path.exists() or delayed_samples_path.is_dir():
-        raise FileNotFoundError(
-            "`delayed_samples_path` does not point to a valid file: "
-            f"{delayed_samples_path}"
-        )
-
-    return delayed_samples_path, latest_run
-
-
-def _build_grid_reflector_points(cfg: dict[str, Any]) -> np.ndarray:
-    phantom_cfg = cfg.get("phantom", {})
-    mode = str(phantom_cfg.get("mode", "")).strip().lower()
-    if mode != "grid":
-        raise ValueError(
-            "This reflector-profile flow requires `phantom.mode: grid` "
-            "in numeric_phantom_evaluation_mixer_config.yml."
-        )
-
-    grid_cfg = phantom_cfg.get("grid")
-    if not isinstance(grid_cfg, dict):
-        raise ValueError("Missing `phantom.grid` block in config.")
-
-    required = (
-        "x_count",
-        "z_count",
-        "x_center_mm",
-        "z_start_mm",
-        "x_spacing_mm",
-        "z_spacing_mm",
-    )
-    missing = [name for name in required if name not in grid_cfg]
-    if missing:
-        raise ValueError(f"Missing required fields in `phantom.grid`: {missing}")
-
-    x_count = int(grid_cfg["x_count"])
-    z_count = int(grid_cfg["z_count"])
-    x_center_mm = float(grid_cfg["x_center_mm"])
-    z_start_mm = float(grid_cfg["z_start_mm"])
-    x_spacing_mm = float(grid_cfg["x_spacing_mm"])
-    z_spacing_mm = float(grid_cfg["z_spacing_mm"])
-
-    if x_count <= 0 or z_count <= 0:
-        raise ValueError("`x_count` and `z_count` must be positive integers.")
-    if x_spacing_mm <= 0.0 or z_spacing_mm <= 0.0:
-        raise ValueError("`x_spacing_mm` and `z_spacing_mm` must be > 0.")
-
-    x_indices = np.arange(x_count, dtype=np.float64)
-    x_offsets = (x_indices - (x_count - 1) / 2.0) * x_spacing_mm
-    x_positions = x_center_mm + x_offsets
-
-    points: list[list[float]] = []
-    for z_idx in range(z_count):
-        z_pos = z_start_mm + z_idx * z_spacing_mm
-        for x_pos in x_positions:
-            points.append([float(x_pos), float(z_pos)])
-
-    return np.asarray(points, dtype=np.float64)
-
-
-def _resolve_reflector_indices(indices_cfg: Any, n_reflectors: int) -> np.ndarray:
-    if isinstance(indices_cfg, str) and indices_cfg.strip().lower() == "all":
-        return np.arange(n_reflectors, dtype=np.int32)
-    if indices_cfg is None:
-        return np.arange(n_reflectors, dtype=np.int32)
-    if not isinstance(indices_cfg, list) or len(indices_cfg) == 0:
-        raise ValueError(
-            "`reflector_lateral_profiles.reflector_indices` must be 'all' or "
-            "a non-empty integer list."
-        )
-
-    resolved = np.asarray(indices_cfg, dtype=np.int32)
-    if np.any(resolved < 0) or np.any(resolved >= n_reflectors):
-        raise ValueError(
-            "`reflector_lateral_profiles.reflector_indices` contains out-of-range values. "
-            f"Valid range: [0, {n_reflectors - 1}]"
-        )
-    return np.unique(resolved)
-
-
-def _resolve_mixer_artifacts(model_path_cfg: str | Path) -> tuple[Path, Path, Path, Path]:
-    model_path = _resolve_project_path(model_path_cfg)
-    if not model_path.exists():
-        raise FileNotFoundError(f"Mixer model path does not exist: {model_path}")
-
-    if model_path.is_file():
-        if model_path.name != "model.keras":
-            raise FileNotFoundError(
-                "`io.model_path` must point to a mixer run directory or to `model.keras`. "
-                f"Got file path: {model_path}"
-            )
-        model_file = model_path
-        run_dir = model_path.parent
-    else:
-        run_dir = model_path
-        model_file = run_dir / "model.keras"
-
-    if not model_file.exists() or not model_file.is_file():
-        raise FileNotFoundError(f"Missing mixer model file: {model_file}")
-
-    combiner_weights_file = run_dir / "mixer_combiner_weights.npz"
-    if not combiner_weights_file.exists() or not combiner_weights_file.is_file():
-        raise FileNotFoundError(
-            "Missing mixer combiner weights file. Expected: "
-            f"{combiner_weights_file}"
-        )
-
-    train_info = run_dir / "train_config_info.yml"
-    if not train_info.exists() or not train_info.is_file():
-        raise FileNotFoundError(f"Missing train_config_info.yml: {train_info}")
-
-    return model_file, combiner_weights_file, train_info, run_dir
-
-
-def _extract_mixer_train_metadata(train_info_path: Path) -> tuple[bool, int]:
-    train_info = _load_config(train_info_path)
-    experiment_cfg = train_info.get("experiment")
-    if not isinstance(experiment_cfg, dict):
-        raise ValueError(f"Invalid format in {train_info_path}: missing `experiment` block")
-
-    model_cfg = experiment_cfg.get("model")
-    if not isinstance(model_cfg, dict):
-        raise ValueError(f"Invalid format in {train_info_path}: missing `experiment.model` block")
-
-    if "scaled_features" not in model_cfg:
-        raise ValueError(
-            f"Missing `experiment.model.scaled_features` in {train_info_path}."
-        )
-    scaled_features = bool(model_cfg["scaled_features"])
-
-    resolved_mixer = train_info.get("resolved_mixer")
-    n_apodizations = None
-    if isinstance(resolved_mixer, dict) and "n_apodizations" in resolved_mixer:
-        n_apodizations = int(resolved_mixer["n_apodizations"])
-    elif "n_apodizations" in model_cfg:
-        n_apodizations = int(model_cfg["n_apodizations"])
-
-    if n_apodizations is None or n_apodizations <= 0:
-        raise ValueError(
-            f"Missing valid `n_apodizations` in {train_info_path} "
-            "(checked `resolved_mixer` and `experiment.model`)."
-        )
-
-    return scaled_features, n_apodizations
-
-
 def _build_coordinate_manager(
     dataset_folder: Path,
     sim_cfg: dict[str, Any],
     bf_cfg: dict[str, Any],
     n_elements: int,
+    physical_feature_set: str,
+    physical_feature_components: list[str] | None,
 ) -> tuple[KernelParameters2D, CoordinateManager]:
     try:
-        kp, cm = helpers.build_coordinate_manager(str(dataset_folder))
+        kp, cm = helpers.build_coordinate_manager(
+            str(dataset_folder),
+            physical_feature_set=physical_feature_set,
+            physical_feature_components=physical_feature_components,
+        )
         return kp, cm
     except FileNotFoundError:
         kp_cfg = {
@@ -283,7 +87,11 @@ def _build_coordinate_manager(
             "blocksize_img": tuple(bf_cfg.get("blocksize_img", [32, 8])),
         }
         kp = KernelParameters2D(kp_cfg)
-        cm = CoordinateManager(kp)
+        cm = CoordinateManager(
+            kp,
+            physical_feature_set=physical_feature_set,
+            physical_feature_components=physical_feature_components,
+        )
         return kp, cm
 
 
@@ -298,7 +106,7 @@ def _subplot_grid(n_items: int, max_cols: int = 2) -> tuple[int, int]:
     return rows, cols
 
 
-cfg = _load_config(CONFIGS_DIR / "numeric_phantom_evaluation_mixer_config.yml")
+cfg = load_config_yaml(CONFIGS_DIR / "numeric_phantom_evaluation_mixer_config.yml")
 io_cfg = cfg.get("io", {})
 sim_cfg = cfg.get("simulation", {})
 bf_cfg = cfg.get("beamforming", {})
@@ -312,8 +120,8 @@ fontsize_axis = int(plot_cfg.get("axis_fontsize", 10))
 if not bool(mixer_cfg.get("eval_combined", True)):
     sys.exit("Error: `mixer_model.eval_combined` must be true for this evaluator.")
 
-model_file, combiner_weights_file, train_info_file, model_run_dir = _resolve_mixer_artifacts(io_cfg.get("model_path", ""))
-scaled_features, n_apodizations = _extract_mixer_train_metadata(train_info_file)
+model_file, combiner_weights_file, train_info_file, model_run_dir = resolve_mixer_artifacts(io_cfg.get("model_path", ""))
+scaled_features, n_apodizations, physical_feature_set, physical_feature_components = extract_mixer_train_metadata(train_info_file)
 print("Using mixer run:", model_run_dir)
 print("Using model:", model_file)
 print("Using combiner weights:", combiner_weights_file)
@@ -331,7 +139,7 @@ if output_last_dim != n_apodizations:
         f"model output last dim={output_last_dim}, n_apodizations={n_apodizations}"
     )
 
-delayed_samples_path, latest_simulation_run = _resolve_latest_delayed_samples_path(io_cfg)
+delayed_samples_path, latest_simulation_run = resolve_latest_delayed_samples_path(io_cfg)
 print("Selected simulation run:", latest_simulation_run)
 print("Using delayed samples:", delayed_samples_path)
 
@@ -340,7 +148,14 @@ delayed0 = delayed[0]
 n_elements = int(delayed0.shape[0])
 dataset_folder = delayed_samples_path.parent
 
-kp, cm = _build_coordinate_manager(dataset_folder, sim_cfg, bf_cfg, n_elements=n_elements)
+kp, cm = _build_coordinate_manager(
+    dataset_folder,
+    sim_cfg,
+    bf_cfg,
+    n_elements=n_elements,
+    physical_feature_set=physical_feature_set,
+    physical_feature_components=physical_feature_components,
+)
 
 feature_chunk_size = int(mixer_cfg.get("feature_chunk_size", 65536))
 features_grid = cm.get_features_grid(scaled=scaled_features)
@@ -455,7 +270,7 @@ cbar_ax = fig.add_axes([0.93, 0.1, 0.013, 0.78])
 if first_im is not None:
     fig.colorbar(first_im, cax=cbar_ax, label="dB")
 
-out_root = _resolve_project_path(io_cfg.get("evaluation_output_root", "scripts/outputs/evaluation/numeric_phantom/mixer"))
+out_root = resolve_project_path(io_cfg.get("evaluation_output_root", "scripts/outputs/evaluation/numeric_phantom/mixer"))
 out_root.mkdir(parents=True, exist_ok=True)
 run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 run_out_dir = out_root / run_timestamp
@@ -504,8 +319,8 @@ if profiles_enabled:
             raise ValueError("`snr_y_lim_db` must satisfy ymax > ymin.")
         snr_y_lim_db = (snr_y_min, snr_y_max)
 
-    reflector_points = _build_grid_reflector_points(cfg)
-    selected_indices = _resolve_reflector_indices(
+    reflector_points = build_grid_reflector_points(cfg)
+    selected_indices = resolve_reflector_indices(
         profile_cfg.get("reflector_indices", "all"),
         n_reflectors=int(reflector_points.shape[0]),
     )

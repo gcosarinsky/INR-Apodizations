@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
-from typing import Tuple
+from typing import Sequence, Tuple
 
 import numpy as np
 import yaml
@@ -284,19 +284,25 @@ def load_saved_beamforming_config(folder: str) -> dict:
 def build_coordinate_manager(
     dataset_folder: str,
     physical_feature_set: str = "distance_depth_edge",
+    physical_feature_components: Sequence[str] | None = None,
 ) -> tuple[KernelParameters2D, CoordinateManager]:
     """Build ``KernelParameters2D`` and ``CoordinateManager`` from a dataset folder.
 
     Args:
         dataset_folder: Dataset folder containing the saved beamforming config.
         physical_feature_set: Physical feature variant used by ``CoordinateManager``.
+        physical_feature_components: Optional ordered feature token list.
 
     Returns:
         Tuple ``(kp, cm)`` with initialized kernel parameters and coordinate manager.
     """
     cfg = load_saved_beamforming_config(dataset_folder)
     kp = KernelParameters2D(cfg)
-    cm = CoordinateManager(kp, physical_feature_set=physical_feature_set)
+    cm = CoordinateManager(
+        kp,
+        physical_feature_set=physical_feature_set,
+        physical_feature_components=physical_feature_components,
+    )
     return kp, cm
 
 

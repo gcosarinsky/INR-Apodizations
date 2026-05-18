@@ -98,12 +98,16 @@ def prepare_training_dataset(cfg: Mapping[str, Any]) -> dict[str, Any]:
     )
     validate_dataset_shapes(delayed, targets, gaussian_masks)
 
+    model_cfg = dict(cfg.get("model", {}))
     physical_feature_set = str(
-        cfg.get("model", {}).get("physical_feature_set", "distance_depth_edge")
+        model_cfg.get("physical_feature_set", "distance_depth_edge")
     )
+    raw_components = model_cfg.get("physical_feature_components")
+    physical_feature_components = raw_components if isinstance(raw_components, (list, tuple)) else None
     kp, cm = build_coordinate_manager(
         dataset_folder_str,
         physical_feature_set=physical_feature_set,
+        physical_feature_components=physical_feature_components,
     )
 
     delayed_dataset_bytes = int(delayed.nbytes)
