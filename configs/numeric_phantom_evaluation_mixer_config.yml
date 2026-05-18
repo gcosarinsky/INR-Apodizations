@@ -1,0 +1,75 @@
+io:
+  simulation_output_root: scripts/outputs/evaluation/numeric_phantom/delayed_samples
+  evaluation_output_root: scripts/outputs/evaluation/numeric_phantom/mixer
+  save_plot: true
+  # Mixer evaluation expects a run directory containing model.keras and mixer_combiner_weights.npz.
+  model_path: scripts\outputs\train_mixer\20260518_131411
+
+mixer_model:
+  eval_combined: true
+  feature_chunk_size: 65536
+  log_mixer_weights: true
+
+phantom:
+  mode: grid
+  unit_amplitude: true
+  seed: 42
+  grid:
+    x_count: 3
+    z_count: 6
+    x_center_mm: 5.0
+    z_start_mm: 5.0
+    x_spacing_mm: 5.0
+    z_spacing_mm: 5.0
+    amplitude_range: [0.4, 1.0]
+  list:
+    points_mm: []
+
+simulation:
+  fs: 20.832
+  fc: 5.208
+  pitch: 0.3
+  element_width: 0.27
+  element_height: 5.0
+  n_elements: 128
+  bandwidth: 67
+  c1: 1.54
+  angles: [-5, 6, 1]
+  t_start: 0.0
+  roi_simulation: [-4, 22.0, 1.0, 32]
+  n_samples: null
+
+beamforming:
+  f1: 1.0
+  f2: 10.0
+  taps: 62
+  f_number: 0.5
+  x_step: 0.1
+  z_step: 0.1
+  roi_user: [-2, 14.0, 1.0, 32.0]
+  blocksize_img: [32, 8]
+  n_batch: 0
+  n_ch: 128
+
+visualization:
+  enabled: true
+  dyn_range_db: 60
+
+reflector_lateral_profiles:
+  enabled: true
+  methods: [hanning, mixer_combined]
+  reflector_indices: all
+  half_width_lateral_mm: 1.5
+  half_width_axial_mm: 1.0
+  line_length_margin_mm: 1.0
+  thickness_mm: 0.5
+  vmin_db: -60.0
+  save_individual_rows: false
+  profile_type: lateral
+  snr_radius_mm: 1.5
+  snr_y_lim_db: [50, 60]
+
+plots:
+  legend_fontsize: 10
+  title_fontsize: 12
+  axis_fontsize: 12

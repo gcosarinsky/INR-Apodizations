@@ -116,11 +116,13 @@ def load_previous_history(run_dir: str) -> tuple[dict[str, list], list[dict]]:
     return previous_history, stages
 
 
-def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config: dict) -> None:
-    """Save model and minimal artifacts into ``output_dir``."""
+def save_run_metadata(output_dir: str, history: dict, config: dict) -> None:
+    """Save run metadata artifacts into ``output_dir``.
+
+    This helper persists training history and the resolved run configuration
+    without writing any model weights.
+    """
     os.makedirs(output_dir, exist_ok=True)
-    model_path = os.path.join(output_dir, "model.keras")
-    model.save(model_path)
 
     serializable_history = to_json_serializable(history)
     with open(os.path.join(output_dir, "history.json"), "w", encoding="utf-8") as file:
@@ -128,6 +130,14 @@ def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config
 
     with open(os.path.join(output_dir, "train_config_info.yml"), "w", encoding="utf-8") as file:
         yaml.safe_dump(config, file, sort_keys=False)
+
+
+def save_artifacts(output_dir: str, model: tf.keras.Model, history: dict, config: dict) -> None:
+    """Save model plus run metadata into ``output_dir``."""
+    os.makedirs(output_dir, exist_ok=True)
+    model_path = os.path.join(output_dir, "model.keras")
+    model.save(model_path)
+    save_run_metadata(output_dir=output_dir, history=history, config=config)
 
 
 def save_debug_arrays(output_dir: str, arrays: dict[str, np.ndarray]) -> None:

@@ -8,6 +8,11 @@ linear layer followed by ReLU (the ``pixel_combiner`` inside the model).
 
 Configuration lives in ``configs/train_mixer_config.yml``. The key addition
 relative to ``train_config.yml`` is ``model.n_apodizations``.
+
+Artifact policy:
+- Persist INR apodization MLP as ``model.keras``.
+- Persist mixer combiner parameters as ``mixer_combiner_weights.npz``.
+- Rebuild ``DasInrApodMixer`` from both artifacts during evaluation.
 """
 from __future__ import annotations
 
@@ -518,6 +523,13 @@ helpers.save_artifacts(output_dir, apodization_model, full_history, effective_cf
 helpers.save_json_artifact(str(Path(output_dir) / "history_stage.json"), stage_history)
 helpers.save_json_artifact(str(Path(output_dir) / "history_full.json"), full_history)
 helpers.save_json_artifact(str(Path(output_dir) / "history_stages.json"), history_stages)
+
+combiner_kernel, combiner_bias = trainer.pixel_combiner.get_weights()
+np.savez(
+    Path(output_dir) / "mixer_combiner_weights.npz",
+    kernel=np.asarray(combiner_kernel, dtype=np.float32),
+    bias=np.asarray(combiner_bias, dtype=np.float32),
+)
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))

@@ -6,16 +6,16 @@ io:
 
 target_regeneration:
   enabled: true
-  sigma_x: 0.1
-  sigma_z: 0.1
+  sigma_x: 0.15
+  sigma_z: 0.3
   alpha: 0
 
 model:
-  physical_feature_set: x_rel_depth_edge
+  physical_feature_set: distance_depth_edge
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
-  hidden_units: [16, 8, 4, 2]
+  hidden_units: [16, 8, 4]
   n_hidden_layers: 4
   activation: relu
   output_activation: tanh
@@ -32,13 +32,13 @@ eval_noise:
 
 training:
   batch_size: 2
-  epochs: 10
+  epochs: 15
   learning_rate: 0.001
   loss: mae
   metric: mae
   weight_decay: 0.001
   weight_regularization:
-    enabled: true
+    enabled: false
     type: hinge_low_norm
     lambda: 333000
     tau: 0.7
@@ -62,7 +62,7 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: true
+  enabled: false
   # Preferred source: previous run directory with model.keras + history artifacts.
   source_run_dir: scripts\outputs\train_mixer\20260514_145329
   # Optional fallback when only a model file is available.

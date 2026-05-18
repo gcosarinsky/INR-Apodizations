@@ -25,6 +25,7 @@ from ._artifacts import (
     load_previous_history,
     merge_training_histories,
     save_artifacts,
+    save_run_metadata,
     save_debug_arrays,
     save_json_artifact,
     to_json_serializable,
