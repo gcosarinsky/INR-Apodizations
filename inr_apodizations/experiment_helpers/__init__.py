@@ -47,6 +47,7 @@ from ._dataset_io import (
 from ._config import (
     get_target_regeneration_override,
     load_experiment_config,
+    parse_lateral_regularization_config,
     parse_resume_config,
     parse_weight_regularization_config,
     setup_resume_state,

@@ -10,6 +10,394 @@ import numpy as np
 import tensorflow as tf
 
 
+class BaseApodizationRegularizer:
+    """Abstract contract for apodization regularizers.
+
+    Subclasses must implement ``compute`` and return a scalar loss tensor together
+    with a flat dict of named scalar tensors for metric tracking.
+    """
+
+    def compute(self, apod_grid: tf.Tensor) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+        """Compute regularization loss and auxiliary metrics.
+
+        Args:
+            apod_grid: Apodization tensor with shape ``(E, Z, X)`` or ``(E, Z, X, N)``.
+
+        Returns:
+            Tuple ``(reg_loss, metrics)`` where ``metrics`` maps metric-tracker names
+            to scalar tensors.
+
+        Raises:
+            NotImplementedError: Subclasses must implement this method.
+        """
+        raise NotImplementedError(f"{type(self).__name__} must implement compute()")
+
+
+class LateralDistanceRegularizer(BaseApodizationRegularizer):
+    """Regularize apodization amplitudes using q = (abs(x_rel) / z)^gamma.
+
+    This helper caches ``q_grid`` once and computes a weighted amplitude penalty
+    for both single-apodization and multi-apodization tensors.
+    """
+
+    def __init__(
+        self,
+        q_grid: tf.Tensor,
+        reg_lambda: float,
+        normalize_by_uniform: bool = True,
+        channel_reduction: str = "mean",
+        epsilon: float = 1e-8,
+    ):
+        """Initialize a lateral-distance weighted regularizer.
+
+        Args:
+            q_grid: Tensor with shape ``(E, Z, X)`` containing q values.
+            reg_lambda: Multiplicative factor for regularization loss.
+            normalize_by_uniform: Whether to normalize by uniform baseline.
+            channel_reduction: Channel aggregation for 4D weights: ``"mean"`` or ``"sum"``.
+            epsilon: Numerical epsilon for safe denominator handling.
+
+        Raises:
+            ValueError: If hyperparameters are invalid or q_grid rank is not 3.
+        """
+        self.q_grid = tf.cast(q_grid, tf.float32)
+        self.reg_lambda = float(reg_lambda)
+        self.normalize_by_uniform = bool(normalize_by_uniform)
+        self.channel_reduction = str(channel_reduction).lower()
+        self.epsilon = float(epsilon)
+
+        if len(self.q_grid.shape) != 3:
+            raise ValueError(
+                "q_grid must have shape (E, Z, X); "
+                f"got rank={len(self.q_grid.shape)}"
+            )
+        if self.reg_lambda < 0.0:
+            raise ValueError("reg_lambda must be >= 0")
+        if self.epsilon <= 0.0:
+            raise ValueError("epsilon must be > 0")
+        if self.channel_reduction not in {"mean", "sum"}:
+            raise ValueError("channel_reduction must be 'mean' or 'sum'")
+
+        self.q_mean = float(tf.reduce_mean(self.q_grid).numpy())
+        self.uniform_reference = float(self.q_mean)
+
+    @classmethod
+    def from_features(
+        cls,
+        features_grid: tf.Tensor,
+        reg_lambda: float,
+        q_power: float = 1.0,
+        q_epsilon: float = 1e-8,
+        abs_xrel_feature_index: int = 0,
+        z_feature_index: int = 1,
+        normalize_by_uniform: bool = True,
+        channel_reduction: str = "mean",
+    ) -> "LateralDistanceRegularizer":
+        """Create a regularizer from feature channels containing abs(x_rel) and z.
+
+        Args:
+            features_grid: Feature tensor with shape ``(E, Z, X, F)``.
+            reg_lambda: Multiplicative factor for regularization loss.
+            q_power: Exponent applied to q.
+            q_epsilon: Numerical epsilon to avoid division by zero.
+            abs_xrel_feature_index: Feature index containing abs(x_rel).
+            z_feature_index: Feature index containing z.
+            normalize_by_uniform: Whether to normalize by uniform baseline.
+            channel_reduction: Channel aggregation for 4D weights.
+
+        Returns:
+            Initialized regularizer instance.
+
+        Raises:
+            ValueError: If feature indices are out of bounds or q_power is invalid.
+        """
+        n_features = int(features_grid.shape[-1])
+        abs_xrel_idx = int(abs_xrel_feature_index)
+        z_idx = int(z_feature_index)
+        if not (0 <= abs_xrel_idx < n_features):
+            raise ValueError(
+                "abs_xrel_feature_index is out of bounds: "
+                f"{abs_xrel_idx}, n_features={n_features}"
+            )
+        if not (0 <= z_idx < n_features):
+            raise ValueError(
+                "z_feature_index is out of bounds: "
+                f"{z_idx}, n_features={n_features}"
+            )
+        if float(q_power) <= 0.0:
+            raise ValueError("q_power must be > 0")
+        if float(q_epsilon) <= 0.0:
+            raise ValueError("q_epsilon must be > 0")
+
+        features_grid = tf.cast(features_grid, tf.float32)
+        abs_xrel = tf.abs(features_grid[..., abs_xrel_idx])
+        z = tf.maximum(features_grid[..., z_idx], tf.cast(q_epsilon, tf.float32))
+        q_grid = abs_xrel / z
+        if float(q_power) != 1.0:
+            q_grid = tf.pow(q_grid, tf.cast(q_power, tf.float32))
+
+        return cls(
+            q_grid=q_grid,
+            reg_lambda=reg_lambda,
+            normalize_by_uniform=normalize_by_uniform,
+            channel_reduction=channel_reduction,
+            epsilon=q_epsilon,
+        )
+
+    @classmethod
+    def from_coords_grid(
+        cls,
+        coords_grid: tf.Tensor,
+        reg_lambda: float,
+        q_power: float = 1.0,
+        q_epsilon: float = 1e-8,
+        normalize_by_uniform: bool = True,
+        channel_reduction: str = "mean",
+    ) -> "LateralDistanceRegularizer":
+        """Create a regularizer from coordinate grid [x, z, x_elem].
+
+        Args:
+            coords_grid: Coordinate tensor with shape ``(E, Z, X, 3)`` where
+                channels are ``[x, z, x_elem]``.
+            reg_lambda: Multiplicative factor for regularization loss.
+            q_power: Exponent applied to q.
+            q_epsilon: Numerical epsilon to avoid division by zero.
+            normalize_by_uniform: Whether to normalize by uniform baseline.
+            channel_reduction: Channel aggregation for 4D weights.
+
+        Returns:
+            Initialized regularizer instance.
+
+        Raises:
+            ValueError: If coords_grid shape is invalid or q_power is invalid.
+        """
+        if len(coords_grid.shape) != 4 or int(coords_grid.shape[-1]) < 3:
+            raise ValueError(
+                "coords_grid must have shape (E, Z, X, 3) with channels [x, z, x_elem]"
+            )
+        if float(q_power) <= 0.0:
+            raise ValueError("q_power must be > 0")
+        if float(q_epsilon) <= 0.0:
+            raise ValueError("q_epsilon must be > 0")
+
+        coords_grid = tf.cast(coords_grid, tf.float32)
+        x = coords_grid[..., 0]
+        z = tf.maximum(coords_grid[..., 1], tf.cast(q_epsilon, tf.float32))
+        x_elem = coords_grid[..., 2]
+        q_grid = tf.abs(x - x_elem) / z
+        if float(q_power) != 1.0:
+            q_grid = tf.pow(q_grid, tf.cast(q_power, tf.float32))
+
+        return cls(
+            q_grid=q_grid,
+            reg_lambda=reg_lambda,
+            normalize_by_uniform=normalize_by_uniform,
+            channel_reduction=channel_reduction,
+            epsilon=q_epsilon,
+        )
+
+    def compute(self, apod_grid: tf.Tensor) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+        """Compute lateral-distance weighted regularization loss and metrics.
+
+        Args:
+            apod_grid: Apodization tensor with shape ``(E, Z, X)`` or ``(E, Z, X, N)``.
+
+        Returns:
+            Tuple ``(reg_loss, metrics)`` where ``metrics`` contains keys
+            ``"lateral_reg_loss"``, ``"lateral_reg_raw"``, ``"lateral_reg_scaled"``,
+            and ``"lateral_q_mean"``.
+
+        Raises:
+            ValueError: If apod_grid rank is unsupported.
+        """
+        apod_grid = tf.cast(apod_grid, tf.float32)
+
+        if len(apod_grid.shape) == 3:
+            reg_raw = tf.reduce_mean(tf.abs(apod_grid) * self.q_grid)
+            denom_scale = tf.cast(1.0, tf.float32)
+        elif len(apod_grid.shape) == 4:
+            weighted = tf.abs(apod_grid) * self.q_grid[..., tf.newaxis]
+            if self.channel_reduction == "sum":
+                reg_raw = tf.reduce_sum(tf.reduce_mean(weighted, axis=(0, 1, 2)))
+                denom_scale = tf.cast(tf.shape(apod_grid)[-1], tf.float32)
+            else:
+                reg_raw = tf.reduce_mean(weighted)
+                denom_scale = tf.cast(1.0, tf.float32)
+        else:
+            raise ValueError(
+                "apod_grid must have shape (E, Z, X) or (E, Z, X, N); "
+                f"got rank={len(apod_grid.shape)}"
+            )
+
+        if self.normalize_by_uniform:
+            denom = tf.maximum(
+                tf.cast(self.uniform_reference, tf.float32) * denom_scale,
+                tf.cast(self.epsilon, tf.float32),
+            )
+            reg_scaled = reg_raw / denom
+        else:
+            reg_scaled = reg_raw
+
+        reg_loss = tf.cast(self.reg_lambda, tf.float32) * reg_scaled
+        return reg_loss, {
+            "lateral_reg_loss": reg_loss,
+            "lateral_reg_raw": reg_raw,
+            "lateral_reg_scaled": reg_scaled,
+            "lateral_q_mean": tf.constant(self.q_mean, dtype=tf.float32),
+        }
+
+
+class ApodNormHingeRegularizer(BaseApodizationRegularizer):
+    """Hinge regularization penalizing low apodization norms.
+
+    Applies a squared hinge penalty when the global Euclidean norm of the
+    apodization grid falls below a minimum threshold ``tau``.  For 4D tensors
+    ``(E, Z, X, N)`` (mixer mode), the penalty is applied independently per
+    apodization channel and losses are summed; norms and active flags are averaged.
+    """
+
+    def __init__(
+        self,
+        n_points: int,
+        reg_lambda: float = 1e-3,
+        tau: float = 0.30,
+        normalize: bool = True,
+        epsilon: float = 1e-8,
+    ):
+        """Initialize hinge norm regularizer.
+
+        Args:
+            n_points: Total number of spatial points (E * Z * X). Used to compute
+                the normalization denominator ``sqrt(n_points)``.
+            reg_lambda: Multiplicative factor for regularization loss.
+            tau: Minimum target norm before hinge becomes active.
+            normalize: Whether to normalize the norm by ``sqrt(n_points)``.
+            epsilon: Numerical epsilon for safe denominator handling.
+
+        Raises:
+            ValueError: If hyperparameters are invalid.
+        """
+        if float(reg_lambda) < 0.0:
+            raise ValueError("reg_lambda must be >= 0")
+        if float(tau) < 0.0:
+            raise ValueError("tau must be >= 0")
+        if float(epsilon) <= 0.0:
+            raise ValueError("epsilon must be > 0")
+
+        self.reg_lambda = float(reg_lambda)
+        self.tau = float(tau)
+        self.normalize = bool(normalize)
+        self.epsilon = float(epsilon)
+        self._norm_denominator = float(int(n_points) ** 0.5)
+        self._norm_metric_key = "w_norm_normalized" if self.normalize else "w_norm"
+
+    def _compute_single(self, apod_3d: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Compute hinge loss for a single 3D apodization grid.
+
+        Args:
+            apod_3d: Apodization tensor with shape ``(E, Z, X)``.
+
+        Returns:
+            Tuple ``(reg_loss, norm_value, reg_active)``.
+        """
+        apod_3d = tf.cast(apod_3d, tf.float32)
+        global_norm = tf.norm(apod_3d, ord="euclidean")
+        if self.normalize:
+            norm_value = global_norm / tf.maximum(
+                tf.cast(self._norm_denominator, tf.float32),
+                tf.cast(self.epsilon, tf.float32),
+            )
+        else:
+            norm_value = global_norm
+        tau = tf.cast(self.tau, tf.float32)
+        violation = tf.nn.relu(tau - norm_value)
+        reg_loss = tf.cast(self.reg_lambda, tf.float32) * tf.square(violation)
+        reg_active = tf.cast(violation > 0.0, tf.float32)
+        return reg_loss, norm_value, reg_active
+
+    def compute(self, apod_grid: tf.Tensor) -> tuple[tf.Tensor, dict[str, tf.Tensor]]:
+        """Compute hinge loss for 3D or 4D apodization grids.
+
+        For 4D tensors ``(E, Z, X, N)``, the penalty is applied per channel; losses
+        are summed and norm/active values are averaged across channels.
+
+        Args:
+            apod_grid: Apodization tensor with shape ``(E, Z, X)`` or ``(E, Z, X, N)``.
+
+        Returns:
+            Tuple ``(reg_loss, metrics)`` with keys ``"reg_loss"``,
+            ``"w_norm_normalized"`` (or ``"w_norm"``), and ``"reg_active_rate"``.
+
+        Raises:
+            ValueError: If apod_grid rank is unsupported.
+        """
+        apod_grid = tf.cast(apod_grid, tf.float32)
+        rank = len(apod_grid.shape)
+        if rank == 3:
+            reg_loss, norm_value, reg_active = self._compute_single(apod_grid)
+        elif rank == 4:
+            channels = tf.unstack(apod_grid, axis=-1)
+            results = [self._compute_single(c) for c in channels]
+            losses, norms, actives = zip(*results)
+            reg_loss = tf.add_n(losses)
+            norm_value = tf.reduce_mean(tf.stack(norms))
+            reg_active = tf.reduce_mean(tf.stack(actives))
+        else:
+            raise ValueError(
+                f"apod_grid must have rank 3 or 4; got rank={rank}"
+            )
+        return reg_loss, {
+            "reg_loss": reg_loss,
+            self._norm_metric_key: norm_value,
+            "reg_active_rate": reg_active,
+        }
+
+
+class _RegularizationEngine:
+    """Applies a list of regularizers and aggregates losses and metrics.
+
+    Keeps regularization logic decoupled from the trainer's forward pass.
+    """
+
+    def __init__(self, regularizers: list[BaseApodizationRegularizer]):
+        """Initialize the engine.
+
+        Args:
+            regularizers: Ordered list of regularizer instances to apply.
+        """
+        self.regularizers = list(regularizers)
+
+    def apply(
+        self,
+        apod_grid: tf.Tensor,
+        training: bool,
+        model: tf.keras.Model,
+        tracker_registry: dict[str, tf.keras.metrics.Metric],
+    ) -> tf.Tensor:
+        """Compute all regularization losses and update metric trackers.
+
+        Args:
+            apod_grid: Apodization tensor passed to each regularizer.
+            training: Whether the model is in training mode. Only calls
+                ``model.add_loss`` when ``True``.
+            model: Keras model whose ``add_loss`` method is used in training.
+            tracker_registry: Mapping from metric name to Keras ``Mean`` tracker.
+
+        Returns:
+            Total regularization loss scalar tensor.
+        """
+        total_loss = tf.constant(0.0, dtype=tf.float32)
+        for reg in self.regularizers:
+            loss, metrics = reg.compute(apod_grid)
+            total_loss = total_loss + tf.cast(loss, tf.float32)
+            for key, val in metrics.items():
+                if key in tracker_registry:
+                    tracker_registry[key].update_state(val)
+        if training:
+            model.add_loss(total_loss)
+        return total_loss
+
+
 class DasInrApod(tf.keras.Model):
     """Keras model that wraps the INR and the physical DAS forward.
 
@@ -29,6 +417,15 @@ class DasInrApod(tf.keras.Model):
         weight_regularization_tau: float = 0.30,
         weight_regularization_epsilon: float = 1e-8,
         weight_regularization_normalize: bool = True,
+        lateral_regularization_enabled: bool = False,
+        lateral_regularization_lambda: float = 0.0,
+        lateral_regularization_q_power: float = 1.0,
+        lateral_regularization_q_epsilon: float = 1e-8,
+        lateral_regularization_q_abs_xrel_feature_index: int = 0,
+        lateral_regularization_q_z_feature_index: int = 1,
+        lateral_regularization_normalize_by_uniform: bool = True,
+        lateral_regularization_channel_reduction: str = "mean",
+        lateral_regularization_q_grid: tf.Tensor | None = None,
     ):
         """Initialize trainer with INR model and feature grid.
 
@@ -41,6 +438,19 @@ class DasInrApod(tf.keras.Model):
             weight_regularization_tau: Minimum target norm before hinge becomes active.
             weight_regularization_epsilon: Numerical epsilon used in norm normalization.
             weight_regularization_normalize: Whether to normalize norm by ``sqrt(E*Z*X)``.
+            lateral_regularization_enabled: Whether to penalize large apodization values at
+                large lateral-distance-to-depth ratio.
+            lateral_regularization_lambda: Multiplicative factor for lateral regularization.
+            lateral_regularization_q_power: Exponent applied to q = abs(x_rel) / z.
+            lateral_regularization_q_epsilon: Numerical epsilon to avoid division by zero in q.
+            lateral_regularization_q_abs_xrel_feature_index: Feature index containing abs(x_rel).
+            lateral_regularization_q_z_feature_index: Feature index containing z.
+            lateral_regularization_normalize_by_uniform: Whether to normalize the raw regularizer
+                by its uniform-apodization reference.
+            lateral_regularization_channel_reduction: Channel aggregation mode for multi-output
+                apodizations: ``"mean"`` or ``"sum"``.
+            lateral_regularization_q_grid: Optional precomputed q tensor with shape
+                ``(E, Z, X)``. If provided, no feature-index assumption is required.
 
         Raises:
             ValueError: If regularization hyperparameters are invalid.
@@ -56,62 +466,167 @@ class DasInrApod(tf.keras.Model):
         self.feature_chunk_size = int(feature_chunk_size)
 
         self.weight_regularization_enabled = bool(weight_regularization_enabled)
-        self.weight_regularization_lambda = float(weight_regularization_lambda)
+        self._weight_regularization_lambda = float(weight_regularization_lambda)
         self.weight_regularization_tau = float(weight_regularization_tau)
         self.weight_regularization_epsilon = float(weight_regularization_epsilon)
         self.weight_regularization_normalize = bool(weight_regularization_normalize)
-        if self.weight_regularization_lambda < 0.0:
+        if self._weight_regularization_lambda < 0.0:
             raise ValueError("weight_regularization_lambda must be >= 0")
         if self.weight_regularization_tau < 0.0:
             raise ValueError("weight_regularization_tau must be >= 0")
         if self.weight_regularization_epsilon <= 0.0:
             raise ValueError("weight_regularization_epsilon must be > 0")
 
-        self._norm_denominator = float((self.n_elem * self.nz * self.nx) ** 0.5)
+        self.lateral_regularization_enabled = bool(lateral_regularization_enabled)
+        self._lateral_regularization_lambda = float(lateral_regularization_lambda)
+        self.lateral_regularization_q_power = float(lateral_regularization_q_power)
+        self.lateral_regularization_q_epsilon = float(lateral_regularization_q_epsilon)
+        self.lateral_regularization_q_abs_xrel_feature_index = int(
+            lateral_regularization_q_abs_xrel_feature_index
+        )
+        self.lateral_regularization_q_z_feature_index = int(
+            lateral_regularization_q_z_feature_index
+        )
+        self.lateral_regularization_normalize_by_uniform = bool(
+            lateral_regularization_normalize_by_uniform
+        )
+        self.lateral_regularization_channel_reduction = str(
+            lateral_regularization_channel_reduction
+        ).lower()
+        if self._lateral_regularization_lambda < 0.0:
+            raise ValueError("lateral_regularization_lambda must be >= 0")
+        if self.lateral_regularization_q_power <= 0.0:
+            raise ValueError("lateral_regularization_q_power must be > 0")
+        if self.lateral_regularization_q_epsilon <= 0.0:
+            raise ValueError("lateral_regularization_q_epsilon must be > 0")
+        if self.lateral_regularization_channel_reduction not in {"mean", "sum"}:
+            raise ValueError(
+                "lateral_regularization_channel_reduction must be 'mean' or 'sum'"
+            )
+
+        # Build regularizer instances
+        _regularizers: list[BaseApodizationRegularizer] = []
+
+        if self.weight_regularization_enabled:
+            self._apod_norm_regularizer: ApodNormHingeRegularizer | None = ApodNormHingeRegularizer(
+                n_points=self.n_elem * self.nz * self.nx,
+                reg_lambda=self._weight_regularization_lambda,
+                tau=self.weight_regularization_tau,
+                normalize=self.weight_regularization_normalize,
+                epsilon=self.weight_regularization_epsilon,
+            )
+            _regularizers.append(self._apod_norm_regularizer)
+        else:
+            self._apod_norm_regularizer = None
+
+        self._lateral_regularizer: LateralDistanceRegularizer | None = None
+        if self.lateral_regularization_enabled:
+            if lateral_regularization_q_grid is not None:
+                self._lateral_regularizer = LateralDistanceRegularizer(
+                    q_grid=lateral_regularization_q_grid,
+                    reg_lambda=self.lateral_regularization_lambda,
+                    normalize_by_uniform=self.lateral_regularization_normalize_by_uniform,
+                    channel_reduction=self.lateral_regularization_channel_reduction,
+                    epsilon=self.lateral_regularization_q_epsilon,
+                )
+            else:
+                self._lateral_regularizer = LateralDistanceRegularizer.from_features(
+                    features_grid=features_grid,
+                    reg_lambda=self.lateral_regularization_lambda,
+                    q_power=self.lateral_regularization_q_power,
+                    q_epsilon=self.lateral_regularization_q_epsilon,
+                    abs_xrel_feature_index=self.lateral_regularization_q_abs_xrel_feature_index,
+                    z_feature_index=self.lateral_regularization_q_z_feature_index,
+                    normalize_by_uniform=self.lateral_regularization_normalize_by_uniform,
+                    channel_reduction=self.lateral_regularization_channel_reduction,
+                )
+            _regularizers.append(self._lateral_regularizer)
+
+        if self._lateral_regularizer is not None:
+            self._lateral_q_mean = float(self._lateral_regularizer.q_mean)
+            self._lateral_uniform_reference = float(self._lateral_regularizer.uniform_reference)
+        else:
+            self._lateral_q_mean = 0.0
+            self._lateral_uniform_reference = 0.0
+
+        self._regularization_engine = _RegularizationEngine(_regularizers)
+
         self.reg_loss_tracker = tf.keras.metrics.Mean(name="reg_loss")
         norm_metric_name = "w_norm_normalized" if self.weight_regularization_normalize else "w_norm"
         self.w_norm_tracker = tf.keras.metrics.Mean(name=norm_metric_name)
         self.reg_active_rate_tracker = tf.keras.metrics.Mean(name="reg_active_rate")
+        self.lateral_reg_loss_tracker = tf.keras.metrics.Mean(name="lateral_reg_loss")
+        self.lateral_reg_raw_tracker = tf.keras.metrics.Mean(name="lateral_reg_raw")
+        self.lateral_reg_scaled_tracker = tf.keras.metrics.Mean(name="lateral_reg_scaled")
+        self.lateral_q_mean_tracker = tf.keras.metrics.Mean(name="lateral_q_mean")
+        self._tracker_registry: dict[str, tf.keras.metrics.Metric] = {
+            "reg_loss": self.reg_loss_tracker,
+            norm_metric_name: self.w_norm_tracker,
+            "reg_active_rate": self.reg_active_rate_tracker,
+            "lateral_reg_loss": self.lateral_reg_loss_tracker,
+            "lateral_reg_raw": self.lateral_reg_raw_tracker,
+            "lateral_reg_scaled": self.lateral_reg_scaled_tracker,
+            "lateral_q_mean": self.lateral_q_mean_tracker,
+        }
 
     @property
     def metrics(self):
         """Return Keras metrics including custom regularization trackers."""
         base_metrics = super().metrics
         base_names = {metric.name for metric in base_metrics}
-        extra_metrics = [self.reg_loss_tracker, self.w_norm_tracker, self.reg_active_rate_tracker]
+        extra_metrics = [
+            self.reg_loss_tracker,
+            self.w_norm_tracker,
+            self.reg_active_rate_tracker,
+            self.lateral_reg_loss_tracker,
+            self.lateral_reg_raw_tracker,
+            self.lateral_reg_scaled_tracker,
+            self.lateral_q_mean_tracker,
+        ]
         for metric in extra_metrics:
             if metric.name not in base_names:
                 base_metrics.append(metric)
         return base_metrics
 
-    def compute_weight_regularization(self, weights_grid: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Compute hinge regularization that penalizes very low apodization norms.
+    @property
+    def lateral_q_mean(self) -> float:
+        """Return the cached mean value of q = abs(x_rel) / z."""
+        return self._lateral_q_mean
 
-        Args:
-            weights_grid: INR apodizations with shape ``(E, Z, X)``.
+    @property
+    def lateral_uniform_reference(self) -> float:
+        """Return regularizer baseline for uniform apodization weights equal to one."""
+        return self._lateral_uniform_reference
 
-        Returns:
-            Tuple ``(reg_loss, norm_value, reg_active)`` where:
-            - ``reg_loss`` is ``lambda * max(0, tau - norm)^2``.
-            - ``norm_value`` is either normalized or raw norm depending on config.
-            - ``reg_active`` is 1.0 when the hinge is active, else 0.0.
-        """
-        weights_grid = tf.cast(weights_grid, tf.float32)
-        global_norm = tf.norm(weights_grid, ord="euclidean")
-        if self.weight_regularization_normalize:
-            norm_value = global_norm / tf.maximum(
-                tf.cast(self._norm_denominator, tf.float32),
-                tf.cast(self.weight_regularization_epsilon, tf.float32),
-            )
-        else:
-            norm_value = global_norm
+    @property
+    def weight_regularization_lambda(self) -> float:
+        """Return current lambda used by the apod norm hinge regularizer."""
+        return self._weight_regularization_lambda
 
-        tau = tf.cast(self.weight_regularization_tau, tf.float32)
-        reg_lambda = tf.cast(self.weight_regularization_lambda, tf.float32)
-        violation = tf.nn.relu(tau - norm_value)
-        reg_loss = reg_lambda * tf.square(violation)
-        reg_active = tf.cast(violation > 0.0, tf.float32)
-        return reg_loss, norm_value, reg_active
+    @weight_regularization_lambda.setter
+    def weight_regularization_lambda(self, value: float) -> None:
+        """Update lambda and propagate it to the internal regularizer instance."""
+        lambda_value = float(value)
+        if lambda_value < 0.0:
+            raise ValueError("weight_regularization_lambda must be >= 0")
+        self._weight_regularization_lambda = lambda_value
+        if getattr(self, "_apod_norm_regularizer", None) is not None:
+            self._apod_norm_regularizer.reg_lambda = lambda_value
+
+    @property
+    def lateral_regularization_lambda(self) -> float:
+        """Return current lambda used by the lateral distance regularizer."""
+        return self._lateral_regularization_lambda
+
+    @lateral_regularization_lambda.setter
+    def lateral_regularization_lambda(self, value: float) -> None:
+        """Update lambda and propagate it to the internal lateral regularizer instance."""
+        lambda_value = float(value)
+        if lambda_value < 0.0:
+            raise ValueError("lateral_regularization_lambda must be >= 0")
+        self._lateral_regularization_lambda = lambda_value
+        if getattr(self, "_lateral_regularizer", None) is not None:
+            self._lateral_regularizer.reg_lambda = lambda_value
 
     def predict_weights_flat(self, training: bool = False) -> tf.Tensor:
         """Run the INR on geometry features in chunks and concatenate outputs.
@@ -158,14 +673,8 @@ class DasInrApod(tf.keras.Model):
         Returns:
             Predicted magnitude image with shape ``(B, Z, X)``.
         """
-        predicted_image, weights_grid = self.reconstruct_image(delayed_batch, training=training)
-        if self.weight_regularization_enabled:
-            reg_loss, norm_value, reg_active = self.compute_weight_regularization(weights_grid)
-            if training:
-                self.add_loss(reg_loss)
-            self.reg_loss_tracker.update_state(reg_loss)
-            self.w_norm_tracker.update_state(norm_value)
-            self.reg_active_rate_tracker.update_state(reg_active)
+        predicted_image, apod_grid = self.reconstruct_image(delayed_batch, training=training)
+        self._regularization_engine.apply(apod_grid, training, self, self._tracker_registry)
         return predicted_image
 
 
@@ -189,6 +698,15 @@ class DasInrApodMixer(DasInrApod):
         weight_regularization_tau: float = 0.30,
         weight_regularization_epsilon: float = 1e-8,
         weight_regularization_normalize: bool = True,
+        lateral_regularization_enabled: bool = False,
+        lateral_regularization_lambda: float = 0.0,
+        lateral_regularization_q_power: float = 1.0,
+        lateral_regularization_q_epsilon: float = 1e-8,
+        lateral_regularization_q_abs_xrel_feature_index: int = 0,
+        lateral_regularization_q_z_feature_index: int = 1,
+        lateral_regularization_normalize_by_uniform: bool = True,
+        lateral_regularization_channel_reduction: str = "mean",
+        lateral_regularization_q_grid: tf.Tensor | None = None,
     ):
         """Initialize the ensemble trainer.
 
@@ -202,6 +720,19 @@ class DasInrApodMixer(DasInrApod):
             weight_regularization_tau: Minimum target norm before hinge becomes active.
             weight_regularization_epsilon: Numerical epsilon used in norm normalization.
             weight_regularization_normalize: Whether to normalize norm by ``sqrt(E*Z*X)``.
+            lateral_regularization_enabled: Whether to penalize large apodization values at
+                large lateral-distance-to-depth ratio.
+            lateral_regularization_lambda: Multiplicative factor for lateral regularization.
+            lateral_regularization_q_power: Exponent applied to q = abs(x_rel) / z.
+            lateral_regularization_q_epsilon: Numerical epsilon to avoid division by zero in q.
+            lateral_regularization_q_abs_xrel_feature_index: Feature index containing abs(x_rel).
+            lateral_regularization_q_z_feature_index: Feature index containing z.
+            lateral_regularization_normalize_by_uniform: Whether to normalize the raw regularizer
+                by its uniform-apodization reference.
+            lateral_regularization_channel_reduction: Channel aggregation mode for multi-output
+                apodizations: ``"mean"`` or ``"sum"``.
+            lateral_regularization_q_grid: Optional precomputed q tensor with shape
+                ``(E, Z, X)``. If provided, no feature-index assumption is required.
 
         Raises:
             ValueError: If ``n_apodizations`` is not positive or does not match model output.
@@ -229,6 +760,17 @@ class DasInrApodMixer(DasInrApod):
             weight_regularization_tau=weight_regularization_tau,
             weight_regularization_epsilon=weight_regularization_epsilon,
             weight_regularization_normalize=weight_regularization_normalize,
+            lateral_regularization_enabled=lateral_regularization_enabled,
+            lateral_regularization_lambda=lateral_regularization_lambda,
+            lateral_regularization_q_power=lateral_regularization_q_power,
+            lateral_regularization_q_epsilon=lateral_regularization_q_epsilon,
+            lateral_regularization_q_abs_xrel_feature_index=(
+                lateral_regularization_q_abs_xrel_feature_index
+            ),
+            lateral_regularization_q_z_feature_index=lateral_regularization_q_z_feature_index,
+            lateral_regularization_normalize_by_uniform=lateral_regularization_normalize_by_uniform,
+            lateral_regularization_channel_reduction=lateral_regularization_channel_reduction,
+            lateral_regularization_q_grid=lateral_regularization_q_grid,
         )
 
         self.pixel_combiner = tf.keras.layers.Dense(
@@ -334,30 +876,6 @@ class DasInrApodMixer(DasInrApod):
         self._last_intermediate_images = intermediate_images
         self._last_apodization_grids = weights_grid
         return combined_image, weights_grid
-
-    def call(self, delayed_batch: tf.Tensor, training: bool = False) -> tf.Tensor:
-        """Run forward reconstruction and pixel-wise ensemble combination.
-
-        Args:
-            delayed_batch: Delayed samples with shape ``(B, E, Z, X)``.
-            training: Whether to run the INR in training mode.
-
-        Returns:
-            Predicted combined image with shape ``(B, Z, X)``.
-        """
-        predicted_image, weights_grid = self.reconstruct_image(delayed_batch, training=training)
-        if self.weight_regularization_enabled:
-            per_apodization_grids = tf.unstack(weights_grid, axis=-1)
-            for apodization_grid in per_apodization_grids:
-                reg_loss, norm_value, reg_active = self.compute_weight_regularization(
-                    apodization_grid
-                )
-                if training:
-                    self.add_loss(reg_loss)
-                self.reg_loss_tracker.update_state(reg_loss)
-                self.w_norm_tracker.update_state(norm_value)
-                self.reg_active_rate_tracker.update_state(reg_active)
-        return predicted_image
 
 
 def build_mlp_inr(

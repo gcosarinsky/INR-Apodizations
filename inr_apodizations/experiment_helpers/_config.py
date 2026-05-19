@@ -274,3 +274,75 @@ def parse_weight_regularization_config(cfg: Mapping[str, Any]) -> dict[str, Any]
             "norm_fraction": weight_reg_auto_norm_fraction,
         },
     }
+
+
+def parse_lateral_regularization_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """Parse and validate lateral-regularization settings from experiment config.
+
+    Reads ``training.lateral_regularization`` and returns a resolved flat dict.
+    The ``auto_init`` subsection allows automatic scaling of ``lambda`` based on
+    the initial model prediction, analogous to weight-regularization auto-init.
+
+    Args:
+        cfg: Full experiment configuration mapping.
+
+    Returns:
+        Flat dictionary with keys:
+        - ``enabled``: bool
+        - ``lambda``: float (may be overridden at runtime by auto-init)
+        - ``q_power``: float
+        - ``q_epsilon``: float
+        - ``abs_xrel_feature_index``: int
+        - ``z_feature_index``: int
+        - ``normalize_by_uniform``: bool
+        - ``channel_reduction``: str (``"mean"`` or ``"sum"``)
+        - ``auto_init``: dict with ``enabled``, ``ratio``, ``epsilon``
+
+    Raises:
+        ValueError: If configuration values are invalid.
+    """
+    lat_cfg = dict(cfg.get("training", {}).get("lateral_regularization", {}))
+    enabled = bool(lat_cfg.get("enabled", False))
+    lam = float(lat_cfg.get("lambda", 0.0))
+    q_power = float(lat_cfg.get("q_power", 1.0))
+    q_epsilon = float(lat_cfg.get("q_epsilon", 1e-8))
+    abs_xrel_feature_index = int(lat_cfg.get("abs_xrel_feature_index", 0))
+    z_feature_index = int(lat_cfg.get("z_feature_index", 1))
+    normalize_by_uniform = bool(lat_cfg.get("normalize_by_uniform", True))
+    channel_reduction = str(lat_cfg.get("channel_reduction", "mean")).strip().lower()
+
+    auto_cfg = dict(lat_cfg.get("auto_init", {}))
+    auto_enabled = bool(auto_cfg.get("enabled", False))
+    auto_ratio = float(auto_cfg.get("ratio", 0.1))
+    auto_eps = float(auto_cfg.get("epsilon", 1e-12))
+
+    if lam < 0.0:
+        raise ValueError("training.lateral_regularization.lambda must be >= 0")
+    if q_power <= 0.0:
+        raise ValueError("training.lateral_regularization.q_power must be > 0")
+    if q_epsilon <= 0.0:
+        raise ValueError("training.lateral_regularization.q_epsilon must be > 0")
+    if channel_reduction not in {"mean", "sum"}:
+        raise ValueError(
+            "training.lateral_regularization.channel_reduction must be 'mean' or 'sum'"
+        )
+    if auto_ratio < 0.0:
+        raise ValueError("training.lateral_regularization.auto_init.ratio must be >= 0")
+    if auto_eps <= 0.0:
+        raise ValueError("training.lateral_regularization.auto_init.epsilon must be > 0")
+
+    return {
+        "enabled": enabled,
+        "lambda": lam,
+        "q_power": q_power,
+        "q_epsilon": q_epsilon,
+        "abs_xrel_feature_index": abs_xrel_feature_index,
+        "z_feature_index": z_feature_index,
+        "normalize_by_uniform": normalize_by_uniform,
+        "channel_reduction": channel_reduction,
+        "auto_init": {
+            "enabled": auto_enabled,
+            "ratio": auto_ratio,
+            "epsilon": auto_eps,
+        },
+    }

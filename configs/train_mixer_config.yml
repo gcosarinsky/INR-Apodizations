@@ -19,7 +19,7 @@ model:
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
-  hidden_units: [16, 8, 4]
+  hidden_units: [8, 8]
   n_hidden_layers: 4
   activation: relu
   output_activation: tanh
@@ -28,7 +28,7 @@ model:
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
-  n_apodizations: 2
+  n_apodizations: 3
 
 eval_noise:
   enabled: false
@@ -36,22 +36,56 @@ eval_noise:
 
 training:
   batch_size: 2
-  epochs: 10
+  epochs: 15
   learning_rate: 0.001
   loss: mae
   metric: mae
   weight_decay: 0.001
   weight_regularization:
-    enabled: false
+    enabled: true
+    # type: regularization type applied to the apodization norm.
+    # "hinge_low_norm": squared hinge penalty when global Euclidean norm < tau.
     type: hinge_low_norm
+    # lambda: multiplicative factor for the regularization loss.
+    # If auto_init.enabled=true, this value is overridden automatically.
     lambda: 333000
+    # tau: minimum target normalized norm. Hinge activates when norm < tau.
     tau: 0.7
     epsilon: 1.0e-8
+    # normalize_norm: whether to divide norm by sqrt(E*Z*X) before comparing to tau.
     normalize_norm: true
     auto_init:
       enabled: true
+      # ratio: target weight_reg_loss ≈ ratio * mae_initial (at a tau_reference norm).
       ratio: 0.2
+      # norm_fraction: reference norm = norm_fraction * tau (hypothetical violation point).
       norm_fraction: 0.8
+      epsilon: 1.0e-12
+  lateral_regularization:
+    enabled: true
+    # lambda: multiplicative factor for the lateral regularization loss.
+    # If auto_init.enabled=true, this value is overridden automatically.
+    lambda: 0.0
+    # q = (abs(x_rel) / z)^q_power — penalizes apodization energy at large lateral angles.
+    # Use q_power=1.0 for linear (default), q_power=2.0 for quadratic emphasis.
+    q_power: 1.0
+    # q_epsilon: numerical epsilon to avoid division by zero when computing q.
+    q_epsilon: 1.0e-8
+    # abs_xrel_feature_index / z_feature_index: indices into physical_feature_components.
+    # Default assumes [xrel, z, x] order → 0=xrel (abs value used), 1=z.
+    abs_xrel_feature_index: 0
+    z_feature_index: 1
+    # normalize_by_uniform: normalize raw penalty by its uniform-apodization reference.
+    # Recommended true: makes lambda scale-independent w.r.t. the spatial grid.
+    normalize_by_uniform: true
+    # channel_reduction: aggregation across apodization channels (mixer only).
+    # "mean": average over N channels; "sum": sum over N channels.
+    channel_reduction: mean
+    auto_init:
+      enabled: true
+      # ratio: target lateral_reg_loss ≈ ratio * mae_initial (at initial model weights).
+      ratio: 0.2
+      # epsilon: safety floor for division during lambda estimation.
       epsilon: 1.0e-12
   mae_db_ref: null
   mae_db_eps: 1.0e-8
@@ -66,7 +100,7 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: true
+  enabled: false
   # Preferred source: previous run directory with model.keras + history artifacts.
   source_run_dir: scripts\outputs\train_mixer\20260518_151939
   # Optional fallback when only a model file is available.

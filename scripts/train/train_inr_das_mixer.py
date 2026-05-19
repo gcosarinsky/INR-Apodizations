@@ -208,6 +208,20 @@ weight_reg_auto_eps = float(weight_reg_auto_cfg.get("epsilon", 1e-12))
 weight_reg_auto_norm_fraction = float(weight_reg_auto_cfg.get("norm_fraction", 0.5))
 resolved_weight_reg_type = str(weight_reg_resolved["type"])
 
+lat_reg_resolved = helpers.parse_lateral_regularization_config(cfg)
+lat_reg_enabled = bool(lat_reg_resolved["enabled"])
+lat_reg_lambda = float(lat_reg_resolved["lambda"])
+lat_reg_q_power = float(lat_reg_resolved["q_power"])
+lat_reg_q_epsilon = float(lat_reg_resolved["q_epsilon"])
+lat_reg_abs_xrel_idx = int(lat_reg_resolved["abs_xrel_feature_index"])
+lat_reg_z_idx = int(lat_reg_resolved["z_feature_index"])
+lat_reg_normalize_by_uniform = bool(lat_reg_resolved["normalize_by_uniform"])
+lat_reg_channel_reduction = str(lat_reg_resolved["channel_reduction"])
+lat_reg_auto_cfg = dict(lat_reg_resolved["auto_init"])
+lat_reg_auto_enabled = bool(lat_reg_auto_cfg.get("enabled", False))
+lat_reg_auto_ratio = float(lat_reg_auto_cfg.get("ratio", 0.1))
+lat_reg_auto_eps = float(lat_reg_auto_cfg.get("epsilon", 1e-12))
+
 trainer = DasInrApodMixer(
     apodization_model=apodization_model,
     features_grid=features_grid,
@@ -218,6 +232,14 @@ trainer = DasInrApodMixer(
     weight_regularization_tau=weight_reg_tau,
     weight_regularization_epsilon=weight_reg_epsilon,
     weight_regularization_normalize=weight_reg_normalize,
+    lateral_regularization_enabled=lat_reg_enabled,
+    lateral_regularization_lambda=lat_reg_lambda,
+    lateral_regularization_q_power=lat_reg_q_power,
+    lateral_regularization_q_epsilon=lat_reg_q_epsilon,
+    lateral_regularization_q_abs_xrel_feature_index=lat_reg_abs_xrel_idx,
+    lateral_regularization_q_z_feature_index=lat_reg_z_idx,
+    lateral_regularization_normalize_by_uniform=lat_reg_normalize_by_uniform,
+    lateral_regularization_channel_reduction=lat_reg_channel_reduction,
 )
 console.subsection("DasInrApodMixer configuration")
 console.pretty(
@@ -235,6 +257,21 @@ console.pretty(
                 "ratio": weight_reg_auto_ratio,
                 "epsilon": weight_reg_auto_eps,
                 "norm_fraction": weight_reg_auto_norm_fraction,
+            },
+        },
+        "lateral_regularization": {
+            "enabled": lat_reg_enabled,
+            "lambda": lat_reg_lambda,
+            "q_power": lat_reg_q_power,
+            "q_epsilon": lat_reg_q_epsilon,
+            "abs_xrel_feature_index": lat_reg_abs_xrel_idx,
+            "z_feature_index": lat_reg_z_idx,
+            "normalize_by_uniform": lat_reg_normalize_by_uniform,
+            "channel_reduction": lat_reg_channel_reduction,
+            "auto_init": {
+                "enabled": lat_reg_auto_enabled,
+                "ratio": lat_reg_auto_ratio,
+                "epsilon": lat_reg_auto_eps,
             },
         },
     },
@@ -276,20 +313,32 @@ predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_d
 mae_initial = None
 norm_reference_auto = None
 reg_loss_reference_auto = None
-if weight_reg_enabled and weight_reg_auto_enabled:
+lat_reg_scaled_reference_auto = None
+
+# Determine whether any auto-init requires a first-batch evaluation
+_need_autoinit_batch = (
+    (weight_reg_enabled and weight_reg_auto_enabled)
+    or (lat_reg_enabled and lat_reg_auto_enabled)
+)
+
+first_batch = None
+x_init = y_init = sample_weight_init = None
+y_pred_init = weights_grid_init = None
+
+if _need_autoinit_batch:
     first_batch = next(iter(train_ds.take(1)))
     if not isinstance(first_batch, (tuple, list)) or len(first_batch) != 3:
         raise ValueError(
-            "Auto-init of training.weight_regularization.lambda requires "
+            "Auto-init of regularization lambdas requires "
             "dataset batches as (delayed, target, sample_weight)."
         )
-
     x_init, y_init, sample_weight_init = first_batch
     y_pred_init, weights_grid_init = trainer.reconstruct_image(x_init, training=False)
     mae_initial = float(
         loss_obj(y_init, y_pred_init, sample_weight=sample_weight_init).numpy()
     )
 
+if weight_reg_enabled and weight_reg_auto_enabled:
     lambda_prev = float(trainer.weight_regularization_lambda)
     norm_reference_auto = float(weight_reg_auto_norm_fraction * weight_reg_tau)
     violation_reference = max(0.0, weight_reg_tau - norm_reference_auto)
@@ -315,7 +364,35 @@ if weight_reg_enabled and weight_reg_auto_enabled:
         }
     )
 
+if lat_reg_enabled and lat_reg_auto_enabled:
+    # Compute reg_scaled from the current (random) model weights on the first batch.
+    # reg_scaled is lambda-independent; we set lambda=1 temporarily via the regularizer.
+    _lat_reg_loss_tmp, _lat_reg_metrics_tmp = trainer._lateral_regularizer.compute(
+        weights_grid_init
+    )
+    lat_reg_scaled_reference_auto = float(_lat_reg_metrics_tmp["lateral_reg_scaled"].numpy())
+
+    lat_reg_lambda_prev = float(trainer.lateral_regularization_lambda)
+    lat_reg_lambda = float(
+        lat_reg_auto_ratio * mae_initial / max(lat_reg_scaled_reference_auto, lat_reg_auto_eps)
+    )
+    trainer.lateral_regularization_lambda = lat_reg_lambda
+
+    print("Auto-initialized lateral regularization lambda:")
+    print(
+        {
+            "method": "reg_scaled_reference",
+            "ratio": lat_reg_auto_ratio,
+            "mae_initial": mae_initial,
+            "lateral_reg_scaled_reference": lat_reg_scaled_reference_auto,
+            "lambda_previous_config": lat_reg_lambda_prev,
+            "lambda_applied": lat_reg_lambda,
+        }
+    )
+
 print(f"Final weight regularization lambda used for training: {weight_reg_lambda:.6g}")
+if lat_reg_enabled:
+    print(f"Final lateral regularization lambda used for training: {lat_reg_lambda:.6g}")
 
 
 # ============================================================================
@@ -516,6 +593,23 @@ effective_cfg = {
             "mae_initial": mae_initial,
             "norm_reference": norm_reference_auto,
             "reg_loss_reference": reg_loss_reference_auto,
+        },
+    },
+    "resolved_lateral_regularization": {
+        "enabled": lat_reg_enabled,
+        "lambda": lat_reg_lambda,
+        "q_power": lat_reg_q_power,
+        "q_epsilon": lat_reg_q_epsilon,
+        "abs_xrel_feature_index": lat_reg_abs_xrel_idx,
+        "z_feature_index": lat_reg_z_idx,
+        "normalize_by_uniform": lat_reg_normalize_by_uniform,
+        "channel_reduction": lat_reg_channel_reduction,
+        "auto_init": {
+            "enabled": lat_reg_auto_enabled,
+            "ratio": lat_reg_auto_ratio,
+            "epsilon": lat_reg_auto_eps,
+            "mae_initial": mae_initial,
+            "lateral_reg_scaled_reference": lat_reg_scaled_reference_auto,
         },
     },
 }
