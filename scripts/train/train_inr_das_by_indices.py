@@ -34,7 +34,11 @@ from inr_apodizations.evaluation import (
     load_validation_scatterers,
 )
 from inr_apodizations.modeling.losses import PixelWeightedMAELoss
-from inr_apodizations.modeling.das_models import DasInrApod, build_mlp_inr
+from inr_apodizations.modeling.das_models import (
+    DasInrApod,
+    build_mlp_inr,
+    build_symmetrized_apodization_model,
+)
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.training_console import get_console
@@ -172,6 +176,9 @@ features_grid = cm.get_features_grid(scaled=bool(cfg["model"]["scaled_features"]
 output_activation = cfg["model"].get("output_activation", "sigmoid")
 hidden_units_raw = cfg["model"].get("hidden_units")
 n_hidden_layers_raw = cfg["model"].get("n_hidden_layers")
+symmetry_cfg = dict(cfg["model"].get("symmetry", {}))
+symmetry_enabled = bool(symmetry_cfg.get("enabled", False))
+symmetry_feature_components_override = symmetry_cfg.get("feature_components_override")
 if resume_enabled:
     print(f"Resume enabled. Loading model from: {resume_model_path}")
     apodization_model = tf.keras.models.load_model(str(resume_model_path), compile=False)
@@ -183,6 +190,27 @@ else:
         activation=cfg["model"]["activation"],
         output_activation=output_activation,
     )
+
+if symmetry_feature_components_override is None:
+    symmetry_feature_components = list(cm.physical_feature_names)
+else:
+    if not isinstance(symmetry_feature_components_override, (list, tuple)):
+        raise ValueError("model.symmetry.feature_components_override must be a list/tuple")
+    symmetry_feature_components = [str(token).strip() for token in symmetry_feature_components_override]
+
+if len(symmetry_feature_components) != int(cm.n_physical_features):
+    raise ValueError(
+        "symmetry feature components must match input feature dimension: "
+        f"len={len(symmetry_feature_components)}, expected={cm.n_physical_features}"
+    )
+
+if symmetry_enabled:
+    apodization_model = build_symmetrized_apodization_model(
+        apodization_model=apodization_model,
+        feature_component_names=symmetry_feature_components,
+        combine_mode="sum",
+    )
+
 weight_reg_resolved = helpers.parse_weight_regularization_config(cfg)
 weight_reg_enabled = bool(weight_reg_resolved["enabled"])
 weight_reg_lambda = float(weight_reg_resolved["lambda"])
@@ -221,6 +249,15 @@ console.pretty(
             "epsilon": weight_reg_auto_eps,
             "norm_fraction": weight_reg_auto_norm_fraction,
         },
+    },
+    title="Configuration",
+)
+console.subsection("Symmetry")
+console.pretty(
+    {
+        "enabled": symmetry_enabled,
+        "combine_mode": "sum",
+        "feature_components": symmetry_feature_components,
     },
     title="Configuration",
 )

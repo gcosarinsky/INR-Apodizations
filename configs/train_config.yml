@@ -29,6 +29,13 @@ model:
   output_activation: sigmoid
   scaled_features: true
   feature_chunk_size: 65536
+  symmetry:
+    # If enabled, enforce per-channel symmetry with a_sym(f) = a(f) + a(f_flip).
+    # f_flip inverts signed coordinate-like features (x, xrel, x_over_z, xrel_over_z).
+    enabled: false
+    # Optional ordered override for feature-component names used to build f_flip.
+    # If null, the script uses CoordinateManager.physical_feature_names.
+    feature_components_override: null
  
 eval_noise:
   enabled: false

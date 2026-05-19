@@ -24,11 +24,18 @@ model:
   activation: relu
   output_activation: tanh
   scaled_features: true
-  feature_chunk_size: 65536
+  feature_chunk_size: 8192
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
   n_apodizations: 2
+  symmetry:
+    # If enabled, enforce per-channel symmetry with a_sym(f) = a(f) + a(f_flip).
+    # f_flip inverts signed coordinate-like features (x, xrel, x_over_z, xrel_over_z).
+    enabled: true
+    # Optional ordered override for feature-component names used to build f_flip.
+    # If null, the script uses CoordinateManager.physical_feature_names.
+    feature_components_override: null
   forced_boxcar:
     enabled: true
     # f_number: global dynamic-aperture f-number used to derive the boxcar threshold.
@@ -43,8 +50,8 @@ eval_noise:
   scale: 1.0
 
 training:
-  batch_size: 2
-  epochs: 20
+  batch_size: 1
+  epochs: 15
   learning_rate: 0.001
   loss: mae
   metric: mae
@@ -108,7 +115,7 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: true
+  enabled: false
   # Preferred source: previous run directory with model.keras + history artifacts.
   source_run_dir: scripts\outputs\train_mixer\20260519_115528
   # Optional fallback when only a model file is available.

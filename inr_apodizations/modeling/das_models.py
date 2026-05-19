@@ -10,6 +10,145 @@ import numpy as np
 import tensorflow as tf
 
 
+SIGNED_SYMMETRY_FEATURE_TOKENS = (
+    "x",
+    "xrel",
+    "x_over_z",
+    "xrel_over_z",
+)
+
+
+def _resolve_signed_flip_indices(
+    feature_component_names: list[str] | tuple[str, ...],
+    flip_feature_tokens: list[str] | tuple[str, ...] | None = None,
+) -> tuple[int, ...]:
+    """Resolve feature indices that must be sign-flipped for symmetry.
+
+    Args:
+        feature_component_names: Ordered feature token names used by the INR input.
+        flip_feature_tokens: Optional token list to flip. If omitted, uses
+            ``SIGNED_SYMMETRY_FEATURE_TOKENS``.
+
+    Returns:
+        Tuple with indices of features whose sign must be inverted.
+
+    Raises:
+        ValueError: If inputs are invalid or no flippable feature is found.
+    """
+    if not isinstance(feature_component_names, (list, tuple)):
+        raise ValueError("feature_component_names must be a list/tuple of strings")
+    normalized_features = tuple(str(name).strip() for name in feature_component_names)
+    if len(normalized_features) == 0:
+        raise ValueError("feature_component_names must not be empty")
+
+    if flip_feature_tokens is None:
+        tokens = set(SIGNED_SYMMETRY_FEATURE_TOKENS)
+    else:
+        if not isinstance(flip_feature_tokens, (list, tuple)):
+            raise ValueError("flip_feature_tokens must be a list/tuple of strings")
+        tokens = {str(token).strip() for token in flip_feature_tokens}
+        if len(tokens) == 0:
+            raise ValueError("flip_feature_tokens must not be empty")
+
+    indices = tuple(i for i, token in enumerate(normalized_features) if token in tokens)
+    if len(indices) == 0:
+        raise ValueError(
+            "No signed features available for symmetry flip. "
+            f"feature_component_names={normalized_features}, flip_feature_tokens={sorted(tokens)}"
+        )
+    return indices
+
+
+@tf.keras.utils.register_keras_serializable(package="INRApodizations")
+class SymmetricApodizationWrapper(tf.keras.layers.Layer):
+    """Enforce feature-sign symmetry on an apodization model output.
+
+    The wrapper computes ``a_sym(f) = a(f) + a(f_flip)``, where ``f_flip`` is
+    constructed by inverting the sign of selected feature channels.
+    """
+
+    def __init__(
+        self,
+        base_model: tf.keras.Model,
+        feature_component_names: list[str] | tuple[str, ...],
+        flip_feature_tokens: list[str] | tuple[str, ...] | None = None,
+        combine_mode: str = "sum",
+        **kwargs,
+    ):
+        """Initialize the symmetry-enforcing wrapper.
+
+        Args:
+            base_model: Base INR model that maps features to apodization channels.
+            feature_component_names: Ordered input feature tokens.
+            flip_feature_tokens: Optional subset of tokens to sign-flip.
+            combine_mode: Combination strategy. Currently only ``"sum"``.
+            **kwargs: Forwarded to base Keras layer.
+
+        Raises:
+            ValueError: If configuration is invalid.
+        """
+        super().__init__(**kwargs)
+        self.base_model = base_model
+        self.feature_component_names = tuple(
+            str(name).strip() for name in feature_component_names
+        )
+        self.flip_feature_tokens = tuple(
+            str(token).strip() for token in (
+                SIGNED_SYMMETRY_FEATURE_TOKENS if flip_feature_tokens is None else flip_feature_tokens
+            )
+        )
+        self.combine_mode = str(combine_mode).lower().strip()
+        if self.combine_mode != "sum":
+            raise ValueError("combine_mode must be 'sum'")
+
+        self.flip_feature_indices = _resolve_signed_flip_indices(
+            feature_component_names=self.feature_component_names,
+            flip_feature_tokens=self.flip_feature_tokens,
+        )
+
+        flip_sign = np.ones((len(self.feature_component_names),), dtype=np.float32)
+        for idx in self.flip_feature_indices:
+            flip_sign[idx] = -1.0
+        self._flip_sign_vector = tf.constant(flip_sign, dtype=tf.float32)
+
+    def call(self, inputs: tf.Tensor, training: bool = False) -> tf.Tensor:
+        """Compute symmetric apodization predictions.
+
+        Args:
+            inputs: Feature tensor with shape ``(batch, F)`` or ``(..., F)``.
+            training: Whether the base model runs in training mode.
+
+        Returns:
+            Symmetrized model output with the same shape as base model output.
+        """
+        outputs_pos = self.base_model(inputs, training=training)
+        sign = tf.cast(self._flip_sign_vector, inputs.dtype)
+        flipped_inputs = inputs * sign
+        outputs_neg = self.base_model(flipped_inputs, training=training)
+        return outputs_pos + outputs_neg
+
+    def get_config(self) -> dict[str, object]:
+        """Return serializable layer configuration."""
+        config = super().get_config()
+        config.update(
+            {
+                "base_model": tf.keras.utils.serialize_keras_object(self.base_model),
+                "feature_component_names": list(self.feature_component_names),
+                "flip_feature_tokens": list(self.flip_feature_tokens),
+                "combine_mode": self.combine_mode,
+            }
+        )
+        return config
+
+    @classmethod
+    def from_config(cls, config: dict[str, object]) -> "SymmetricApodizationWrapper":
+        """Create a wrapper instance from serialized config."""
+        config = dict(config)
+        base_model_cfg = config.pop("base_model")
+        base_model = tf.keras.utils.deserialize_keras_object(base_model_cfg)
+        return cls(base_model=base_model, **config)
+
+
 @tf.keras.utils.register_keras_serializable(package="INRApodizations")
 class FeatureDrivenOutputMask(tf.keras.layers.Layer):
     """Apply a deterministic output mask derived from the input features.
@@ -1090,3 +1229,33 @@ def build_masked_mlp_inr(
     )(inputs)
     masked_outputs = tf.keras.layers.Multiply(name="masked_weight_out")([base_outputs, output_mask])
     return tf.keras.Model(inputs=inputs, outputs=masked_outputs, name="masked_inr_mlp")
+
+
+def build_symmetrized_apodization_model(
+    apodization_model: tf.keras.Model,
+    feature_component_names: list[str] | tuple[str, ...],
+    flip_feature_tokens: list[str] | tuple[str, ...] | None = None,
+    combine_mode: str = "sum",
+) -> tf.keras.Model:
+    """Wrap an apodization model with deterministic feature-sign symmetry.
+
+    Args:
+        apodization_model: Base model to be wrapped.
+        feature_component_names: Ordered list of input feature tokens.
+        flip_feature_tokens: Optional subset of tokens to sign-flip.
+        combine_mode: Combination strategy. Currently only ``"sum"``.
+
+    Returns:
+        Keras model with the same input/output interface as ``apodization_model``.
+    """
+    input_dim = len(feature_component_names)
+    inputs = tf.keras.Input(shape=(input_dim,), name="coords")
+    outputs = SymmetricApodizationWrapper(
+        base_model=apodization_model,
+        feature_component_names=feature_component_names,
+        flip_feature_tokens=flip_feature_tokens,
+        combine_mode=combine_mode,
+        name="symmetry_wrapper",
+    )(inputs)
+    model_name = f"{apodization_model.name}_symmetrized"
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name=model_name)
