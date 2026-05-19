@@ -44,7 +44,7 @@ eval_noise:
 
 training:
   batch_size: 2
-  epochs: 15
+  epochs: 20
   learning_rate: 0.001
   loss: mae
   metric: mae
@@ -108,9 +108,9 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: false
+  enabled: true
   # Preferred source: previous run directory with model.keras + history artifacts.
-  source_run_dir: scripts\outputs\train_mixer\20260518_151939
+  source_run_dir: scripts\outputs\train_mixer\20260519_115528
   # Optional fallback when only a model file is available.
   source_model_path: ""
   # Reserved for future optimizer-state persistence. Currently weights-only resume.
@@ -129,6 +129,8 @@ plots:
   x_values_apod: [0.0, -10.0, 10.0]
   z_profiles_mm: [15.0, 25.0, 35.0]
   apod_cmap: viridis
+  apod_vmin: -1.0
+  apod_vmax: 1.0
 
 scatterer_eval:
   enabled: true

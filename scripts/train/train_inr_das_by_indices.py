@@ -573,6 +573,9 @@ elif isinstance(z_profiles_cfg, (int, float)):
 else:
     z_profiles_mm = [float(z_val) for z_val in z_profiles_cfg]
 
+apod_vmin = float(plot_cfg.get("apod_vmin", -1.0))
+apod_vmax = float(plot_cfg.get("apod_vmax", 1.0))
+
 for x_value in x_values_apod:
     x_token = f"{x_value:.2f}".replace("-", "m").replace(".", "p")
     helpers.plot_apodization_before_after(
@@ -584,6 +587,8 @@ for x_value in x_values_apod:
         z_profiles=z_profiles_mm,
         cmap=str(plot_cfg.get("apod_cmap", "viridis")),
         hanning_apod=hanning_weights_np,
+        vmin=apod_vmin,
+        vmax=apod_vmax,
     )
 
 

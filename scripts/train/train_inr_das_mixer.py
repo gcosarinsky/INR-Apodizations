@@ -44,7 +44,10 @@ from inr_apodizations.modeling.das_models import (
 )
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from inr_apodizations.plots import plot_apodization_profiles_multichannel
+from inr_apodizations.plots import (
+    plot_apodization_maps_multichannel,
+    plot_apodization_profiles_by_x,
+)
 from inr_apodizations.training_console import get_console
 from inr_apodizations.utils import relative_mae
 
@@ -714,7 +717,7 @@ helpers.plot_das_comparison_db(
     baseline_name="Boxcar",
 )
 
-# Energy comparison and before/after apodization plots: one figure per channel.
+# Energy comparison and compact apodization plots.
 # weights_after_grid shape: (E, Z, X, N); weights_before_grid shape: (E, Z, X, N).
 weights_after_grid_np = weights_after_grid.numpy()
 weights_before_grid_np = weights_before_grid.numpy()
@@ -772,33 +775,28 @@ elif isinstance(z_profiles_cfg, (int, float)):
 else:
     z_profiles_mm = [float(z_val) for z_val in z_profiles_cfg]
 
-for ch_idx in range(n_apodizations):
-    apod_after_ch = weights_after_grid_np[..., ch_idx]   # (E, Z, X)
-    apod_before_ch = weights_before_grid_np[..., ch_idx]  # (E, Z, X)
-    for x_value in x_values_apod:
-        x_token = f"{x_value:.2f}".replace("-", "m").replace(".", "p")
-        helpers.plot_apodization_before_after(
-            cm=cm,
-            apod_before=apod_before_ch,
-            apod_after=apod_after_ch,
-            output_path=str(
-                apodization_dir / f"apodization_map_ch{ch_idx}_x_{x_token}.png"
-            ),
-            x_fixed=float(x_value),
-            z_profiles=z_profiles_mm,
-            cmap=str(plot_cfg.get("apod_cmap", "viridis")),
-            hanning_apod=None,
-        )
+apod_vmin = float(plot_cfg.get("apod_vmin", -1.0))
+apod_vmax = float(plot_cfg.get("apod_vmax", 1.0))
 
 for x_value in x_values_apod:
     x_token = f"{x_value:.2f}".replace("-", "m").replace(".", "p")
-    plot_apodization_profiles_multichannel(
+    plot_apodization_maps_multichannel(
         cm=cm,
         apod_after=weights_after_grid_np,
-        output_path=str(apodization_dir / f"apodization_profiles_all_channels_x_{x_token}.png"),
+        output_path=str(apodization_dir / f"apodization_maps_all_channels_x_{x_token}.png"),
         x_fixed=float(x_value),
-        z_profiles=z_profiles_mm,
+        cmap=str(plot_cfg.get("apod_cmap", "viridis")),
+        vmin=apod_vmin,
+        vmax=apod_vmax,
     )
+
+plot_apodization_profiles_by_x(
+    cm=cm,
+    apod_after=weights_after_grid_np,
+    output_path=str(apodization_dir / "apodization_profiles_all_channels_by_x.png"),
+    x_values=x_values_apod,
+    z_profiles=z_profiles_mm,
+)
 
 
 # ============================================================================
