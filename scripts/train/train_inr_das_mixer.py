@@ -37,7 +37,11 @@ from inr_apodizations.evaluation import (
     load_validation_scatterers,
 )
 from inr_apodizations.modeling.losses import PixelWeightedMAELoss
-from inr_apodizations.modeling.das_models import DasInrApodMixer, build_mlp_inr
+from inr_apodizations.modeling.das_models import (
+    DasInrApodMixer,
+    DasInrApodMixerBoxcarForced,
+    build_mlp_inr,
+)
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
 from inr_apodizations.plots import plot_apodization_profiles_multichannel
@@ -183,6 +187,13 @@ n_hidden_layers_raw = cfg["model"].get("n_hidden_layers")
 n_apodizations = int(cfg["model"].get("n_apodizations", 1))
 if n_apodizations <= 0:
     raise ValueError("model.n_apodizations must be > 0")
+forced_boxcar_cfg = dict(cfg["model"].get("forced_boxcar", {}))
+forced_boxcar_enabled = bool(forced_boxcar_cfg.get("enabled", False))
+forced_boxcar_f_number = float(
+    forced_boxcar_cfg.get("f_number", cfg["training"].get("baseline_f_number", 1.0))
+)
+forced_boxcar_epsilon = float(forced_boxcar_cfg.get("epsilon", 1e-8))
+forced_boxcar_q_feature_index = int(forced_boxcar_cfg.get("q_feature_index", 0))
 if resume_enabled:
     print(f"Resume enabled. Loading model from: {resume_model_path}")
     apodization_model = tf.keras.models.load_model(str(resume_model_path), compile=False)
@@ -222,29 +233,52 @@ lat_reg_auto_enabled = bool(lat_reg_auto_cfg.get("enabled", False))
 lat_reg_auto_ratio = float(lat_reg_auto_cfg.get("ratio", 0.1))
 lat_reg_auto_eps = float(lat_reg_auto_cfg.get("epsilon", 1e-12))
 
-trainer = DasInrApodMixer(
-    apodization_model=apodization_model,
-    features_grid=features_grid,
-    feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),
-    n_apodizations=n_apodizations,
-    weight_regularization_enabled=weight_reg_enabled,
-    weight_regularization_lambda=weight_reg_lambda,
-    weight_regularization_tau=weight_reg_tau,
-    weight_regularization_epsilon=weight_reg_epsilon,
-    weight_regularization_normalize=weight_reg_normalize,
-    lateral_regularization_enabled=lat_reg_enabled,
-    lateral_regularization_lambda=lat_reg_lambda,
-    lateral_regularization_q_power=lat_reg_q_power,
-    lateral_regularization_q_epsilon=lat_reg_q_epsilon,
-    lateral_regularization_q_abs_xrel_feature_index=lat_reg_abs_xrel_idx,
-    lateral_regularization_q_z_feature_index=lat_reg_z_idx,
-    lateral_regularization_normalize_by_uniform=lat_reg_normalize_by_uniform,
-    lateral_regularization_channel_reduction=lat_reg_channel_reduction,
-)
+if forced_boxcar_enabled:
+    weight_reg_enabled = False
+    lat_reg_enabled = False
+    console.warn(
+        "Forced boxcar is enabled: weight and lateral regularization are disabled at runtime."
+    )
+
+trainer_cls = DasInrApodMixerBoxcarForced if forced_boxcar_enabled else DasInrApodMixer
+trainer_kwargs = {
+    "apodization_model": apodization_model,
+    "features_grid": features_grid,
+    "feature_chunk_size": int(cfg["model"]["feature_chunk_size"]),
+    "n_apodizations": n_apodizations,
+    "weight_regularization_enabled": weight_reg_enabled,
+    "weight_regularization_lambda": weight_reg_lambda,
+    "weight_regularization_tau": weight_reg_tau,
+    "weight_regularization_epsilon": weight_reg_epsilon,
+    "weight_regularization_normalize": weight_reg_normalize,
+    "lateral_regularization_enabled": lat_reg_enabled,
+    "lateral_regularization_lambda": lat_reg_lambda,
+    "lateral_regularization_q_power": lat_reg_q_power,
+    "lateral_regularization_q_epsilon": lat_reg_q_epsilon,
+    "lateral_regularization_q_abs_xrel_feature_index": lat_reg_abs_xrel_idx,
+    "lateral_regularization_q_z_feature_index": lat_reg_z_idx,
+    "lateral_regularization_normalize_by_uniform": lat_reg_normalize_by_uniform,
+    "lateral_regularization_channel_reduction": lat_reg_channel_reduction,
+}
+if forced_boxcar_enabled:
+    trainer_kwargs.update(
+        {
+            "boxcar_f_number": forced_boxcar_f_number,
+            "boxcar_q_feature_index": forced_boxcar_q_feature_index,
+            "boxcar_epsilon": forced_boxcar_epsilon,
+        }
+    )
+trainer = trainer_cls(**trainer_kwargs)
 console.subsection("DasInrApodMixer configuration")
 console.pretty(
     {
         "n_apodizations": n_apodizations,
+        "forced_boxcar": {
+            "enabled": forced_boxcar_enabled,
+            "f_number": forced_boxcar_f_number,
+            "epsilon": forced_boxcar_epsilon,
+            "q_feature_index": forced_boxcar_q_feature_index,
+        },
         "weight_regularization": {
             "enabled": weight_reg_enabled,
             "type": resolved_weight_reg_type,
@@ -577,6 +611,12 @@ effective_cfg = {
     },
     "resolved_mixer": {
         "n_apodizations": n_apodizations,
+        "forced_boxcar": {
+            "enabled": forced_boxcar_enabled,
+            "f_number": forced_boxcar_f_number,
+            "epsilon": forced_boxcar_epsilon,
+            "q_feature_index": forced_boxcar_q_feature_index,
+        },
     },
     "resolved_weight_regularization": {
         "enabled": weight_reg_enabled,

@@ -46,6 +46,7 @@ from inr_apodizations.evaluation.io_utils import (
 from inr_apodizations.evaluation.profiles import compute_fwhm_batch, extract_reflector_profiles
 from inr_apodizations.kernels import KernelParameters2D
 from inr_apodizations.modeling.das_models import DasInrApodMixer
+from inr_apodizations.modeling.das_models import DasInrApodMixerBoxcarForced
 import inr_apodizations.experiment_helpers as helpers
 
 plt.ion()
@@ -122,6 +123,13 @@ if not bool(mixer_cfg.get("eval_combined", True)):
 
 model_file, combiner_weights_file, train_info_file, model_run_dir = resolve_mixer_artifacts(io_cfg.get("model_path", ""))
 scaled_features, n_apodizations, physical_feature_set, physical_feature_components = extract_mixer_train_metadata(train_info_file)
+train_info = load_config_yaml(train_info_file)
+resolved_mixer_cfg = train_info.get("resolved_mixer", {}) if isinstance(train_info, dict) else {}
+forced_boxcar_cfg = resolved_mixer_cfg.get("forced_boxcar", {}) if isinstance(resolved_mixer_cfg, dict) else {}
+forced_boxcar_enabled = bool(forced_boxcar_cfg.get("enabled", False))
+forced_boxcar_f_number = float(forced_boxcar_cfg.get("f_number", 1.0))
+forced_boxcar_epsilon = float(forced_boxcar_cfg.get("epsilon", 1e-8))
+forced_boxcar_q_feature_index = int(forced_boxcar_cfg.get("q_feature_index", 0))
 print("Using mixer run:", model_run_dir)
 print("Using model:", model_file)
 print("Using combiner weights:", combiner_weights_file)
@@ -159,13 +167,23 @@ kp, cm = _build_coordinate_manager(
 
 feature_chunk_size = int(mixer_cfg.get("feature_chunk_size", 65536))
 features_grid = cm.get_features_grid(scaled=scaled_features)
-mixer_model = DasInrApodMixer(
-    apodization_model=apodization_model,
-    features_grid=features_grid,
-    feature_chunk_size=feature_chunk_size,
-    n_apodizations=n_apodizations,
-    weight_regularization_enabled=False,
-)
+trainer_cls = DasInrApodMixerBoxcarForced if forced_boxcar_enabled else DasInrApodMixer
+trainer_kwargs = {
+    "apodization_model": apodization_model,
+    "features_grid": features_grid,
+    "feature_chunk_size": feature_chunk_size,
+    "n_apodizations": n_apodizations,
+    "weight_regularization_enabled": False,
+}
+if forced_boxcar_enabled:
+    trainer_kwargs.update(
+        {
+            "boxcar_f_number": forced_boxcar_f_number,
+            "boxcar_q_feature_index": forced_boxcar_q_feature_index,
+            "boxcar_epsilon": forced_boxcar_epsilon,
+        }
+    )
+mixer_model = trainer_cls(**trainer_kwargs)
 
 delayed_batch = tf.convert_to_tensor(np.expand_dims(delayed0, axis=0).astype(np.complex64))
 _warmup_image, _warmup_weights_grid = mixer_model.reconstruct_image(delayed_batch, training=False)

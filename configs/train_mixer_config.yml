@@ -12,8 +12,8 @@ target_regeneration:
 
 model:
   # Preferred convention: explicit ordered components (2 or 3 tokens).
-  # Allowed: z, x, abs_x, xrel, abs_xrel, dist_to_edge
-  physical_feature_components: [xrel, z, x]
+  # Allowed: z, x, abs_x, xrel, abs_xrel, xrel_over_z, x_over_z, z_norm, dist_to_edge
+  physical_feature_components: [xrel_over_z, x_over_z, z_norm]
   # Legacy fallback (deprecated):
   # physical_feature_set: distance_depth_edge
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
@@ -28,7 +28,15 @@ model:
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
-  n_apodizations: 3
+  n_apodizations: 2
+  forced_boxcar:
+    enabled: true
+    # f_number: global dynamic-aperture f-number used to derive the boxcar threshold.
+    f_number: 0.5
+    # boxcar boundary tolerance used only for the hard threshold comparison.
+    epsilon: 1.0e-8
+    # q_feature_index: index of the adimensional q feature. Default assumes xrel_over_z.
+    q_feature_index: 0
 
 eval_noise:
   enabled: false
