@@ -19,7 +19,7 @@ model:
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
-  hidden_units: [8, 8]
+  hidden_units: [8, 8, 8]
   n_hidden_layers: 4
   activation: relu
   output_activation: tanh

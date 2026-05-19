@@ -39,7 +39,7 @@ from inr_apodizations.evaluation import (
 from inr_apodizations.modeling.losses import PixelWeightedMAELoss
 from inr_apodizations.modeling.das_models import (
     DasInrApodMixer,
-    DasInrApodMixerBoxcarForced,
+    build_masked_mlp_inr,
     build_mlp_inr,
 )
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
@@ -198,14 +198,28 @@ if resume_enabled:
     print(f"Resume enabled. Loading model from: {resume_model_path}")
     apodization_model = tf.keras.models.load_model(str(resume_model_path), compile=False)
 else:
-    apodization_model = build_mlp_inr(
-        input_dim=cm.n_physical_features,
-        hidden_units_config=hidden_units_raw,
-        n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
-        activation=cfg["model"]["activation"],
-        output_activation=output_activation,
-        n_apodizations=n_apodizations,
-    )
+    if forced_boxcar_enabled:
+        apodization_model = build_masked_mlp_inr(
+            input_dim=cm.n_physical_features,
+            hidden_units_config=hidden_units_raw,
+            n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
+            activation=cfg["model"]["activation"],
+            output_activation=output_activation,
+            n_apodizations=n_apodizations,
+            mask_mode="boxcar",
+            mask_feature_index=forced_boxcar_q_feature_index,
+            mask_threshold=1.0 / (2.0 * forced_boxcar_f_number),
+            mask_epsilon=forced_boxcar_epsilon,
+        )
+    else:
+        apodization_model = build_mlp_inr(
+            input_dim=cm.n_physical_features,
+            hidden_units_config=hidden_units_raw,
+            n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
+            activation=cfg["model"]["activation"],
+            output_activation=output_activation,
+            n_apodizations=n_apodizations,
+        )
 weight_reg_resolved = helpers.parse_weight_regularization_config(cfg)
 weight_reg_enabled = bool(weight_reg_resolved["enabled"])
 weight_reg_lambda = float(weight_reg_resolved["lambda"])
@@ -240,7 +254,6 @@ if forced_boxcar_enabled:
         "Forced boxcar is enabled: weight and lateral regularization are disabled at runtime."
     )
 
-trainer_cls = DasInrApodMixerBoxcarForced if forced_boxcar_enabled else DasInrApodMixer
 trainer_kwargs = {
     "apodization_model": apodization_model,
     "features_grid": features_grid,
@@ -260,15 +273,7 @@ trainer_kwargs = {
     "lateral_regularization_normalize_by_uniform": lat_reg_normalize_by_uniform,
     "lateral_regularization_channel_reduction": lat_reg_channel_reduction,
 }
-if forced_boxcar_enabled:
-    trainer_kwargs.update(
-        {
-            "boxcar_f_number": forced_boxcar_f_number,
-            "boxcar_q_feature_index": forced_boxcar_q_feature_index,
-            "boxcar_epsilon": forced_boxcar_epsilon,
-        }
-    )
-trainer = trainer_cls(**trainer_kwargs)
+trainer = DasInrApodMixer(**trainer_kwargs)
 console.subsection("DasInrApodMixer configuration")
 console.pretty(
     {

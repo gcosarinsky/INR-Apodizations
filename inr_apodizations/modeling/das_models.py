@@ -10,6 +10,87 @@ import numpy as np
 import tensorflow as tf
 
 
+@tf.keras.utils.register_keras_serializable(package="INRApodizations")
+class FeatureDrivenOutputMask(tf.keras.layers.Layer):
+    """Apply a deterministic output mask derived from the input features.
+
+    The layer is intended to sit after a base INR and before the downstream
+    consumer. It currently supports a hard boxcar mask computed from a selected
+    feature channel.
+    """
+
+    def __init__(
+        self,
+        mask_mode: str = "boxcar",
+        feature_index: int = 0,
+        threshold: float = 0.5,
+        epsilon: float = 1e-8,
+        output_channels: int = 1,
+        **kwargs,
+    ):
+        """Initialize the feature-driven mask layer.
+
+        Args:
+            mask_mode: Mask family. Currently only ``"boxcar"`` is supported.
+            feature_index: Input feature index used to derive the mask.
+            threshold: Absolute threshold used by the hard boxcar mask.
+            epsilon: Numerical tolerance for the threshold comparison.
+            output_channels: Number of output channels to broadcast the mask to.
+            **kwargs: Forwarded to the base Keras layer.
+
+        Raises:
+            ValueError: If the configuration is invalid.
+        """
+        super().__init__(**kwargs)
+        self.mask_mode = str(mask_mode).lower().strip()
+        self.feature_index = int(feature_index)
+        self.threshold = float(threshold)
+        self.epsilon = float(epsilon)
+        self.output_channels = int(output_channels)
+
+        if self.mask_mode != "boxcar":
+            raise ValueError("mask_mode must be 'boxcar'")
+        if self.feature_index < 0:
+            raise ValueError("feature_index must be >= 0")
+        if self.threshold < 0.0:
+            raise ValueError("threshold must be >= 0")
+        if self.epsilon <= 0.0:
+            raise ValueError("epsilon must be > 0")
+        if self.output_channels <= 0:
+            raise ValueError("output_channels must be > 0")
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Return a broadcastable hard mask for the selected feature.
+
+        Args:
+            inputs: Feature tensor with shape ``(batch, F)`` or ``(..., F)``.
+
+        Returns:
+            Mask tensor with the same leading dimensions as ``inputs`` and the
+            last dimension broadcast to ``output_channels``.
+        """
+        feature = tf.cast(inputs[..., self.feature_index], tf.float32)
+        mask = tf.cast(tf.abs(feature) <= (self.threshold + self.epsilon), tf.float32)
+        mask = mask[..., tf.newaxis]
+        if self.output_channels != 1:
+            mask = tf.repeat(mask, repeats=self.output_channels, axis=-1)
+        return mask
+
+    def get_config(self) -> dict[str, object]:
+        """Return the serializable layer configuration."""
+        config = super().get_config()
+        config.update(
+            {
+                "mask_mode": self.mask_mode,
+                "feature_index": self.feature_index,
+                "threshold": self.threshold,
+                "epsilon": self.epsilon,
+                "output_channels": self.output_channels,
+            }
+        )
+        return config
+
+
 class BaseApodizationRegularizer:
     """Abstract contract for apodization regularizers.
 
@@ -1091,3 +1172,54 @@ def build_mlp_inr(
     )(x)
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="inr_mlp")
     return model
+
+
+def build_masked_mlp_inr(
+    input_dim: int,
+    hidden_units_config: int | float | list | tuple,
+    n_hidden_layers: int | None = None,
+    activation: str = "relu",
+    output_activation: str = "sigmoid",
+    n_apodizations: int = 1,
+    mask_mode: str = "boxcar",
+    mask_feature_index: int = 0,
+    mask_threshold: float = 0.5,
+    mask_epsilon: float = 1e-8,
+) -> tf.keras.Model:
+    """Build an INR whose outputs are multiplied by a deterministic feature mask.
+
+    Args:
+        input_dim: Number of input features.
+        hidden_units_config: Hidden layer size specification for the base MLP.
+        n_hidden_layers: Number of hidden layers when using an integer size.
+        activation: Activation function for hidden layers.
+        output_activation: Activation function for the base output layer.
+        n_apodizations: Number of output apodization channels.
+        mask_mode: Output mask family. Currently only ``"boxcar"``.
+        mask_feature_index: Input feature index used to derive the mask.
+        mask_threshold: Threshold used by the hard boxcar mask.
+        mask_epsilon: Numerical tolerance for the mask boundary.
+
+    Returns:
+        Keras model with the same input interface as :func:`build_mlp_inr`.
+    """
+    inputs = tf.keras.Input(shape=(input_dim,), name="coords")
+    base_model = build_mlp_inr(
+        input_dim=input_dim,
+        hidden_units_config=hidden_units_config,
+        n_hidden_layers=n_hidden_layers,
+        activation=activation,
+        output_activation=output_activation,
+        n_apodizations=n_apodizations,
+    )
+    base_outputs = base_model(inputs)
+    output_mask = FeatureDrivenOutputMask(
+        mask_mode=mask_mode,
+        feature_index=mask_feature_index,
+        threshold=mask_threshold,
+        epsilon=mask_epsilon,
+        output_channels=int(n_apodizations),
+        name="feature_driven_output_mask",
+    )(inputs)
+    masked_outputs = tf.keras.layers.Multiply(name="masked_weight_out")([base_outputs, output_mask])
+    return tf.keras.Model(inputs=inputs, outputs=masked_outputs, name="masked_inr_mlp")
