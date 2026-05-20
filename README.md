@@ -1,113 +1,48 @@
 # INR-Apodizations
 
-> **Work in progress** — this README is provisional.
+Apodization functions for ultrasound beamforming learned with Implicit Neural
+Representations (INR).
 
-Apodization functions for ultrasound beamforming learned with **Implicit Neural Representations (INR)**.
-
-In phased-array ultrasound imaging, apodization weights are applied across transducer elements to reduce side-lobes and improve lateral resolution. This project explores replacing hand-crafted apodization windows (Hanning, Tukey, …) with a small neural network that learns to predict per-element weights as a continuous function of the imaging geometry.
-
----
+In phased-array ultrasound imaging, apodization weights are applied across
+transducer elements to reduce side-lobes and improve lateral resolution. This
+project explores replacing hand-crafted windows (Hanning, Tukey, and others)
+with neural models that predict per-element weights from imaging geometry.
 
 ## Background
 
-**Delay-and-Sum (DAS)** is the standard beamforming algorithm: for every image pixel, each element's received echo is time-shifted to compensate for the travel distance, and then summed. Applying *apodization* weights before the sum controls the trade-off between main-lobe width (resolution) and side-lobe level (contrast).
+Delay-and-Sum (DAS) is the standard beamforming algorithm: for each image
+pixel, each element signal is time-shifted and summed. Apodization weights
+control the trade-off between main-lobe width (resolution) and side-lobe level
+(contrast).
 
-An **Implicit Neural Representation** is a network $f_\theta(\mathbf{x}) \to w$ that maps spatial coordinates $\mathbf{x}$ (lateral position, depth, element position) directly to a scalar weight. Training on simulated RF data allows the network to learn geometry-aware apodizations that outperform fixed analytical windows.
+An INR model learns a continuous mapping from geometry features to a scalar
+apodization weight:
 
----
+$$
+f_\theta(\mathbf{x}) \to w
+$$
 
-## Pipeline overview
+where $\mathbf{x}$ includes spatial and element-related coordinates.
 
-```
+## End-to-end pipeline
+
+```text
 configs/rf_dataset_simus.yml
-         │
-         ▼
-scripts/generate_rf_dataset_simus.py   ──►  data/rf_dataset_simus/<timestamp>/
-         │                                      rf.npy  scatterers.npy  config_rf_info.yml
-         │
-configs/delayed_samples_dataset.yml
-         │
-         ▼
-scripts/create_delayed_samples_dataset.py  ──►  data/delayed_samples_dataset/<timestamp>/
-                                                    delayed_samples_dataset.npy
-                                                    targets_dataset.npy
-                                                    cfg_delayed_samples.npy
-         │
-         ▼
-   (INR training — in progress)
-         │
-         ▼
-sandbox/inr_das_experiment/evaluation/das_standard_apodizations.py    ──►  Baseline DAS + classical apodizations
+            -> scripts/generate_rf_dataset_simus.py
+            -> data/rf_dataset_simus/<timestamp>/
+
+configs/delayed_samples_dataset.yml (rf_dataset_name = previous timestamp)
+            -> scripts/create_delayed_samples_dataset.py
+            -> data/delayed_samples_dataset/<timestamp>/
+
+configs/train_mixer_config.yml
+            -> scripts/train/train_inr_das_mixer.py
+            -> scripts/outputs/train/<timestamp>/
+
+evaluation configs + trained artifacts
+            -> scripts/evaluation/*.py and scripts/evaluation/numeric_phantom/*.py
+            -> scripts/outputs/evaluation/<...>/
 ```
-
-**Step 1 — RF simulation** (`generate_rf_dataset_simus.py`):  
-Simulates plane-wave acquisitions (multi-angle) using [PyMUST](https://www.biomecardio.com/MUST/). Generates raw RF signals for random point-scatterer phantoms.
-
-**Step 2 — Delayed samples** (`create_delayed_samples_dataset.py`):  
-Applies per-angle, per-element time delays using a custom CUDA kernel, producing complex-envelope *delayed samples* ready for summation. Also generates Gaussian-blob regression targets centred on each scatterer.
-
-**Step 3 — INR training** *(in progress)*:  
-A TensorFlow MLP is trained on the delayed samples to predict apodization weights as a function of imaging coordinates (`CoordinateManager` provides the input features).
-
-**Step 4 — Evaluation** (`sandbox/inr_das_experiment/evaluation/das_standard_apodizations.py`):  
-Reconstructs images using uniform DAS and several classical apodization windows (Hanning, Tukey, …) as baselines for comparison.
-
----
-
-## Repository structure
-
-```
-INR-Apodizations/
-├── configs/                        # YAML configuration files (no hard-coded parameters)
-│   ├── rf_dataset_simus.yml
-│   ├── delayed_samples_dataset.yml
-│   └── das_standard_apodizations.yml
-├── data/
-│   ├── rf_dataset_simus/           # Simulated RF data (per-run timestamped folders)
-│   └── delayed_samples_dataset/    # Delayed + target arrays
-├── docs/
-│   └── architecture.md             # Mermaid architecture diagram
-├── inr_apodizations/               # Main Python package
-│   ├── config.py                   # Global paths and logging
-│   ├── coordinate_manager.py       # Input-feature generation for the INR
-│   ├── apodizations.py             # Classical and dynamic apodization functions
-│   ├── dataset.py                  # Target generation utilities
-│   ├── features.py                 # Feature engineering helpers
-│   ├── utils.py                    # Config conversion and persistence utilities
-│   ├── hilbert_coef.py             # Hilbert / analytic-signal FIR coefficients
-│   ├── plots.py                    # Visualization helpers
-│   ├── kernels/
-│   │   ├── parameters.py           # KernelParameters2D/3D contract
-│   │   └── bf_cuda_kernels/        # CUDA/C beamforming kernels
-│   └── modeling/
-│       ├── train.py                # INR training (stub)
-│       └── predict.py              # INR inference (stub)
-├── scripts/                        # Executable pipeline scripts
-├── sandbox/                        # Quick exploration / smoke tests
-├── models/                         # Saved model weights
-├── reports/figures/                # Generated figures
-└── pyproject.toml
-```
-
----
-
-## Requirements
-
-| Dependency | Version / note |
-|---|---|
-| Python | 3.10 |
-| TensorFlow | 2.10 (GPU) |
-| CuPy | `cupy-cuda11x` |
-| CUDA toolkit | 11.8 |
-| cuDNN | 8.9 |
-| NumPy | 1.26 |
-| PyMUST | via conda-forge |
-| SciPy, Matplotlib, loguru, typer, tqdm, PyYAML | latest compatible |
-
-A GPU is required for the delayed-samples pipeline and for INR training.
-
-**NOTE: It is necessary to review if it is really required to choose those versions of TensorFlow, CuPy, etc. to ensure compatibility.**
----
 
 ## Environment setup
 
@@ -116,58 +51,181 @@ conda env create -f environment.yml
 conda activate inr-apodizations
 ```
 
-To verify the GPU environment (TensorFlow + CuPy):
+Validate TensorFlow + CuPy GPU availability:
 
 ```bash
 python scripts/verify_env.py
 ```
 
----
-
-## Running the pipeline
+## Quickstart
 
 ### 1. Generate RF dataset
 
-Edit `configs/rf_dataset_simus.yml` as needed, then:
+Configure [configs/rf_dataset_simus.yml](configs/rf_dataset_simus.yml), then run:
 
 ```bash
 python scripts/generate_rf_dataset_simus.py
 ```
 
-Output is saved to `data/rf_dataset_simus/<timestamp>/`.
+Outputs are written to `data/rf_dataset_simus/<timestamp>/`.
 
-### 2. Compute delayed samples
+### 2. Build delayed-samples dataset
 
-Set `rf_dataset_name` in `configs/delayed_samples_dataset.yml` to the timestamp produced in step 1, then:
+Set `rf_dataset_name` in [configs/delayed_samples_dataset.yml](configs/delayed_samples_dataset.yml)
+to the RF timestamp from step 1, then run:
 
 ```bash
 python scripts/create_delayed_samples_dataset.py
 ```
 
-Output is saved to `data/delayed_samples_dataset/<timestamp>/`.
+Outputs are written to `data/delayed_samples_dataset/<timestamp>/`.
 
-### 3. Baseline DAS visualisation
+### 3. Train INR (primary workflow: mixer)
+
+Configure [configs/train_mixer_config.yml](configs/train_mixer_config.yml), especially
+dataset path and training hyperparameters, then run:
 
 ```bash
-python sandbox/inr_das_experiment/evaluation/das_standard_apodizations.py
+python scripts/train/train_inr_das_mixer.py
 ```
 
-Reads the latest delayed-samples dataset and produces comparison figures for uniform DAS and classical apodizations.
+Main artifacts are stored in `scripts/outputs/train/<timestamp>/`.
 
----
+Optional baseline training path (single-apodization):
 
-## Configuration
+```bash
+python scripts/train/train_inr_das_by_indices.py
+```
 
-All runtime parameters live in YAML files under `configs/`. No parameters are hard-coded in scripts.
+### 4. Evaluate and benchmark
 
-Key fields in `rf_dataset_simus.yml`: probe geometry, acquisition angles, speed of sound, dataset size.  
-Key fields in `delayed_samples_dataset.yml`: reference RF dataset name, bandpass filter, f-number, image grid, CUDA block sizes, target PSF sigmas.
+Baseline classical apodizations:
 
----
+```bash
+python scripts/evaluation/das_standard_apodizations.py
+```
+
+Validation baseline metrics and references for training comparisons:
+
+```bash
+python scripts/evaluation/evaluate_baseline_apodizations.py
+```
+
+Apodization profile FFT analysis:
+
+```bash
+python scripts/evaluation/evaluate_apodization_profile_fft.py
+```
+
+Numeric phantom suite:
+
+```bash
+python scripts/evaluation/numeric_phantom/generate_evaluation_simulation.py
+python scripts/evaluation/numeric_phantom/evaluate_apodizations.py
+python scripts/evaluation/numeric_phantom/evaluate_mixer.py
+python scripts/evaluation/numeric_phantom/compare_inr_models.py
+```
+
+## Configuration reference
+
+All runtime parameters are defined in YAML files under [configs](configs). Scripts
+are expected to consume configuration files instead of hardcoded execution
+parameters.
+
+| Config file | Purpose |
+|---|---|
+| [configs/rf_dataset_simus.yml](configs/rf_dataset_simus.yml) | RF simulation dataset generation (phantom, probe, acquisition). |
+| [configs/delayed_samples_dataset.yml](configs/delayed_samples_dataset.yml) | Delayed-samples generation from an existing RF dataset. |
+| [configs/train_config.yml](configs/train_config.yml) | Single-apodization INR training and related evaluation options. |
+| [configs/train_mixer_config.yml](configs/train_mixer_config.yml) | Mixer training workflow (primary training path). |
+| [configs/tune_config.yml](configs/tune_config.yml) | Hyperparameter tuning configuration. |
+| [configs/tune_inr_das_manual.yml](configs/tune_inr_das_manual.yml) | Manual tuning experiments. |
+| [configs/das_standard_apodizations.yml](configs/das_standard_apodizations.yml) | Classical DAS apodization visualization/evaluation script settings. |
+| [configs/apodization_fft_profiles.yml](configs/apodization_fft_profiles.yml) | FFT profile analysis for apodization comparisons. |
+| [configs/numeric_phantom_evaluation_config.yml](configs/numeric_phantom_evaluation_config.yml) | Numeric phantom evaluation for baseline/single-model scenarios. |
+| [configs/numeric_phantom_evaluation_mixer_config.yml](configs/numeric_phantom_evaluation_mixer_config.yml) | Numeric phantom evaluation for mixer-based models. |
+| [configs/picmus_beamforming.yml](configs/picmus_beamforming.yml) | PICMUS beamforming workflow configuration. |
+
+## Makefile shortcuts
+
+Useful targets from [Makefile](Makefile):
+
+```bash
+make create_environment
+make requirements
+make lint
+make format
+make run-delayed-samples
+make run-phantom-eval
+make run-fft-profile-eval
+make help
+```
+
+## Repository structure
+
+```text
+INR-Apodizations/
+|- configs/
+|- data/
+|  |- rf_dataset_simus/
+|  |- delayed_samples_dataset/
+|  |- raw/ interim/ processed/ external/
+|- docs/
+|  |- architecture.md
+|- inr_apodizations/
+|  |- config.py
+|  |- coordinate_manager.py
+|  |- apodizations.py
+|  |- dataset.py
+|  |- features.py
+|  |- plots.py
+|  |- training_console.py
+|  |- interactive_navigator.py
+|  |- utils.py
+|  |- evaluation/
+|  |- experiment_helpers/
+|  |- kernels/
+|  |  |- parameters.py
+|  |  |- bf_cuda_kernels/
+|  |- modeling/
+|     |- das_models.py
+|     |- losses.py
+|     |- metrics.py
+|     |- train.py
+|     |- predict.py
+|- scripts/
+|  |- generate_rf_dataset_simus.py
+|  |- create_delayed_samples_dataset.py
+|  |- verify_env.py
+|  |- train/
+|  |- evaluation/
+|  |- picmus/
+|- models/
+|- notebooks/
+|- reports/
+|- sandbox/
+|- pyproject.toml
+|- environment.yml
+```
+
+## Requirements and compatibility notes
+
+- Python 3.10 is required.
+- GPU acceleration is required for heavy delayed-samples and training workflows.
+- Environment dependencies are defined in [environment.yml](environment.yml).
+- If you change TensorFlow/CuPy/CUDA versions, validate compatibility first with
+      [scripts/verify_env.py](scripts/verify_env.py).
+
+## Operational notes
+
+- Some scripts can require a display backend due to matplotlib interactive
+      plotting. In headless environments, adapt backend or disable interactive
+      display.
+- RF and delayed-samples arrays can be large. Check dataset dimensions and GPU
+      memory before increasing batch size or image grid size.
 
 ## Code style
 
-- **Linter**: [ruff](https://docs.astral.sh/ruff/) (`line-length = 99`, import sorting enabled).
-- **Docstrings**: English, NumPy/Google style for public functions.
-- Run checks with `ruff check .` from the project root.
+- Linter and formatter: Ruff (line length 99, import sorting enabled).
+- Docstrings: English for new or modified public functions/classes.
 
