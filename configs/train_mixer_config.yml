@@ -12,8 +12,12 @@ target_regeneration:
 
 model:
   # Preferred convention: explicit ordered components (2 or 3 tokens).
-  # Allowed: z, x, abs_x, xrel, abs_xrel, xrel_over_z, x_over_z, z_norm, dist_to_edge
-  physical_feature_components: [xrel_over_z, x_over_z, z_norm]
+  # Allowed: z, x, abs_x, xrel, abs_xrel, xrel_over_z, x_over_z, z_norm, dist_to_edge, abs_xrel_over_z, abs_x_over_z, xrel_x_over_z2
+  physical_feature_components:
+    - abs_xrel_over_z
+    - abs_x_over_z
+    - z
+    - xrel_x_over_z2
   # Legacy fallback (deprecated):
   # physical_feature_set: distance_depth_edge
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
@@ -24,18 +28,20 @@ model:
   activation: relu
   output_activation: tanh
   scaled_features: true
-  feature_chunk_size: 8192
+  feature_chunk_size: 65536
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
   n_apodizations: 2
+
   symmetry:
     # If enabled, enforce per-channel symmetry with a_sym(f) = a(f) + a(f_flip).
     # f_flip inverts signed coordinate-like features (x, xrel, x_over_z, xrel_over_z).
-    enabled: true
+    enabled: false
     # Optional ordered override for feature-component names used to build f_flip.
     # If null, the script uses CoordinateManager.physical_feature_names.
     feature_components_override: null
+
   forced_boxcar:
     enabled: true
     # f_number: global dynamic-aperture f-number used to derive the boxcar threshold.
@@ -50,14 +56,15 @@ eval_noise:
   scale: 1.0
 
 training:
-  batch_size: 1
+  batch_size: 2
   epochs: 15
   learning_rate: 0.001
   loss: mae
   metric: mae
   weight_decay: 0.001
+
   weight_regularization:
-    enabled: true
+    enabled: false
     # type: regularization type applied to the apodization norm.
     # "hinge_low_norm": squared hinge penalty when global Euclidean norm < tau.
     type: hinge_low_norm
@@ -76,8 +83,9 @@ training:
       # norm_fraction: reference norm = norm_fraction * tau (hypothetical violation point).
       norm_fraction: 0.8
       epsilon: 1.0e-12
+
   lateral_regularization:
-    enabled: true
+    enabled: false
     # lambda: multiplicative factor for the lateral regularization loss.
     # If auto_init.enabled=true, this value is overridden automatically.
     lambda: 0.0
@@ -102,6 +110,7 @@ training:
       ratio: 0.2
       # epsilon: safety floor for division during lambda estimation.
       epsilon: 1.0e-12
+
   mae_db_ref: null
   mae_db_eps: 1.0e-8
   baseline_f_number: 0.5
