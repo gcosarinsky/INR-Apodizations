@@ -13,6 +13,9 @@ ALLOWED_PHYSICAL_FEATURE_COMPONENTS = (
     "x_over_z",
     "z_norm",
     "dist_to_edge",
+    "abs_xrel_over_z",
+    "abs_x_over_z",
+    "xrel_x_over_z2",
 )
 
 LEGACY_FEATURE_SET_TO_COMPONENTS = {
@@ -39,6 +42,9 @@ class CoordinateManager:
             - 'x_over_z': x / z
             - 'z_norm': z / z_ref
             - 'dist_to_edge': D/2 - |x| (legacy-compatible)
+            - 'abs_xrel_over_z': |x - x_elem| / z
+            - 'abs_x_over_z': |x| / z  (assumes x_center = 0, which is always the case in this project)
+            - 'xrel_x_over_z2': (x - x_elem) * x / z^2  (= xrel_over_z * x_over_z; invariant under simultaneous sign flip of x and xrel)
 
     Scaling: all coordinates are scaled by dividing by D (array aperture)
 
@@ -63,7 +69,8 @@ class CoordinateManager:
             physical_feature_set: Legacy physical feature preset.
             physical_feature_components: Optional ordered feature token list.
                 Allowed tokens: ('z', 'x', 'abs_x', 'xrel', 'abs_xrel', 'xrel_over_z',
-                'x_over_z', 'z_norm', 'dist_to_edge').
+                'x_over_z', 'z_norm', 'dist_to_edge', 'abs_xrel_over_z', 'abs_x_over_z',
+                'xrel_x_over_z2').
                 If provided, this takes precedence over `physical_feature_set`.
             z_ref: Depth normalization reference used by the `z_norm` feature.
                 If None, defaults to the probe aperture D.
@@ -144,9 +151,9 @@ class CoordinateManager:
                 )
 
             resolved = tuple(str(token).strip() for token in physical_feature_components)
-            if len(resolved) not in (2, 3):
+            if len(resolved) < 1:
                 raise ValueError(
-                    "physical_feature_components must contain exactly 2 or 3 tokens"
+                    "physical_feature_components must contain at least 1 token"
                 )
             if len(set(resolved)) != len(resolved):
                 raise ValueError("physical_feature_components cannot contain duplicate tokens")
@@ -240,6 +247,19 @@ class CoordinateManager:
             )
         if token == "dist_to_edge":
             return tf.broadcast_to(self.D_half - tf.abs(x_grid - self.x_center), [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel_over_z":
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid - x_elem_grid) / z_safe, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x_over_z":
+            # Assumes x_center = 0 (symmetric array), so |x - x_center| = |x|.
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid) / z_safe, [self.n_elem, self.nz, self.nx])
+        if token == "xrel_x_over_z2":
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(
+                (x_grid - x_elem_grid) * x_grid / (z_safe * z_safe),
+                [self.n_elem, self.nz, self.nx],
+            )
         raise ValueError(f"Unsupported physical feature token: {token}")
 
     def _component_tensor_scaled(self, token, x_grid_mm, z_grid_scaled, x_elem_grid_mm):
@@ -275,6 +295,19 @@ class CoordinateManager:
         if token == "dist_to_edge":
             dist_to_edge_scaled = (self.D_half - tf.abs(x_grid_mm - self.x_center)) / self.D
             return tf.broadcast_to(dist_to_edge_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel_over_z":
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid_mm - x_elem_grid_mm) / z_mm, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x_over_z":
+            # Assumes x_center = 0 (symmetric array), so |x - x_center| = |x|.
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid_mm) / z_mm, [self.n_elem, self.nz, self.nx])
+        if token == "xrel_x_over_z2":
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(
+                (x_grid_mm - x_elem_grid_mm) * x_grid_mm / (z_mm * z_mm),
+                [self.n_elem, self.nz, self.nx],
+            )
         raise ValueError(f"Unsupported physical feature token: {token}")
 
     # ========================================================================

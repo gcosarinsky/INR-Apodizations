@@ -771,38 +771,73 @@ class DasInrApod(tf.keras.Model):
 
         self._regularization_engine = _RegularizationEngine(_regularizers)
 
-        self.reg_loss_tracker = tf.keras.metrics.Mean(name="reg_loss")
+        # Prepare tracker registry only for enabled regularizers. If a
+        # regularizer is disabled, the corresponding tracker attribute is set
+        # to None to avoid accidental exposure to Keras or updates.
+        self._tracker_registry: dict[str, tf.keras.metrics.Metric] = {}
+
         norm_metric_name = "w_norm_normalized" if self.weight_regularization_normalize else "w_norm"
-        self.w_norm_tracker = tf.keras.metrics.Mean(name=norm_metric_name)
-        self.reg_active_rate_tracker = tf.keras.metrics.Mean(name="reg_active_rate")
-        self.lateral_reg_loss_tracker = tf.keras.metrics.Mean(name="lateral_reg_loss")
-        self.lateral_reg_raw_tracker = tf.keras.metrics.Mean(name="lateral_reg_raw")
-        self.lateral_reg_scaled_tracker = tf.keras.metrics.Mean(name="lateral_reg_scaled")
-        self.lateral_q_mean_tracker = tf.keras.metrics.Mean(name="lateral_q_mean")
-        self._tracker_registry: dict[str, tf.keras.metrics.Metric] = {
-            "reg_loss": self.reg_loss_tracker,
-            norm_metric_name: self.w_norm_tracker,
-            "reg_active_rate": self.reg_active_rate_tracker,
-            "lateral_reg_loss": self.lateral_reg_loss_tracker,
-            "lateral_reg_raw": self.lateral_reg_raw_tracker,
-            "lateral_reg_scaled": self.lateral_reg_scaled_tracker,
-            "lateral_q_mean": self.lateral_q_mean_tracker,
-        }
+
+        if self.weight_regularization_enabled:
+            self.reg_loss_tracker = tf.keras.metrics.Mean(name="reg_loss")
+            self.w_norm_tracker = tf.keras.metrics.Mean(name=norm_metric_name)
+            self.reg_active_rate_tracker = tf.keras.metrics.Mean(name="reg_active_rate")
+            self._tracker_registry.update(
+                {
+                    "reg_loss": self.reg_loss_tracker,
+                    norm_metric_name: self.w_norm_tracker,
+                    "reg_active_rate": self.reg_active_rate_tracker,
+                }
+            )
+        else:
+            self.reg_loss_tracker = None
+            self.w_norm_tracker = None
+            self.reg_active_rate_tracker = None
+
+        if self.lateral_regularization_enabled:
+            self.lateral_reg_loss_tracker = tf.keras.metrics.Mean(name="lateral_reg_loss")
+            self.lateral_reg_raw_tracker = tf.keras.metrics.Mean(name="lateral_reg_raw")
+            self.lateral_reg_scaled_tracker = tf.keras.metrics.Mean(name="lateral_reg_scaled")
+            self.lateral_q_mean_tracker = tf.keras.metrics.Mean(name="lateral_q_mean")
+            self._tracker_registry.update(
+                {
+                    "lateral_reg_loss": self.lateral_reg_loss_tracker,
+                    "lateral_reg_raw": self.lateral_reg_raw_tracker,
+                    "lateral_reg_scaled": self.lateral_reg_scaled_tracker,
+                    "lateral_q_mean": self.lateral_q_mean_tracker,
+                }
+            )
+        else:
+            self.lateral_reg_loss_tracker = None
+            self.lateral_reg_raw_tracker = None
+            self.lateral_reg_scaled_tracker = None
+            self.lateral_q_mean_tracker = None
 
     @property
     def metrics(self):
         """Return Keras metrics including custom regularization trackers."""
         base_metrics = super().metrics
         base_names = {metric.name for metric in base_metrics}
-        extra_metrics = [
-            self.reg_loss_tracker,
-            self.w_norm_tracker,
-            self.reg_active_rate_tracker,
-            self.lateral_reg_loss_tracker,
-            self.lateral_reg_raw_tracker,
-            self.lateral_reg_scaled_tracker,
-            self.lateral_q_mean_tracker,
-        ]
+
+        extra_metrics: list[tf.keras.metrics.Metric] = []
+
+        # Include weight-regularization trackers only when enabled
+        if self.weight_regularization_enabled:
+            extra_metrics.extend([
+                self.reg_loss_tracker,
+                self.w_norm_tracker,
+                self.reg_active_rate_tracker,
+            ])
+
+        # Include lateral-regularization trackers only when enabled
+        if self.lateral_regularization_enabled:
+            extra_metrics.extend([
+                self.lateral_reg_loss_tracker,
+                self.lateral_reg_raw_tracker,
+                self.lateral_reg_scaled_tracker,
+                self.lateral_q_mean_tracker,
+            ])
+
         for metric in extra_metrics:
             if metric.name not in base_names:
                 base_metrics.append(metric)
