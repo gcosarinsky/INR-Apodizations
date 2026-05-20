@@ -47,6 +47,7 @@ from ._dataset_io import (
 from ._config import (
     get_target_regeneration_override,
     load_experiment_config,
+    parse_lateral_regularization_config,
     parse_resume_config,
     parse_weight_regularization_config,
     setup_resume_state,
@@ -88,6 +89,8 @@ from inr_apodizations.evaluation.scatterers import (
     plot_scatterer_snr_ratio,
 )
 from inr_apodizations.plots import (
+    plot_apodization_maps_multichannel,
+    plot_apodization_profiles_by_x,
     plot_apodization_before_after,
     plot_das_comparison_db,
     plot_training_curves,

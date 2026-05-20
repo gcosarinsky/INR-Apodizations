@@ -224,14 +224,11 @@ def plot_training_curves(
             (normalize_by=y_true) to overlay on the relative_mae_y_true figure.
             Allowed keys: ``hanning``.
         weight_reg_lambda: Optional regularization lambda value. When provided,
-            it is shown in the title of the regularization loss subplot of the
-            combined figure ``training_history_loss_combined.png``.
+            it is shown in the title of the separate regularization-loss figure.
 
         Output policy:
-        - Loss metrics are plotted without ``reg_loss``.
+        - The main loss figure plots only ``loss`` and ``val_loss``.
         - ``reg_loss`` is plotted in its own separate figure.
-        - A combined figure (``loss_combined``) with two subplots is also
-            generated: top=loss, bottom=reg_loss.
         - Relative MAE metrics are split into separate figures for
             ``normalize_by=y_pred`` and ``normalize_by=y_true``.
         - Regularization metrics are saved in separate figures, one metric per
@@ -249,16 +246,19 @@ def plot_training_curves(
         return metric_name[4:] if metric_name.startswith("val_") else metric_name
 
     def _is_regularization_metric(metric_name: str) -> bool:
+        base_name = _base_metric_name(metric_name)
         return (
-            _base_metric_name(metric_name) == "reg_loss"
-            or _base_metric_name(metric_name).startswith("reg_")
-            or "w_norm" in _base_metric_name(metric_name)
+            base_name == "reg_loss"
+            or base_name.startswith("reg_")
+            or base_name.startswith("lateral_reg")
+            or "_reg_" in base_name
+            or "regularization" in base_name
+            or "w_norm" in base_name
+            or "reg_active" in base_name
         )
 
     def _is_loss_metric(metric_name: str) -> bool:
-        return metric_name in {"loss", "val_loss"} or (
-            metric_name.endswith("_loss") and not metric_name.startswith("reg_")
-        )
+        return metric_name in {"loss", "val_loss"}
 
     def _is_ssim_metric(metric_name: str) -> bool:
         return "ssim" in metric_name
@@ -430,7 +430,11 @@ def plot_training_curves(
     n_saved += int(
         _save_single_figure(
             reg_loss_keys,
-            "Regularization Loss",
+            (
+                "Regularization Loss"
+                if weight_reg_lambda is None
+                else f"Regularization Loss  [\u03bb={weight_reg_lambda:.3g}]"
+            ),
             "Loss",
             "reg_loss",
             label_map=_train_val_label_map(reg_loss_keys),
@@ -491,34 +495,90 @@ def plot_training_curves(
             )
         )
 
-    # Combined loss + reg_loss figure (subplot 2,1)
-    if loss_keys or reg_loss_keys:
-        fig_comb, axes_comb = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
-        _plot_panel(
-            axis=axes_comb[0],
-            metric_names=loss_keys,
-            title="Loss (Weighted MAE)",
-            ylabel="Loss",
-            label_map=_train_val_label_map(loss_keys),
-        )
-        reg_title = "Regularization Loss"
-        if weight_reg_lambda is not None:
-            reg_title += f"  [\u03bb={weight_reg_lambda:.3g}]"
-        _plot_panel(
-            axis=axes_comb[1],
-            metric_names=reg_loss_keys,
-            title=reg_title,
-            ylabel="Loss",
-            label_map=_train_val_label_map(reg_loss_keys),
-        )
-        fig_comb.savefig(
-            os.path.join(output_dir, f"{output_stem}_loss_combined.png"), dpi=150
-        )
-        plt.close(fig_comb)
-        n_saved += 1
-
     if n_saved == 0:
         raise ValueError("history does not contain plottable metrics")
+
+
+def plot_apodization_maps_multichannel(
+    cm: CoordinateManager,
+    apod_after: np.ndarray,
+    output_path: str,
+    x_fixed: float = 0.0,
+    cmap: str = "viridis",
+    vmin: float = -1.0,
+    vmax: float = 1.0,
+) -> None:
+    """Save one horizontal map figure with one subplot per apodization channel.
+
+    Args:
+        cm: Coordinate manager used to extract geometry coordinates.
+        apod_after: INR apodization array with shape ``(E, Z, X, N)`` where
+            ``N`` is the number of channels.
+        output_path: Output PNG file path.
+        x_fixed: Lateral x value used for map extraction.
+        cmap: Colormap used for the maps.
+        vmin: Lower color limit shared by all channel subplots.
+        vmax: Upper color limit shared by all channel subplots.
+
+    Raises:
+        ValueError: If ``apod_after`` does not have shape ``(E, Z, X, N)``.
+    """
+    apod_after_np = np.asarray(apod_after)
+    if apod_after_np.ndim != 4:
+        raise ValueError("apod_after must have shape (E, Z, X, N)")
+
+    coords_phys = cm.get_coordinates_1d(scaled=False)
+    x_elems = np.asarray(coords_phys["x_elem"])
+    z_coords = np.asarray(coords_phys["z"])
+    map_extent = (
+        float(x_elems[0]),
+        float(x_elems[-1]),
+        float(z_coords[-1]),
+        float(z_coords[0]),
+    )
+
+    n_channels = int(apod_after_np.shape[-1])
+    fig, axes = plt.subplots(
+        1,
+        n_channels,
+        figsize=(5 * n_channels, 4.8),
+        constrained_layout=True,
+        sharey=True,
+    )
+    axes_arr = np.atleast_1d(axes)
+    first_im = None
+
+    for ch_idx, ax in enumerate(axes_arr):
+        map_channel = extract_map_for_x(
+            tf.convert_to_tensor(apod_after_np[..., ch_idx]),
+            cm,
+            x_fixed=x_fixed,
+            scaled=False,
+        ).numpy()
+        current_im = ax.imshow(
+            map_channel,
+            cmap=cmap,
+            vmin=float(vmin),
+            vmax=float(vmax),
+            extent=map_extent,
+            aspect="auto",
+        )
+        if first_im is None:
+            first_im = current_im
+        ax.set_title(f"Channel {ch_idx}", fontsize=13)
+        ax.set_xlabel("Element lateral coordinate (mm)", fontsize=11)
+        if ch_idx == 0:
+            ax.set_ylabel("Depth z (mm)", fontsize=11)
+
+    fig.suptitle(f"Apodization maps at x={x_fixed:.2f} mm", fontsize=14)
+    if first_im is not None:
+        fig.colorbar(first_im, ax=axes_arr.tolist(), label="Weight", shrink=0.95)
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
 
 
 def plot_das_comparison_db(
@@ -790,17 +850,18 @@ def plot_apodization_profiles_multichannel(
     cm: CoordinateManager,
     apod_after: np.ndarray,
     output_path: str,
-    x_fixed: float = 0.0,
+    x_values: list[float] | tuple[float, ...],
     z_profiles: list[float] | tuple[float, ...] | None = None,
 ) -> None:
-    """Save a single profile figure with all mixer channels in shared axes.
+    """Save one profile figure with one subplot per requested lateral x value.
 
     Args:
         cm: Coordinate manager used to extract geometry coordinates.
         apod_after: INR apodization array with shape ``(E, Z, X, N)`` where
             ``N`` is the number of channels.
         output_path: Output PNG file path.
-        x_fixed: Lateral x value used for profile extraction.
+        x_values: Lateral x values used for profile extraction, one subplot per
+            entry.
         z_profiles: Optional list/tuple of depths (mm) used for profile
             extraction. If omitted, the middle depth is used.
 
@@ -815,7 +876,10 @@ def plot_apodization_profiles_multichannel(
     x_elems = np.asarray(coords_phys["x_elem"])
     z_coords = np.asarray(coords_phys["z"])
     x_coords = np.asarray(coords_phys["x"])
-    x_idx = int(np.argmin(np.abs(x_coords - float(x_fixed))))
+
+    x_values_list = [float(x_value) for x_value in x_values]
+    if not x_values_list:
+        raise ValueError("x_values must contain at least one lateral position")
 
     if z_profiles is None or len(z_profiles) == 0:
         z_indices = [len(z_coords) // 2]
@@ -828,30 +892,47 @@ def plot_apodization_profiles_multichannel(
     depth_colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(z_indices))))
     channel_styles = ["-", "--", "-.", ":"]
 
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
-    for ch_idx in range(n_channels):
-        style = channel_styles[ch_idx % len(channel_styles)]
-        for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
-            profile = apod_after_np[:, z_idx, x_idx, ch_idx]
-            ax.plot(
-                x_elems,
-                profile,
-                color=color,
-                linestyle=style,
-                linewidth=2,
-                label=f"Channel {ch_idx} z={z_value:.2f} mm",
-            )
+    fig, axes = plt.subplots(
+        1,
+        len(x_values_list),
+        figsize=(5 * len(x_values_list), 5),
+        constrained_layout=True,
+        sharex=True,
+        sharey=True,
+    )
+    axes_arr = np.atleast_1d(axes)
+    legend_handles = []
+    legend_labels = []
+
+    for axis, x_value in zip(axes_arr, x_values_list):
+        x_idx = int(np.argmin(np.abs(x_coords - float(x_value))))
+        for ch_idx in range(n_channels):
+            style = channel_styles[ch_idx % len(channel_styles)]
+            for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
+                profile = apod_after_np[:, z_idx, x_idx, ch_idx]
+                line, = axis.plot(
+                    x_elems,
+                    profile,
+                    color=color,
+                    linestyle=style,
+                    linewidth=2,
+                    label=f"Channel {ch_idx} z={z_value:.2f} mm",
+                )
+                label = line.get_label()
+                if label not in legend_labels:
+                    legend_handles.append(line)
+                    legend_labels.append(label)
+        axis.set_title(f"x={x_value:.2f} mm", fontsize=13)
+        axis.set_xlabel("Element lateral coordinate (mm)", fontsize=12)
+        axis.tick_params(axis="both", labelsize=11)
+        axis.grid(True, alpha=0.3)
+
+    axes_arr[0].set_ylabel("Apodization weight", fontsize=12)
 
     depth_list_text = ", ".join(f"{z:.2f}" for z in z_values)
-    ax.set_title(
-        f"Mixer channel profiles at x={x_fixed:.2f} mm, z=[{depth_list_text}] mm",
-        fontsize=13,
-    )
-    ax.set_xlabel("Element lateral coordinate (mm)", fontsize=12)
-    ax.set_ylabel("Apodization weight", fontsize=12)
-    ax.tick_params(axis="both", labelsize=11)
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=10, ncol=2)
+    fig.suptitle(f"Mixer channel profiles at z=[{depth_list_text}] mm", fontsize=14)
+    if legend_handles:
+        fig.legend(legend_handles, legend_labels, loc="upper center", ncol=3, fontsize=10)
 
     output_dir = os.path.dirname(output_path)
     if output_dir:
@@ -870,6 +951,10 @@ def plot_apodization_before_after(
     z_profiles: list[float] | tuple[float, ...] | None = None,
     cmap: str = "viridis",
     hanning_apod: np.ndarray | None = None,
+    vmin: float = -1.0,
+    vmax: float = 1.0,
+    save_maps: bool = True,
+    save_profiles: bool = True,
 ) -> None:
     """Save apodization maps and element-axis profiles as two separate PNG files.
 
@@ -894,6 +979,10 @@ def plot_apodization_before_after(
         z_profiles: Optional list/tuple of depths (mm) used for profile extraction.
         cmap: Colormap used for both maps.
         hanning_apod: Optional Hanning reference apodization with shape (E, Z, X).
+        vmin: Lower color limit shared by all map subplots.
+        vmax: Upper color limit shared by all map subplots.
+        save_maps: Whether to save the map figure.
+        save_profiles: Whether to save the profile figure.
     """
     # Plotting and profile requests are interpreted in physical units (mm).
     coords_phys = cm.get_coordinates_1d(scaled=False)
@@ -939,91 +1028,227 @@ def plot_apodization_before_after(
     maps_path = os.path.join(output_dir, f"{output_stem}_maps.png") if output_dir else f"{output_stem}_maps.png"
     profiles_path = os.path.join(output_dir, f"{output_stem}_profiles.png") if output_dir else f"{output_stem}_profiles.png"
 
-    # ------------------------------------------------------------------
-    # Figure 1: Maps  — Hanning (left) | INR after (right)
-    # ------------------------------------------------------------------
-    if hanning_np is not None:
-        map_hanning = extract_map_for_x(
-            tf.convert_to_tensor(hanning_apod),
-            cm,
-            x_fixed=x_fixed,
-            scaled=False,
-        )
-        mh = map_hanning.numpy()
-        vmin = float(min(float(mh.min()), float(ma.min())))
-        vmax = float(max(float(mh.max()), float(ma.max())))
-
-        fig_maps, axes_maps = plt.subplots(
-            1, 2, figsize=(12, 5), constrained_layout=True
-        )
-        im0 = axes_maps[0].imshow(
-            mh, cmap=cmap, vmin=vmin, vmax=vmax, extent=map_extent, aspect="auto"
-        )
-        axes_maps[0].set_title("Hanning apodization", fontsize=13)
-        axes_maps[0].set_xlabel("Element lateral coordinate (mm)", fontsize=11)
-        axes_maps[0].set_ylabel("Depth z (mm)", fontsize=11)
-        fig_maps.colorbar(im0, ax=axes_maps[0], label="Weight")
-
-        im1 = axes_maps[1].imshow(
-            ma, cmap=cmap, vmin=vmin, vmax=vmax, extent=map_extent, aspect="auto"
-        )
-        axes_maps[1].set_title("INR apodization", fontsize=13)
-        axes_maps[1].set_xlabel("Element lateral coordinate (mm)", fontsize=11)
-        fig_maps.colorbar(im1, ax=axes_maps[1], label="Weight")
-    else:
-        vmin = float(ma.min())
-        vmax = float(ma.max())
-
-        fig_maps, ax_single = plt.subplots(1, 1, figsize=(7, 5), constrained_layout=True)
-        im1 = ax_single.imshow(
-            ma, cmap=cmap, vmin=vmin, vmax=vmax, extent=map_extent, aspect="auto"
-        )
-        ax_single.set_title("INR apodization", fontsize=13)
-        ax_single.set_xlabel("Element lateral coordinate (mm)", fontsize=11)
-        ax_single.set_ylabel("Depth z (mm)", fontsize=11)
-        fig_maps.colorbar(im1, ax=ax_single, label="Weight")
-
-    fig_maps.suptitle(f"Apodization maps at x={x_fixed:.2f} mm", fontsize=14)
-    fig_maps.savefig(maps_path, dpi=150)
-    plt.close(fig_maps)
-
-    # ------------------------------------------------------------------
-    # Figure 2: Profiles — INR after and Hanning per selected depth
-    # ------------------------------------------------------------------
-    fig_prof, ax_prof = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
-    depth_colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(z_indices))))
-    for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
-        profile_after = apod_after_np[:, z_idx, x_idx]
-        ax_prof.plot(
-            x_elems,
-            profile_after,
-            label=f"INR z={z_value:.2f} mm",
-            linewidth=2,
-            color=color,
-            linestyle="--",
-        )
+    if save_maps:
+        # ------------------------------------------------------------------
+        # Figure 1: Maps  — Hanning (left) | INR after (right)
+        # ------------------------------------------------------------------
         if hanning_np is not None:
-            profile_hanning = hanning_np[:, z_idx, x_idx]
+            map_hanning = extract_map_for_x(
+                tf.convert_to_tensor(hanning_apod),
+                cm,
+                x_fixed=x_fixed,
+                scaled=False,
+            )
+            mh = map_hanning.numpy()
+
+            fig_maps, axes_maps = plt.subplots(
+                1, 2, figsize=(12, 5), constrained_layout=True, sharey=True
+            )
+            im0 = axes_maps[0].imshow(
+                mh,
+                cmap=cmap,
+                vmin=float(vmin),
+                vmax=float(vmax),
+                extent=map_extent,
+                aspect="auto",
+            )
+            axes_maps[0].set_title("Hanning apodization", fontsize=13)
+            axes_maps[0].set_xlabel("Element lateral coordinate (mm)", fontsize=11)
+            axes_maps[0].set_ylabel("Depth z (mm)", fontsize=11)
+
+            axes_maps[1].imshow(
+                ma,
+                cmap=cmap,
+                vmin=float(vmin),
+                vmax=float(vmax),
+                extent=map_extent,
+                aspect="auto",
+            )
+            axes_maps[1].set_title("INR apodization", fontsize=13)
+            axes_maps[1].set_xlabel("Element lateral coordinate (mm)", fontsize=11)
+            fig_maps.colorbar(im0, ax=axes_maps.tolist(), label="Weight", shrink=0.95)
+        else:
+            fig_maps, ax_single = plt.subplots(1, 1, figsize=(7, 5), constrained_layout=True)
+            im1 = ax_single.imshow(
+                ma,
+                cmap=cmap,
+                vmin=float(vmin),
+                vmax=float(vmax),
+                extent=map_extent,
+                aspect="auto",
+            )
+            ax_single.set_title("INR apodization", fontsize=13)
+            ax_single.set_xlabel("Element lateral coordinate (mm)", fontsize=11)
+            ax_single.set_ylabel("Depth z (mm)", fontsize=11)
+            fig_maps.colorbar(im1, ax=ax_single, label="Weight")
+
+        fig_maps.suptitle(f"Apodization maps at x={x_fixed:.2f} mm", fontsize=14)
+        fig_maps.savefig(maps_path, dpi=150)
+        plt.close(fig_maps)
+
+    if save_profiles:
+        # ------------------------------------------------------------------
+        # Figure 2: Profiles — INR after and Hanning per selected depth
+        # ------------------------------------------------------------------
+        fig_prof, ax_prof = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
+        depth_colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(z_indices))))
+        for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
+            profile_after = apod_after_np[:, z_idx, x_idx]
             ax_prof.plot(
                 x_elems,
-                profile_hanning,
-                label=f"Hanning z={z_value:.2f} mm",
-                linewidth=1.8,
+                profile_after,
+                label=f"INR z={z_value:.2f} mm",
+                linewidth=2,
                 color=color,
-                linestyle=":",
+                linestyle="--",
             )
+            if hanning_np is not None:
+                profile_hanning = hanning_np[:, z_idx, x_idx]
+                ax_prof.plot(
+                    x_elems,
+                    profile_hanning,
+                    label=f"Hanning z={z_value:.2f} mm",
+                    linewidth=1.8,
+                    color=color,
+                    linestyle=":",
+                )
 
-    depth_list_text = ", ".join(f"{z:.2f}" for z in z_values)
-    ax_prof.set_title(
-        f"Profiles at x={x_fixed:.2f} mm, z=[{depth_list_text}] mm", fontsize=13
+        depth_list_text = ", ".join(f"{z:.2f}" for z in z_values)
+        ax_prof.set_title(
+            f"Profiles at x={x_fixed:.2f} mm, z=[{depth_list_text}] mm", fontsize=13
+        )
+        ax_prof.set_xlabel("Element lateral coordinate (mm)", fontsize=12)
+        ax_prof.set_ylabel("Apodization weight", fontsize=12)
+        ax_prof.tick_params(axis="both", labelsize=11)
+        ax_prof.grid(True, alpha=0.3)
+        ax_prof.legend(fontsize=11)
+        fig_prof.savefig(profiles_path, dpi=150)
+        plt.close(fig_prof)
+
+
+def plot_apodization_profiles_by_x(
+    cm: CoordinateManager,
+    apod_after: np.ndarray,
+    output_path: str,
+    x_values: list[float] | tuple[float, ...],
+    z_profiles: list[float] | tuple[float, ...] | None = None,
+    hanning_apod: np.ndarray | None = None,
+) -> None:
+    """Save one profile figure with one subplot per requested lateral x value.
+
+    Args:
+        cm: Coordinate manager used to extract geometry coordinates.
+        apod_after: INR apodization array with shape ``(E, Z, X)`` or
+            ``(E, Z, X, N)``.
+        output_path: Output PNG file path.
+        x_values: Lateral x values used for profile extraction, one subplot per
+            entry.
+        z_profiles: Optional list/tuple of depths (mm) used for profile
+            extraction. If omitted, the middle depth is used.
+        hanning_apod: Optional Hanning reference with shape ``(E, Z, X)``.
+
+    Raises:
+        ValueError: If ``apod_after`` does not have shape ``(E, Z, X)`` or
+            ``(E, Z, X, N)``, or if ``hanning_apod`` is used with a 4D array.
+    """
+    apod_after_np = np.asarray(apod_after)
+    if apod_after_np.ndim not in {3, 4}:
+        raise ValueError("apod_after must have shape (E, Z, X) or (E, Z, X, N)")
+    if hanning_apod is not None and apod_after_np.ndim == 4:
+        raise ValueError("hanning_apod is only supported for single-channel apodization arrays")
+
+    x_values_list = [float(x_value) for x_value in x_values]
+    if not x_values_list:
+        raise ValueError("x_values must contain at least one lateral position")
+
+    coords_phys = cm.get_coordinates_1d(scaled=False)
+    x_elems = np.asarray(coords_phys["x_elem"])
+    z_coords = np.asarray(coords_phys["z"])
+    x_coords = np.asarray(coords_phys["x"])
+
+    if z_profiles is None or len(z_profiles) == 0:
+        z_indices = [len(z_coords) // 2]
+    else:
+        z_indices = [int(np.argmin(np.abs(z_coords - float(z)))) for z in z_profiles]
+        z_indices = list(dict.fromkeys(z_indices))
+    z_values = [float(z_coords[idx]) for idx in z_indices]
+
+    fig, axes = plt.subplots(
+        1,
+        len(x_values_list),
+        figsize=(5 * len(x_values_list), 5),
+        constrained_layout=True,
+        sharex=True,
+        sharey=True,
     )
-    ax_prof.set_xlabel("Element lateral coordinate (mm)", fontsize=12)
-    ax_prof.set_ylabel("Apodization weight", fontsize=12)
-    ax_prof.tick_params(axis="both", labelsize=11)
-    ax_prof.grid(True, alpha=0.3)
-    ax_prof.legend(fontsize=11)
-    fig_prof.savefig(profiles_path, dpi=150)
-    plt.close(fig_prof)
+    axes_arr = np.atleast_1d(axes)
+    depth_colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(z_indices))))
+    channel_styles = ["-", "--", "-.", ":"]
+    legend_handles = []
+    legend_labels = []
+    hanning_np = np.asarray(hanning_apod) if hanning_apod is not None else None
+
+    for axis, x_value in zip(axes_arr, x_values_list):
+        x_idx = int(np.argmin(np.abs(x_coords - float(x_value))))
+
+        if apod_after_np.ndim == 3:
+            for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
+                inr_line, = axis.plot(
+                    x_elems,
+                    apod_after_np[:, z_idx, x_idx],
+                    label=f"INR z={z_value:.2f} mm",
+                    linewidth=2,
+                    color=color,
+                    linestyle="--",
+                )
+                if inr_line.get_label() not in legend_labels:
+                    legend_handles.append(inr_line)
+                    legend_labels.append(inr_line.get_label())
+                if hanning_np is not None:
+                    hanning_line, = axis.plot(
+                        x_elems,
+                        hanning_np[:, z_idx, x_idx],
+                        label=f"Hanning z={z_value:.2f} mm",
+                        linewidth=1.8,
+                        color=color,
+                        linestyle=":",
+                    )
+                    if hanning_line.get_label() not in legend_labels:
+                        legend_handles.append(hanning_line)
+                        legend_labels.append(hanning_line.get_label())
+        else:
+            n_channels = int(apod_after_np.shape[-1])
+            for ch_idx in range(n_channels):
+                style = channel_styles[ch_idx % len(channel_styles)]
+                for color, z_idx, z_value in zip(depth_colors, z_indices, z_values):
+                    line, = axis.plot(
+                        x_elems,
+                        apod_after_np[:, z_idx, x_idx, ch_idx],
+                        label=f"Channel {ch_idx} z={z_value:.2f} mm",
+                        linewidth=2,
+                        color=color,
+                        linestyle=style,
+                    )
+                    if line.get_label() not in legend_labels:
+                        legend_handles.append(line)
+                        legend_labels.append(line.get_label())
+
+        axis.set_title(f"x={x_value:.2f} mm", fontsize=13)
+        axis.set_xlabel("Element lateral coordinate (mm)", fontsize=12)
+        axis.tick_params(axis="both", labelsize=11)
+        axis.grid(True, alpha=0.3)
+
+    axes_arr[0].set_ylabel("Apodization weight", fontsize=12)
+    depth_list_text = ", ".join(f"{z:.2f}" for z in z_values)
+    fig.suptitle(f"Apodization profiles at z=[{depth_list_text}] mm", fontsize=14)
+    if legend_handles:
+        fig.legend(legend_handles, legend_labels, loc="upper center", ncol=3, fontsize=10)
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

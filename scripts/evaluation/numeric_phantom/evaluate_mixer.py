@@ -122,6 +122,9 @@ if not bool(mixer_cfg.get("eval_combined", True)):
 
 model_file, combiner_weights_file, train_info_file, model_run_dir = resolve_mixer_artifacts(io_cfg.get("model_path", ""))
 scaled_features, n_apodizations, physical_feature_set, physical_feature_components = extract_mixer_train_metadata(train_info_file)
+train_info = load_config_yaml(train_info_file)
+resolved_mixer_cfg = train_info.get("resolved_mixer", {}) if isinstance(train_info, dict) else {}
+forced_boxcar_cfg = resolved_mixer_cfg.get("forced_boxcar", {}) if isinstance(resolved_mixer_cfg, dict) else {}
 print("Using mixer run:", model_run_dir)
 print("Using model:", model_file)
 print("Using combiner weights:", combiner_weights_file)

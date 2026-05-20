@@ -37,10 +37,18 @@ from inr_apodizations.evaluation import (
     load_validation_scatterers,
 )
 from inr_apodizations.modeling.losses import PixelWeightedMAELoss
-from inr_apodizations.modeling.das_models import DasInrApodMixer, build_mlp_inr
+from inr_apodizations.modeling.das_models import (
+    DasInrApodMixer,
+    build_masked_mlp_inr,
+    build_mlp_inr,
+    build_symmetrized_apodization_model,
+)
 from inr_apodizations.modeling.metrics import PixelWeightedMAE, RelativeMAE
 from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
-from inr_apodizations.plots import plot_apodization_profiles_multichannel
+from inr_apodizations.plots import (
+    plot_apodization_maps_multichannel,
+    plot_apodization_profiles_by_x,
+)
 from inr_apodizations.training_console import get_console
 from inr_apodizations.utils import relative_mae
 
@@ -181,20 +189,65 @@ output_activation = cfg["model"].get("output_activation", "sigmoid")
 hidden_units_raw = cfg["model"].get("hidden_units")
 n_hidden_layers_raw = cfg["model"].get("n_hidden_layers")
 n_apodizations = int(cfg["model"].get("n_apodizations", 1))
+symmetry_cfg = dict(cfg["model"].get("symmetry", {}))
+symmetry_enabled = bool(symmetry_cfg.get("enabled", False))
+symmetry_feature_components_override = symmetry_cfg.get("feature_components_override")
 if n_apodizations <= 0:
     raise ValueError("model.n_apodizations must be > 0")
+forced_boxcar_cfg = dict(cfg["model"].get("forced_boxcar", {}))
+forced_boxcar_enabled = bool(forced_boxcar_cfg.get("enabled", False))
+forced_boxcar_f_number = float(
+    forced_boxcar_cfg.get("f_number", cfg["training"].get("baseline_f_number", 1.0))
+)
+forced_boxcar_epsilon = float(forced_boxcar_cfg.get("epsilon", 1e-8))
+forced_boxcar_q_feature_index = int(forced_boxcar_cfg.get("q_feature_index", 0))
 if resume_enabled:
     print(f"Resume enabled. Loading model from: {resume_model_path}")
     apodization_model = tf.keras.models.load_model(str(resume_model_path), compile=False)
 else:
-    apodization_model = build_mlp_inr(
-        input_dim=cm.n_physical_features,
-        hidden_units_config=hidden_units_raw,
-        n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
-        activation=cfg["model"]["activation"],
-        output_activation=output_activation,
-        n_apodizations=n_apodizations,
+    if forced_boxcar_enabled:
+        apodization_model = build_masked_mlp_inr(
+            input_dim=cm.n_physical_features,
+            hidden_units_config=hidden_units_raw,
+            n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
+            activation=cfg["model"]["activation"],
+            output_activation=output_activation,
+            n_apodizations=n_apodizations,
+            mask_mode="boxcar",
+            mask_feature_index=forced_boxcar_q_feature_index,
+            mask_threshold=1.0 / (2.0 * forced_boxcar_f_number),
+            mask_epsilon=forced_boxcar_epsilon,
+        )
+    else:
+        apodization_model = build_mlp_inr(
+            input_dim=cm.n_physical_features,
+            hidden_units_config=hidden_units_raw,
+            n_hidden_layers=int(n_hidden_layers_raw) if isinstance(hidden_units_raw, (int, float)) else None,
+            activation=cfg["model"]["activation"],
+            output_activation=output_activation,
+            n_apodizations=n_apodizations,
+        )
+
+if symmetry_feature_components_override is None:
+    symmetry_feature_components = list(cm.physical_feature_names)
+else:
+    if not isinstance(symmetry_feature_components_override, (list, tuple)):
+        raise ValueError("model.symmetry.feature_components_override must be a list/tuple")
+    symmetry_feature_components = [str(token).strip() for token in symmetry_feature_components_override]
+
+if len(symmetry_feature_components) != int(cm.n_physical_features):
+    raise ValueError(
+        "symmetry feature components must match input feature dimension: "
+        f"len={len(symmetry_feature_components)}, expected={cm.n_physical_features}"
     )
+
+if symmetry_enabled:
+    apodization_model = build_symmetrized_apodization_model(
+        apodization_model=apodization_model,
+        feature_component_names=symmetry_feature_components,
+        combine_mode="sum",
+    )
+
 weight_reg_resolved = helpers.parse_weight_regularization_config(cfg)
 weight_reg_enabled = bool(weight_reg_resolved["enabled"])
 weight_reg_lambda = float(weight_reg_resolved["lambda"])
@@ -208,21 +261,62 @@ weight_reg_auto_eps = float(weight_reg_auto_cfg.get("epsilon", 1e-12))
 weight_reg_auto_norm_fraction = float(weight_reg_auto_cfg.get("norm_fraction", 0.5))
 resolved_weight_reg_type = str(weight_reg_resolved["type"])
 
-trainer = DasInrApodMixer(
-    apodization_model=apodization_model,
-    features_grid=features_grid,
-    feature_chunk_size=int(cfg["model"]["feature_chunk_size"]),
-    n_apodizations=n_apodizations,
-    weight_regularization_enabled=weight_reg_enabled,
-    weight_regularization_lambda=weight_reg_lambda,
-    weight_regularization_tau=weight_reg_tau,
-    weight_regularization_epsilon=weight_reg_epsilon,
-    weight_regularization_normalize=weight_reg_normalize,
-)
+lat_reg_resolved = helpers.parse_lateral_regularization_config(cfg)
+lat_reg_enabled = bool(lat_reg_resolved["enabled"])
+lat_reg_lambda = float(lat_reg_resolved["lambda"])
+lat_reg_q_power = float(lat_reg_resolved["q_power"])
+lat_reg_q_epsilon = float(lat_reg_resolved["q_epsilon"])
+lat_reg_abs_xrel_idx = int(lat_reg_resolved["abs_xrel_feature_index"])
+lat_reg_z_idx = int(lat_reg_resolved["z_feature_index"])
+lat_reg_normalize_by_uniform = bool(lat_reg_resolved["normalize_by_uniform"])
+lat_reg_channel_reduction = str(lat_reg_resolved["channel_reduction"])
+lat_reg_auto_cfg = dict(lat_reg_resolved["auto_init"])
+lat_reg_auto_enabled = bool(lat_reg_auto_cfg.get("enabled", False))
+lat_reg_auto_ratio = float(lat_reg_auto_cfg.get("ratio", 0.1))
+lat_reg_auto_eps = float(lat_reg_auto_cfg.get("epsilon", 1e-12))
+
+if forced_boxcar_enabled:
+    weight_reg_enabled = False
+    lat_reg_enabled = False
+    console.warn(
+        "Forced boxcar is enabled: weight and lateral regularization are disabled at runtime."
+    )
+
+trainer_kwargs = {
+    "apodization_model": apodization_model,
+    "features_grid": features_grid,
+    "feature_chunk_size": int(cfg["model"]["feature_chunk_size"]),
+    "n_apodizations": n_apodizations,
+    "weight_regularization_enabled": weight_reg_enabled,
+    "weight_regularization_lambda": weight_reg_lambda,
+    "weight_regularization_tau": weight_reg_tau,
+    "weight_regularization_epsilon": weight_reg_epsilon,
+    "weight_regularization_normalize": weight_reg_normalize,
+    "lateral_regularization_enabled": lat_reg_enabled,
+    "lateral_regularization_lambda": lat_reg_lambda,
+    "lateral_regularization_q_power": lat_reg_q_power,
+    "lateral_regularization_q_epsilon": lat_reg_q_epsilon,
+    "lateral_regularization_q_abs_xrel_feature_index": lat_reg_abs_xrel_idx,
+    "lateral_regularization_q_z_feature_index": lat_reg_z_idx,
+    "lateral_regularization_normalize_by_uniform": lat_reg_normalize_by_uniform,
+    "lateral_regularization_channel_reduction": lat_reg_channel_reduction,
+}
+trainer = DasInrApodMixer(**trainer_kwargs)
 console.subsection("DasInrApodMixer configuration")
 console.pretty(
     {
         "n_apodizations": n_apodizations,
+        "forced_boxcar": {
+            "enabled": forced_boxcar_enabled,
+            "f_number": forced_boxcar_f_number,
+            "epsilon": forced_boxcar_epsilon,
+            "q_feature_index": forced_boxcar_q_feature_index,
+        },
+        "symmetry": {
+            "enabled": symmetry_enabled,
+            "combine_mode": "sum",
+            "feature_components": symmetry_feature_components,
+        },
         "weight_regularization": {
             "enabled": weight_reg_enabled,
             "type": resolved_weight_reg_type,
@@ -235,6 +329,21 @@ console.pretty(
                 "ratio": weight_reg_auto_ratio,
                 "epsilon": weight_reg_auto_eps,
                 "norm_fraction": weight_reg_auto_norm_fraction,
+            },
+        },
+        "lateral_regularization": {
+            "enabled": lat_reg_enabled,
+            "lambda": lat_reg_lambda,
+            "q_power": lat_reg_q_power,
+            "q_epsilon": lat_reg_q_epsilon,
+            "abs_xrel_feature_index": lat_reg_abs_xrel_idx,
+            "z_feature_index": lat_reg_z_idx,
+            "normalize_by_uniform": lat_reg_normalize_by_uniform,
+            "channel_reduction": lat_reg_channel_reduction,
+            "auto_init": {
+                "enabled": lat_reg_auto_enabled,
+                "ratio": lat_reg_auto_ratio,
+                "epsilon": lat_reg_auto_eps,
             },
         },
     },
@@ -276,20 +385,32 @@ predicted_before_image, weights_before_grid = trainer.reconstruct_image(sample_d
 mae_initial = None
 norm_reference_auto = None
 reg_loss_reference_auto = None
-if weight_reg_enabled and weight_reg_auto_enabled:
+lat_reg_scaled_reference_auto = None
+
+# Determine whether any auto-init requires a first-batch evaluation
+_need_autoinit_batch = (
+    (weight_reg_enabled and weight_reg_auto_enabled)
+    or (lat_reg_enabled and lat_reg_auto_enabled)
+)
+
+first_batch = None
+x_init = y_init = sample_weight_init = None
+y_pred_init = weights_grid_init = None
+
+if _need_autoinit_batch:
     first_batch = next(iter(train_ds.take(1)))
     if not isinstance(first_batch, (tuple, list)) or len(first_batch) != 3:
         raise ValueError(
-            "Auto-init of training.weight_regularization.lambda requires "
+            "Auto-init of regularization lambdas requires "
             "dataset batches as (delayed, target, sample_weight)."
         )
-
     x_init, y_init, sample_weight_init = first_batch
     y_pred_init, weights_grid_init = trainer.reconstruct_image(x_init, training=False)
     mae_initial = float(
         loss_obj(y_init, y_pred_init, sample_weight=sample_weight_init).numpy()
     )
 
+if weight_reg_enabled and weight_reg_auto_enabled:
     lambda_prev = float(trainer.weight_regularization_lambda)
     norm_reference_auto = float(weight_reg_auto_norm_fraction * weight_reg_tau)
     violation_reference = max(0.0, weight_reg_tau - norm_reference_auto)
@@ -315,7 +436,35 @@ if weight_reg_enabled and weight_reg_auto_enabled:
         }
     )
 
+if lat_reg_enabled and lat_reg_auto_enabled:
+    # Compute reg_scaled from the current (random) model weights on the first batch.
+    # reg_scaled is lambda-independent; we set lambda=1 temporarily via the regularizer.
+    _lat_reg_loss_tmp, _lat_reg_metrics_tmp = trainer._lateral_regularizer.compute(
+        weights_grid_init
+    )
+    lat_reg_scaled_reference_auto = float(_lat_reg_metrics_tmp["lateral_reg_scaled"].numpy())
+
+    lat_reg_lambda_prev = float(trainer.lateral_regularization_lambda)
+    lat_reg_lambda = float(
+        lat_reg_auto_ratio * mae_initial / max(lat_reg_scaled_reference_auto, lat_reg_auto_eps)
+    )
+    trainer.lateral_regularization_lambda = lat_reg_lambda
+
+    print("Auto-initialized lateral regularization lambda:")
+    print(
+        {
+            "method": "reg_scaled_reference",
+            "ratio": lat_reg_auto_ratio,
+            "mae_initial": mae_initial,
+            "lateral_reg_scaled_reference": lat_reg_scaled_reference_auto,
+            "lambda_previous_config": lat_reg_lambda_prev,
+            "lambda_applied": lat_reg_lambda,
+        }
+    )
+
 print(f"Final weight regularization lambda used for training: {weight_reg_lambda:.6g}")
+if lat_reg_enabled:
+    print(f"Final lateral regularization lambda used for training: {lat_reg_lambda:.6g}")
 
 
 # ============================================================================
@@ -500,6 +649,12 @@ effective_cfg = {
     },
     "resolved_mixer": {
         "n_apodizations": n_apodizations,
+        "forced_boxcar": {
+            "enabled": forced_boxcar_enabled,
+            "f_number": forced_boxcar_f_number,
+            "epsilon": forced_boxcar_epsilon,
+            "q_feature_index": forced_boxcar_q_feature_index,
+        },
     },
     "resolved_weight_regularization": {
         "enabled": weight_reg_enabled,
@@ -516,6 +671,23 @@ effective_cfg = {
             "mae_initial": mae_initial,
             "norm_reference": norm_reference_auto,
             "reg_loss_reference": reg_loss_reference_auto,
+        },
+    },
+    "resolved_lateral_regularization": {
+        "enabled": lat_reg_enabled,
+        "lambda": lat_reg_lambda,
+        "q_power": lat_reg_q_power,
+        "q_epsilon": lat_reg_q_epsilon,
+        "abs_xrel_feature_index": lat_reg_abs_xrel_idx,
+        "z_feature_index": lat_reg_z_idx,
+        "normalize_by_uniform": lat_reg_normalize_by_uniform,
+        "channel_reduction": lat_reg_channel_reduction,
+        "auto_init": {
+            "enabled": lat_reg_auto_enabled,
+            "ratio": lat_reg_auto_ratio,
+            "epsilon": lat_reg_auto_eps,
+            "mae_initial": mae_initial,
+            "lateral_reg_scaled_reference": lat_reg_scaled_reference_auto,
         },
     },
 }
@@ -575,7 +747,7 @@ helpers.plot_das_comparison_db(
     baseline_name="Boxcar",
 )
 
-# Energy comparison and before/after apodization plots: one figure per channel.
+# Energy comparison and compact apodization plots.
 # weights_after_grid shape: (E, Z, X, N); weights_before_grid shape: (E, Z, X, N).
 weights_after_grid_np = weights_after_grid.numpy()
 weights_before_grid_np = weights_before_grid.numpy()
@@ -633,33 +805,28 @@ elif isinstance(z_profiles_cfg, (int, float)):
 else:
     z_profiles_mm = [float(z_val) for z_val in z_profiles_cfg]
 
-for ch_idx in range(n_apodizations):
-    apod_after_ch = weights_after_grid_np[..., ch_idx]   # (E, Z, X)
-    apod_before_ch = weights_before_grid_np[..., ch_idx]  # (E, Z, X)
-    for x_value in x_values_apod:
-        x_token = f"{x_value:.2f}".replace("-", "m").replace(".", "p")
-        helpers.plot_apodization_before_after(
-            cm=cm,
-            apod_before=apod_before_ch,
-            apod_after=apod_after_ch,
-            output_path=str(
-                apodization_dir / f"apodization_map_ch{ch_idx}_x_{x_token}.png"
-            ),
-            x_fixed=float(x_value),
-            z_profiles=z_profiles_mm,
-            cmap=str(plot_cfg.get("apod_cmap", "viridis")),
-            hanning_apod=None,
-        )
+apod_vmin = float(plot_cfg.get("apod_vmin", -1.0))
+apod_vmax = float(plot_cfg.get("apod_vmax", 1.0))
 
 for x_value in x_values_apod:
     x_token = f"{x_value:.2f}".replace("-", "m").replace(".", "p")
-    plot_apodization_profiles_multichannel(
+    plot_apodization_maps_multichannel(
         cm=cm,
         apod_after=weights_after_grid_np,
-        output_path=str(apodization_dir / f"apodization_profiles_all_channels_x_{x_token}.png"),
+        output_path=str(apodization_dir / f"apodization_maps_all_channels_x_{x_token}.png"),
         x_fixed=float(x_value),
-        z_profiles=z_profiles_mm,
+        cmap=str(plot_cfg.get("apod_cmap", "viridis")),
+        vmin=apod_vmin,
+        vmax=apod_vmax,
     )
+
+plot_apodization_profiles_by_x(
+    cm=cm,
+    apod_after=weights_after_grid_np,
+    output_path=str(apodization_dir / "apodization_profiles_all_channels_by_x.png"),
+    x_values=x_values_apod,
+    z_profiles=z_profiles_mm,
+)
 
 
 # ============================================================================

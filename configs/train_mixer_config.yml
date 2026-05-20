@@ -12,14 +12,18 @@ target_regeneration:
 
 model:
   # Preferred convention: explicit ordered components (2 or 3 tokens).
-  # Allowed: z, x, abs_x, xrel, abs_xrel, dist_to_edge
-  physical_feature_components: [xrel, z, x]
+  # Allowed: z, x, abs_x, xrel, abs_xrel, xrel_over_z, x_over_z, z_norm, dist_to_edge, abs_xrel_over_z, abs_x_over_z, xrel_x_over_z2
+  physical_feature_components:
+    - abs_xrel_over_z
+    - abs_x_over_z
+    - z
+    - xrel_x_over_z2
   # Legacy fallback (deprecated):
   # physical_feature_set: distance_depth_edge
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
-  hidden_units: [16, 8, 4]
+  hidden_units: [8, 8]
   n_hidden_layers: 4
   activation: relu
   output_activation: tanh
@@ -30,29 +34,83 @@ model:
   # via a trainable linear layer inside DasInrApodMixer.
   n_apodizations: 2
 
+  symmetry:
+    # If enabled, enforce per-channel symmetry with a_sym(f) = a(f) + a(f_flip).
+    # f_flip inverts signed coordinate-like features (x, xrel, x_over_z, xrel_over_z).
+    enabled: false
+    # Optional ordered override for feature-component names used to build f_flip.
+    # If null, the script uses CoordinateManager.physical_feature_names.
+    feature_components_override: null
+
+  forced_boxcar:
+    enabled: true
+    # f_number: global dynamic-aperture f-number used to derive the boxcar threshold.
+    f_number: 0.5
+    # boxcar boundary tolerance used only for the hard threshold comparison.
+    epsilon: 1.0e-8
+    # q_feature_index: index of the adimensional q feature. Default assumes xrel_over_z.
+    q_feature_index: 0
+
 eval_noise:
   enabled: false
   scale: 1.0
 
 training:
   batch_size: 2
-  epochs: 10
+  epochs: 15
   learning_rate: 0.001
   loss: mae
   metric: mae
   weight_decay: 0.001
+
   weight_regularization:
     enabled: false
+    # type: regularization type applied to the apodization norm.
+    # "hinge_low_norm": squared hinge penalty when global Euclidean norm < tau.
     type: hinge_low_norm
+    # lambda: multiplicative factor for the regularization loss.
+    # If auto_init.enabled=true, this value is overridden automatically.
     lambda: 333000
+    # tau: minimum target normalized norm. Hinge activates when norm < tau.
     tau: 0.7
     epsilon: 1.0e-8
+    # normalize_norm: whether to divide norm by sqrt(E*Z*X) before comparing to tau.
     normalize_norm: true
     auto_init:
       enabled: true
+      # ratio: target weight_reg_loss ≈ ratio * mae_initial (at a tau_reference norm).
       ratio: 0.2
+      # norm_fraction: reference norm = norm_fraction * tau (hypothetical violation point).
       norm_fraction: 0.8
       epsilon: 1.0e-12
+
+  lateral_regularization:
+    enabled: false
+    # lambda: multiplicative factor for the lateral regularization loss.
+    # If auto_init.enabled=true, this value is overridden automatically.
+    lambda: 0.0
+    # q = (abs(x_rel) / z)^q_power — penalizes apodization energy at large lateral angles.
+    # Use q_power=1.0 for linear (default), q_power=2.0 for quadratic emphasis.
+    q_power: 1.0
+    # q_epsilon: numerical epsilon to avoid division by zero when computing q.
+    q_epsilon: 1.0e-8
+    # abs_xrel_feature_index / z_feature_index: indices into physical_feature_components.
+    # Default assumes [xrel, z, x] order → 0=xrel (abs value used), 1=z.
+    abs_xrel_feature_index: 0
+    z_feature_index: 1
+    # normalize_by_uniform: normalize raw penalty by its uniform-apodization reference.
+    # Recommended true: makes lambda scale-independent w.r.t. the spatial grid.
+    normalize_by_uniform: true
+    # channel_reduction: aggregation across apodization channels (mixer only).
+    # "mean": average over N channels; "sum": sum over N channels.
+    channel_reduction: mean
+    auto_init:
+      enabled: true
+      # ratio: target lateral_reg_loss ≈ ratio * mae_initial (at initial model weights).
+      ratio: 0.2
+      # epsilon: safety floor for division during lambda estimation.
+      epsilon: 1.0e-12
+
   mae_db_ref: null
   mae_db_eps: 1.0e-8
   baseline_f_number: 0.5
@@ -66,9 +124,9 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: true
+  enabled: false
   # Preferred source: previous run directory with model.keras + history artifacts.
-  source_run_dir: scripts\outputs\train_mixer\20260518_151939
+  source_run_dir: scripts\outputs\train_mixer\20260519_115528
   # Optional fallback when only a model file is available.
   source_model_path: ""
   # Reserved for future optimizer-state persistence. Currently weights-only resume.
@@ -87,6 +145,8 @@ plots:
   x_values_apod: [0.0, -10.0, 10.0]
   z_profiles_mm: [15.0, 25.0, 35.0]
   apod_cmap: viridis
+  apod_vmin: -1.0
+  apod_vmax: 1.0
 
 scatterer_eval:
   enabled: true
