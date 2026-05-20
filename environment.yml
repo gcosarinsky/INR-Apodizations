@@ -18,6 +18,7 @@ dependencies:
   - ipykernel
   - matplotlib
   - scipy
+  - reportlab
   - pymust
   - pip:
     - tensorflow==2.10
