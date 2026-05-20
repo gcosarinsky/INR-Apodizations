@@ -196,6 +196,7 @@ cython_debug/
 INR-Apodizations.code-workspace
 
 # others
+reports/
 sandbox/figures/
 TODO.md
 sandbox/inr_das_experiment/outputs/

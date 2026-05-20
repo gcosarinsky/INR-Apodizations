@@ -49,6 +49,7 @@ from inr_apodizations.plots import (
     plot_apodization_maps_multichannel,
     plot_apodization_profiles_by_x,
 )
+from inr_apodizations.reporting import generate_training_mixer_report
 from inr_apodizations.training_console import get_console
 from inr_apodizations.utils import relative_mae
 
@@ -1218,3 +1219,23 @@ helpers.plot_training_curves(
     reference_relative_y_true=reference_relative_y_true_plot,
     weight_reg_lambda=weight_reg_lambda if weight_reg_enabled else None,
 )
+
+reporting_cfg = dict(cfg.get("reporting", {}))
+if bool(reporting_cfg.get("enabled", False)):
+    try:
+        report_result = generate_training_mixer_report(
+            output_dir=output_dir,
+            run_timestamp=timestamp,
+            cfg=cfg,
+        )
+        if report_result.missing_required:
+            console.warn(
+                "Training report generated with missing required figures: "
+                f"{report_result.missing_required}"
+            )
+        console.success(
+            "Training PDF report generated: "
+            f"{report_result.output_pdf} (images={report_result.included_images})"
+        )
+    except Exception as report_error:
+        console.warn(f"Training PDF report generation failed: {report_error}")
