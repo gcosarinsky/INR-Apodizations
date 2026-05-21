@@ -1,4 +1,5 @@
 from inr_apodizations.config import CONFIGS_DIR
+from inr_apodizations.apodizations import compute_nsi_from_delayed_samples_numpy
 from inr_apodizations.picmus import (
     build_coordinate_manager,
     build_kernel_parameters,
@@ -12,6 +13,7 @@ from inr_apodizations.picmus import (
     load_picmus_pipeline_config,
     select_angle_subset,
 )
+from inr_apodizations.utils import to_db
 
 import matplotlib.pyplot as plt
 import cupy as cp
@@ -115,16 +117,54 @@ if pipeline_cfg["apodizations"]["inr"]["enabled"]:
     except FileNotFoundError as e:
         print(f"  Warning: {e}")
 
+# NSI apodization
+if pipeline_cfg["apodizations"]["nsi"]["enabled"]:
+    nsi_cfg = pipeline_cfg["apodizations"]["nsi"]
+    f_number = float(nsi_cfg["f_number"])
+    dc = float(nsi_cfg.get("dc", 0.05))
+    normalize_by_n_subap = bool(nsi_cfg.get("normalize_by_n_subap", False))
+
+    coords = cm.get_coordinates_1d(scaled=False)
+    x_coords = np.asarray(coords["x"], dtype=np.float32)
+    z_coords = np.asarray(coords["z"], dtype=np.float32)
+    x_elem_coords = np.asarray(coords["x_elem"], dtype=np.float32)
+
+    if delayed_samples.ndim != 4:
+        raise ValueError(
+            "Expected delayed_samples with shape (n_angles, n_elements, nz, nx), "
+            f"got {delayed_samples.shape}"
+        )
+
+    delayed_for_nsi = np.asarray(np.sum(delayed_samples, axis=0), dtype=np.complex64)
+
+    print(
+        "Computing NSI image "
+        f"(f_number={f_number}, dc={dc}, normalize_by_n_subap={normalize_by_n_subap})..."
+    )
+    _img_sum, _img_diff, nsi_img = compute_nsi_from_delayed_samples_numpy(
+        delayed_samples=delayed_for_nsi,
+        x_coords=x_coords,
+        z_coords=z_coords,
+        x_elem_coords=x_elem_coords,
+        f_number=f_number,
+        dc=dc,
+        normalize_by_n_subap=normalize_by_n_subap,
+    )
+    if np.isnan(nsi_img).any() or np.isinf(nsi_img).any():
+        print("  Warning: NSI image contains NaN/Inf values.")
+    apod_dict["NSI"] = nsi_img.astype(np.float32, copy=False)
+    print(f"  NSI image computed: shape={nsi_img.shape}")
+
 # Plot all apodizations side-by-side if any were computed
 if apod_dict:
     n_apod = len(apod_dict) + 1  # +1 for uniform
-    fig, axes = plt.subplots(1, n_apod, figsize=(5*n_apod, 5))
+    fig, axes = plt.subplots(1, n_apod, figsize=(5 * n_apod, 5))
     if n_apod == 1:
         axes = [axes]  # Make iterable
     extent = kp.get_imshow_extent()
-    
+
     # Uniform DAS
-    das_uniform_db = 20.0 * np.log10(das_uniform / (np.max(das_uniform) + 1e-6) + 1e-6)
+    das_uniform_db = to_db(das_uniform, ref=float(np.max(np.abs(das_uniform))))
     im0 = axes[0].imshow(das_uniform_db, aspect="auto", cmap="gray", extent=extent, vmin=-60, vmax=0)
     axes[0].set_title("Uniform DAS (dB)")
     axes[0].set_xlabel("Lateral [mm]")
@@ -133,7 +173,7 @@ if apod_dict:
 
     # Apodized images
     for idx, (apod_name, das_img) in enumerate(apod_dict.items(), start=1):
-        das_apod_db = 20.0 * np.log10(das_img / (np.max(das_img) + 1e-6) + 1e-6)
+        das_apod_db = to_db(das_img, ref=float(np.max(np.abs(das_img))))
         im = axes[idx].imshow(das_apod_db, aspect="auto", cmap="gray", extent=extent, vmin=-60, vmax=0)
         axes[idx].set_title(f"{apod_name} DAS (dB)")
         axes[idx].set_xlabel("Lateral [mm]")
