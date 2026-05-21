@@ -69,10 +69,25 @@ data: requirements
 run-delayed-samples:
 	$(PYTHON_INTERPRETER) scripts/create_delayed_samples_dataset.py
 
+## Run training script for mixer model
+.PHONY: run-train-mixer
+run-train-mixer:
+	$(PYTHON_INTERPRETER) scripts\train\train_inr_das_mixer.py
+
+## Run numeric phantom evaluation script
+.PHONY: run-phantom-create
+run-phantom-create:
+	$(PYTHON_INTERPRETER) scripts\evaluation\numeric_phantom\generate_evaluation_simulation.py
+
 ## Run numeric phantom evaluation script
 .PHONY: run-phantom-eval
 run-phantom-eval:
 	$(PYTHON_INTERPRETER) scripts/evaluation/numeric_phantom/evaluate_apodizations.py
+
+## Run numeric phantom evaluation script
+.PHONY: run-phantom-eval-mixer
+run-phantom-eval-mixer:
+	$(PYTHON_INTERPRETER) scripts/evaluation/numeric_phantom/evaluate_mixer.py
 
 ## Run FFT profile evaluation script
 .PHONY: run-fft-profile-eval

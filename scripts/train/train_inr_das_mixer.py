@@ -1231,7 +1231,7 @@ if bool(reporting_cfg.get("enabled", False)):
         if report_result.missing_required:
             console.warn(
                 "Training report generated with missing required figures: "
-                f"{report_result.missing_required}"
+                f"{report_result.missing_required}" 
             )
         console.success(
             "Training PDF report generated: "
