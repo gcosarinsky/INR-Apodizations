@@ -28,7 +28,10 @@ import numpy as np
 import tensorflow as tf
 import yaml
 
-from inr_apodizations.apodizations import compute_dynamic_apodizations_tf
+from inr_apodizations.apodizations import (
+    compute_dynamic_apodizations_tf,
+    compute_nsi_from_delayed_samples_numpy,
+)
 from inr_apodizations.config import CONFIGS_DIR
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.evaluation.config_utils import (
@@ -111,6 +114,11 @@ io_cfg = cfg.get("io", {})
 sim_cfg = cfg.get("simulation", {})
 bf_cfg = cfg.get("beamforming", {})
 mixer_cfg = cfg.get("mixer_model", {})
+nsi_cfg = cfg.get("nsi", {})
+nsi_enabled = bool(nsi_cfg.get("enabled", True))
+nsi_f_number = float(nsi_cfg.get("f_number", bf_cfg.get("f_number", 1.0)))
+nsi_dc = float(nsi_cfg.get("dc", 0.05))
+nsi_normalize = bool(nsi_cfg.get("normalize_by_n_subap", False))
 
 plot_cfg = cfg.get("plots", {})
 fontsize_legend = int(plot_cfg.get("legend_fontsize", 8))
@@ -216,6 +224,30 @@ images = {
     "mixer_combined": mixer_combined_img,
 }
 
+if nsi_enabled:
+    coords = cm.get_coordinates_1d(scaled=False)
+    x_coords = np.asarray(coords["x"], dtype=np.float32)
+    z_coords = np.asarray(coords["z"], dtype=np.float32)
+    x_elem_coords = np.asarray(coords["x_elem"], dtype=np.float32)
+
+    _img_sum, _img_diff, nsi_img = compute_nsi_from_delayed_samples_numpy(
+        delayed_samples=np.asarray(delayed0, dtype=np.complex64),
+        x_coords=x_coords,
+        z_coords=z_coords,
+        x_elem_coords=x_elem_coords,
+        f_number=nsi_f_number,
+        dc=nsi_dc,
+        normalize_by_n_subap=nsi_normalize,
+    )
+    if np.isnan(nsi_img).any() or np.isinf(nsi_img).any():
+        print("Warning: NSI image contains NaN/Inf values.")
+    images["nsi"] = np.asarray(nsi_img, dtype=np.float64)
+    print(
+        "Computed NSI image with "
+        f"f_number={nsi_f_number}, dc={nsi_dc}, "
+        f"normalize_by_n_subap={nsi_normalize}, shape={images['nsi'].shape}"
+    )
+
 mixer_coefficients = mixer_model.mixer_coefficients
 mixer_coefficients_serializable = {
     "weights": [float(v) for v in np.asarray(mixer_coefficients["weights"]).ravel().tolist()],
@@ -223,7 +255,7 @@ mixer_coefficients_serializable = {
 }
 
 profile_cfg = cfg.get("reflector_lateral_profiles", {})
-methods_cfg = profile_cfg.get("methods", ["hanning", "mixer_combined"])
+methods_cfg = profile_cfg.get("methods", list(images.keys()))
 if not isinstance(methods_cfg, list) or len(methods_cfg) == 0:
     raise ValueError("`reflector_lateral_profiles.methods` must be a non-empty list.")
 selected_method_names = [str(name).strip().lower() for name in methods_cfg]
@@ -294,6 +326,13 @@ metadata = {
     "feature_chunk_size": int(feature_chunk_size),
     "mixer_coefficients": mixer_coefficients_serializable,
 }
+if nsi_enabled:
+    metadata["nsi"] = {
+        "enabled": True,
+        "f_number": float(nsi_f_number),
+        "dc": float(nsi_dc),
+        "normalize_by_n_subap": bool(nsi_normalize),
+    }
 with (run_out_dir / "mixer_model_metadata.json").open("w", encoding="utf-8") as handle:
     json.dump(metadata, handle, indent=2)
 

@@ -3,8 +3,7 @@ io:
   evaluation_output_root: scripts/outputs/evaluation/numeric_phantom/mixer
   save_plot: true
   # Mixer evaluation expects a run directory containing model.keras and mixer_combiner_weights.npz.
-  model_path: scripts\outputs\train_mixer\20260518_152756
-
+  model_path: scripts\outputs\train_mixer\20260520_151111
 mixer_model:
   eval_combined: true
   feature_chunk_size: 65536
@@ -51,13 +50,19 @@ beamforming:
   n_batch: 0
   n_ch: 128
 
+nsi:
+  enabled: true
+  f_number: 0.5
+  dc: 0.05
+  normalize_by_n_subap: false
+
 visualization:
   enabled: true
   dyn_range_db: 60
 
 reflector_lateral_profiles:
   enabled: true
-  methods: [hanning, mixer_combined]
+  methods: [hanning, mixer_combined, nsi]
   reflector_indices: all
   half_width_lateral_mm: 1.5
   half_width_axial_mm: 1.0
