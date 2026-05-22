@@ -133,6 +133,7 @@ scaled_features, n_apodizations, physical_feature_set, physical_feature_componen
 train_info = load_config_yaml(train_info_file)
 resolved_mixer_cfg = train_info.get("resolved_mixer", {}) if isinstance(train_info, dict) else {}
 forced_boxcar_cfg = resolved_mixer_cfg.get("forced_boxcar", {}) if isinstance(resolved_mixer_cfg, dict) else {}
+mixer_head_cfg = resolved_mixer_cfg.get("mixer_head", {}) if isinstance(resolved_mixer_cfg, dict) else {}
 print("Using mixer run:", model_run_dir)
 print("Using model:", model_file)
 print("Using combiner weights:", combiner_weights_file)
@@ -176,33 +177,14 @@ mixer_model = DasInrApodMixer(
     feature_chunk_size=feature_chunk_size,
     n_apodizations=n_apodizations,
     weight_regularization_enabled=False,
+    mixer_head_config=mixer_head_cfg,
 )
 
 delayed_batch = tf.convert_to_tensor(np.expand_dims(delayed0, axis=0).astype(np.complex64))
 _warmup_image, _warmup_weights_grid = mixer_model.reconstruct_image(delayed_batch, training=False)
 
 combiner_weights_npz = np.load(combiner_weights_file)
-if "kernel" not in combiner_weights_npz or "bias" not in combiner_weights_npz:
-    raise ValueError(
-        "Invalid mixer combiner file. Expected `kernel` and `bias` arrays in: "
-        f"{combiner_weights_file}"
-    )
-
-combiner_kernel = np.asarray(combiner_weights_npz["kernel"], dtype=np.float32)
-combiner_bias = np.asarray(combiner_weights_npz["bias"], dtype=np.float32)
-expected_kernel_shape = (n_apodizations, 1)
-expected_bias_shape = (1,)
-if combiner_kernel.shape != expected_kernel_shape:
-    raise ValueError(
-        "Mixer combiner kernel shape mismatch: "
-        f"got {combiner_kernel.shape}, expected {expected_kernel_shape}"
-    )
-if combiner_bias.shape != expected_bias_shape:
-    raise ValueError(
-        "Mixer combiner bias shape mismatch: "
-        f"got {combiner_bias.shape}, expected {expected_bias_shape}"
-    )
-mixer_model.pixel_combiner.set_weights([combiner_kernel, combiner_bias])
+mixer_model.load_mixer_head_from_npz(combiner_weights_npz)
 
 dyn_apods = compute_dynamic_apodizations_tf(
     cm,
@@ -249,10 +231,22 @@ if nsi_enabled:
     )
 
 mixer_coefficients = mixer_model.mixer_coefficients
-mixer_coefficients_serializable = {
-    "weights": [float(v) for v in np.asarray(mixer_coefficients["weights"]).ravel().tolist()],
-    "bias": [float(v) for v in np.asarray(mixer_coefficients["bias"]).ravel().tolist()],
-}
+if "layers" in mixer_coefficients:
+    mixer_coefficients_serializable = {
+        "layers": [
+            {
+                "name": str(layer["name"]),
+                "kernel": np.asarray(layer["kernel"], dtype=np.float32).tolist(),
+                "bias": np.asarray(layer["bias"], dtype=np.float32).tolist(),
+            }
+            for layer in mixer_coefficients["layers"]
+        ]
+    }
+else:
+    mixer_coefficients_serializable = {
+        "weights": [float(v) for v in np.asarray(mixer_coefficients["weights"]).ravel().tolist()],
+        "bias": [float(v) for v in np.asarray(mixer_coefficients["bias"]).ravel().tolist()],
+    }
 
 profile_cfg = cfg.get("reflector_lateral_profiles", {})
 methods_cfg = profile_cfg.get("methods", list(images.keys()))

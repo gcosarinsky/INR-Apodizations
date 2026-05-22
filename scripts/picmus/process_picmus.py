@@ -6,6 +6,7 @@ from inr_apodizations.apodizations import compute_nsi_from_delayed_samples_numpy
 from inr_apodizations.coordinate_manager import CoordinateManager
 from inr_apodizations.evaluation.io_utils import (
     extract_mixer_train_metadata,
+    load_config_yaml,
     resolve_mixer_artifacts,
 )
 from inr_apodizations.modeling.das_models import DasInrApodMixer
@@ -165,6 +166,13 @@ if bool(mixer_cfg.get("enabled", False)):
         scaled_features, n_apodizations, physical_feature_set, physical_feature_components = (
             extract_mixer_train_metadata(train_info_file)
         )
+        train_info = load_config_yaml(train_info_file)
+        resolved_mixer_cfg = train_info.get("resolved_mixer", {}) if isinstance(train_info, dict) else {}
+        mixer_head_cfg = (
+            resolved_mixer_cfg.get("mixer_head", {})
+            if isinstance(resolved_mixer_cfg, dict)
+            else {}
+        )
 
         apodization_model = tf.keras.models.load_model(str(model_file), compile=False)
         out_shape = apodization_model.output_shape
@@ -192,6 +200,7 @@ if bool(mixer_cfg.get("enabled", False)):
             feature_chunk_size=feature_chunk_size,
             n_apodizations=n_apodizations,
             weight_regularization_enabled=False,
+            mixer_head_config=mixer_head_cfg,
         )
 
         if delayed_samples.ndim != 4:
@@ -210,27 +219,7 @@ if bool(mixer_cfg.get("enabled", False)):
         )
 
         combiner_weights_npz = np.load(combiner_weights_file)
-        if "kernel" not in combiner_weights_npz or "bias" not in combiner_weights_npz:
-            raise ValueError(
-                "Invalid mixer combiner file. Expected `kernel` and `bias` arrays in: "
-                f"{combiner_weights_file}"
-            )
-
-        combiner_kernel = np.asarray(combiner_weights_npz["kernel"], dtype=np.float32)
-        combiner_bias = np.asarray(combiner_weights_npz["bias"], dtype=np.float32)
-        expected_kernel_shape = (n_apodizations, 1)
-        expected_bias_shape = (1,)
-        if combiner_kernel.shape != expected_kernel_shape:
-            raise ValueError(
-                "Mixer combiner kernel shape mismatch: "
-                f"got {combiner_kernel.shape}, expected {expected_kernel_shape}"
-            )
-        if combiner_bias.shape != expected_bias_shape:
-            raise ValueError(
-                "Mixer combiner bias shape mismatch: "
-                f"got {combiner_bias.shape}, expected {expected_bias_shape}"
-            )
-        mixer_model.pixel_combiner.set_weights([combiner_kernel, combiner_bias])
+        mixer_model.load_mixer_head_from_npz(combiner_weights_npz)
 
         mixer_combined_batch, _weights_grid = mixer_model.reconstruct_image(
             delayed_batch, training=False

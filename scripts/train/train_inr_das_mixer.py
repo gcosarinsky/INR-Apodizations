@@ -276,6 +276,8 @@ lat_reg_auto_enabled = bool(lat_reg_auto_cfg.get("enabled", False))
 lat_reg_auto_ratio = float(lat_reg_auto_cfg.get("ratio", 0.1))
 lat_reg_auto_eps = float(lat_reg_auto_cfg.get("epsilon", 1e-12))
 
+mixer_head_resolved = helpers.parse_mixer_head_config(cfg)
+
 if forced_boxcar_enabled:
     weight_reg_enabled = False
     lat_reg_enabled = False
@@ -301,12 +303,14 @@ trainer_kwargs = {
     "lateral_regularization_q_z_feature_index": lat_reg_z_idx,
     "lateral_regularization_normalize_by_uniform": lat_reg_normalize_by_uniform,
     "lateral_regularization_channel_reduction": lat_reg_channel_reduction,
+    "mixer_head_config": mixer_head_resolved,
 }
 trainer = DasInrApodMixer(**trainer_kwargs)
 console.subsection("DasInrApodMixer configuration")
 console.pretty(
     {
         "n_apodizations": n_apodizations,
+        "mixer_head": mixer_head_resolved,
         "forced_boxcar": {
             "enabled": forced_boxcar_enabled,
             "f_number": forced_boxcar_f_number,
@@ -650,6 +654,7 @@ effective_cfg = {
     },
     "resolved_mixer": {
         "n_apodizations": n_apodizations,
+        "mixer_head": trainer.mixer_head_config,
         "forced_boxcar": {
             "enabled": forced_boxcar_enabled,
             "f_number": forced_boxcar_f_number,
@@ -697,12 +702,8 @@ helpers.save_json_artifact(str(Path(output_dir) / "history_stage.json"), stage_h
 helpers.save_json_artifact(str(Path(output_dir) / "history_full.json"), full_history)
 helpers.save_json_artifact(str(Path(output_dir) / "history_stages.json"), history_stages)
 
-combiner_kernel, combiner_bias = trainer.pixel_combiner.get_weights()
-np.savez(
-    Path(output_dir) / "mixer_combiner_weights.npz",
-    kernel=np.asarray(combiner_kernel, dtype=np.float32),
-    bias=np.asarray(combiner_bias, dtype=np.float32),
-)
+mixer_head_payload = trainer.get_mixer_head_npz_payload()
+np.savez(Path(output_dir) / "mixer_combiner_weights.npz", **mixer_head_payload)
 
 plot_cfg = cfg.get("plots", {})
 normalize_each_image = bool(plot_cfg.get("normalize_each_image", False))

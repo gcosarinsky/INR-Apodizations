@@ -962,6 +962,7 @@ class DasInrApodMixer(DasInrApod):
         lateral_regularization_normalize_by_uniform: bool = True,
         lateral_regularization_channel_reduction: str = "mean",
         lateral_regularization_q_grid: tf.Tensor | None = None,
+        mixer_head_config: dict[str, object] | None = None,
     ):
         """Initialize the ensemble trainer.
 
@@ -988,6 +989,8 @@ class DasInrApodMixer(DasInrApod):
                 apodizations: ``"mean"`` or ``"sum"``.
             lateral_regularization_q_grid: Optional precomputed q tensor with shape
                 ``(E, Z, X)``. If provided, no feature-index assumption is required.
+            mixer_head_config: Optional mixer-head configuration. When enabled,
+                supports extra hidden layers for pixel-wise combination.
 
         Raises:
             ValueError: If ``n_apodizations`` is not positive or does not match model output.
@@ -1028,13 +1031,98 @@ class DasInrApodMixer(DasInrApod):
             lateral_regularization_q_grid=lateral_regularization_q_grid,
         )
 
-        self.pixel_combiner = tf.keras.layers.Dense(
-            units=1,
-            activation=None,
-            name="pixelwise_linear_combiner",
-        )
+        self._mixer_head_config = self._resolve_mixer_head_config(mixer_head_config)
+        self._legacy_relu_after_combiner = not bool(self._mixer_head_config["enabled"])
+
+        if self._legacy_relu_after_combiner:
+            self._mixer_head_mode = "legacy"
+            self.pixel_combiner = tf.keras.layers.Dense(
+                units=1,
+                activation="relu",
+                name="pixelwise_linear_combiner",
+            )
+        else:
+            self._mixer_head_mode = "mlp"
+            self.pixel_combiner = self._build_configurable_mixer_head(
+                hidden_units=list(self._mixer_head_config["hidden_units"]),
+                activation=str(self._mixer_head_config["activation"]),
+                output_activation=self._mixer_head_config["output_activation"],
+            )
+
         self._last_intermediate_images: tf.Tensor | None = None
         self._last_apodization_grids: tf.Tensor | None = None
+
+    @staticmethod
+    def _resolve_mixer_head_config(
+        mixer_head_config: dict[str, object] | None,
+    ) -> dict[str, object]:
+        """Normalize optional mixer-head config and validate its values."""
+        if mixer_head_config is None:
+            return {
+                "enabled": False,
+                "hidden_units": [],
+                "activation": "relu",
+                "output_activation": "relu",
+            }
+        if not isinstance(mixer_head_config, dict):
+            raise ValueError("mixer_head_config must be a dict when provided")
+
+        enabled = bool(mixer_head_config.get("enabled", False))
+        hidden_units_raw = mixer_head_config.get("hidden_units", [])
+        if hidden_units_raw is None:
+            hidden_units = []
+        elif isinstance(hidden_units_raw, (int, float)):
+            hidden_units = [int(hidden_units_raw)]
+        elif isinstance(hidden_units_raw, (list, tuple)):
+            hidden_units = [int(unit) for unit in hidden_units_raw]
+        else:
+            raise ValueError("mixer_head_config.hidden_units must be int/list/tuple or null")
+        if any(unit <= 0 for unit in hidden_units):
+            raise ValueError("mixer_head_config.hidden_units entries must be > 0")
+
+        activation = str(mixer_head_config.get("activation", "relu")).strip()
+        if len(activation) == 0:
+            raise ValueError("mixer_head_config.activation must be non-empty")
+
+        output_activation_raw = mixer_head_config.get("output_activation", "relu")
+        if output_activation_raw is None:
+            output_activation = None
+        else:
+            output_activation = str(output_activation_raw).strip()
+            if len(output_activation) == 0:
+                output_activation = None
+
+        return {
+            "enabled": enabled,
+            "hidden_units": hidden_units,
+            "activation": activation,
+            "output_activation": output_activation,
+        }
+
+    @staticmethod
+    def _build_configurable_mixer_head(
+        hidden_units: list[int],
+        activation: str,
+        output_activation: str | None,
+    ) -> tf.keras.Sequential:
+        """Build an optional multi-layer pixel-wise combiner head."""
+        layers: list[tf.keras.layers.Layer] = []
+        for idx, units in enumerate(hidden_units):
+            layers.append(
+                tf.keras.layers.Dense(
+                    int(units),
+                    activation=activation,
+                    name=f"pixelwise_mixer_hidden_{idx + 1}",
+                )
+            )
+        layers.append(
+            tf.keras.layers.Dense(
+                1,
+                activation=output_activation,
+                name="pixelwise_mixer_output",
+            )
+        )
+        return tf.keras.Sequential(layers, name="pixelwise_mixer_head")
 
     @property
     def intermediate_images(self) -> tf.Tensor | None:
@@ -1055,7 +1143,17 @@ class DasInrApodMixer(DasInrApod):
         return self._last_apodization_grids
 
     @property
-    def mixer_coefficients(self) -> dict[str, np.ndarray]:
+    def mixer_head_config(self) -> dict[str, object]:
+        """Return resolved mixer-head configuration used by this model."""
+        return {
+            "enabled": bool(self._mixer_head_config["enabled"]),
+            "hidden_units": list(self._mixer_head_config["hidden_units"]),
+            "activation": str(self._mixer_head_config["activation"]),
+            "output_activation": self._mixer_head_config["output_activation"],
+        }
+
+    @property
+    def mixer_coefficients(self) -> dict[str, object]:
         """Return the learned coefficients of the pixel-wise linear combiner layer.
 
         The ``pixel_combiner`` Dense layer has a kernel of shape ``(N, 1)`` and a
@@ -1077,11 +1175,154 @@ class DasInrApodMixer(DasInrApod):
                 "pixel_combiner has not been built yet. "
                 "Run at least one forward pass before accessing mixer_coefficients."
             )
-        kernel, bias = self.pixel_combiner.get_weights()
-        return {
-            "weights": kernel.squeeze(axis=-1),  # (N, 1) -> (N,)
-            "bias": bias,                         # (1,)
+        if self._mixer_head_mode == "legacy":
+            kernel, bias = self.pixel_combiner.get_weights()
+            return {
+                "weights": kernel.squeeze(axis=-1),  # (N, 1) -> (N,)
+                "bias": bias,                         # (1,)
+            }
+
+        layers_payload: list[dict[str, object]] = []
+        for layer in self.pixel_combiner.layers:
+            if not isinstance(layer, tf.keras.layers.Dense):
+                continue
+            layer_weights = layer.get_weights()
+            if len(layer_weights) != 2:
+                continue
+            kernel, bias = layer_weights
+            layers_payload.append(
+                {
+                    "name": layer.name,
+                    "kernel": np.asarray(kernel, dtype=np.float32),
+                    "bias": np.asarray(bias, dtype=np.float32),
+                }
+            )
+        return {"layers": layers_payload}
+
+    def get_mixer_head_npz_payload(self) -> dict[str, np.ndarray]:
+        """Export mixer-head weights to a backward-compatible NPZ payload."""
+        if not self.pixel_combiner.built:
+            raise RuntimeError(
+                "pixel_combiner has not been built yet. "
+                "Run at least one forward pass before exporting mixer-head weights."
+            )
+
+        payload: dict[str, np.ndarray] = {
+            "mixer_head_mode": np.asarray(self._mixer_head_mode),
         }
+        if self._mixer_head_mode == "legacy":
+            kernel, bias = self.pixel_combiner.get_weights()
+            payload["mixer_head_version"] = np.asarray(1, dtype=np.int32)
+            payload["kernel"] = np.asarray(kernel, dtype=np.float32)
+            payload["bias"] = np.asarray(bias, dtype=np.float32)
+            return payload
+
+        payload["mixer_head_version"] = np.asarray(2, dtype=np.int32)
+        payload["mixer_head_hidden_units"] = np.asarray(
+            list(self._mixer_head_config["hidden_units"]), dtype=np.int32
+        )
+        payload["mixer_head_activation"] = np.asarray(str(self._mixer_head_config["activation"]))
+        output_activation = self._mixer_head_config["output_activation"]
+        payload["mixer_head_output_activation"] = np.asarray(
+            "" if output_activation is None else str(output_activation)
+        )
+        payload["mixer_head_num_layers"] = np.asarray(len(self.pixel_combiner.layers), dtype=np.int32)
+
+        for idx, layer in enumerate(self.pixel_combiner.layers):
+            if not isinstance(layer, tf.keras.layers.Dense):
+                raise RuntimeError(
+                    "Unsupported layer type in pixel_combiner serialization: "
+                    f"{type(layer).__name__}"
+                )
+            layer_weights = layer.get_weights()
+            if len(layer_weights) != 2:
+                raise RuntimeError(
+                    f"Dense layer {layer.name} does not expose kernel+bias weights"
+                )
+            kernel, bias = layer_weights
+            payload[f"layer_{idx}_kernel"] = np.asarray(kernel, dtype=np.float32)
+            payload[f"layer_{idx}_bias"] = np.asarray(bias, dtype=np.float32)
+        return payload
+
+    def load_mixer_head_from_npz(self, combiner_weights_npz: object) -> None:
+        """Load mixer-head weights from legacy or versioned NPZ payload."""
+        version = 1
+        if "mixer_head_version" in combiner_weights_npz:
+            version = int(np.asarray(combiner_weights_npz["mixer_head_version"]).reshape(()))
+
+        if version <= 1:
+            if self._mixer_head_mode != "legacy":
+                raise ValueError(
+                    "Legacy mixer combiner weights can only be loaded into legacy mixer head mode"
+                )
+            if "kernel" not in combiner_weights_npz or "bias" not in combiner_weights_npz:
+                raise ValueError("Legacy mixer combiner NPZ must contain `kernel` and `bias`")
+
+            combiner_kernel = np.asarray(combiner_weights_npz["kernel"], dtype=np.float32)
+            combiner_bias = np.asarray(combiner_weights_npz["bias"], dtype=np.float32)
+            expected_kernel_shape = (self.n_apodizations, 1)
+            expected_bias_shape = (1,)
+            if combiner_kernel.shape != expected_kernel_shape:
+                raise ValueError(
+                    "Mixer combiner kernel shape mismatch: "
+                    f"got {combiner_kernel.shape}, expected {expected_kernel_shape}"
+                )
+            if combiner_bias.shape != expected_bias_shape:
+                raise ValueError(
+                    "Mixer combiner bias shape mismatch: "
+                    f"got {combiner_bias.shape}, expected {expected_bias_shape}"
+                )
+            self.pixel_combiner.set_weights([combiner_kernel, combiner_bias])
+            return
+
+        if self._mixer_head_mode == "legacy":
+            raise ValueError(
+                "Versioned mixer-head weights require mixer_head.enabled=true in model config"
+            )
+
+        if "mixer_head_num_layers" not in combiner_weights_npz:
+            raise ValueError("Versioned mixer combiner NPZ must contain `mixer_head_num_layers`")
+
+        n_layers_saved = int(np.asarray(combiner_weights_npz["mixer_head_num_layers"]).reshape(()))
+        n_layers_model = len(self.pixel_combiner.layers)
+        if n_layers_saved != n_layers_model:
+            raise ValueError(
+                "Mixer head layer count mismatch: "
+                f"saved={n_layers_saved}, model={n_layers_model}"
+            )
+
+        for idx, layer in enumerate(self.pixel_combiner.layers):
+            if not isinstance(layer, tf.keras.layers.Dense):
+                raise ValueError(
+                    "Unsupported layer type in pixel_combiner deserialization: "
+                    f"{type(layer).__name__}"
+                )
+            kernel_key = f"layer_{idx}_kernel"
+            bias_key = f"layer_{idx}_bias"
+            if kernel_key not in combiner_weights_npz or bias_key not in combiner_weights_npz:
+                raise ValueError(
+                    "Versioned mixer combiner NPZ is missing required layer keys: "
+                    f"{kernel_key}, {bias_key}"
+                )
+
+            kernel = np.asarray(combiner_weights_npz[kernel_key], dtype=np.float32)
+            bias = np.asarray(combiner_weights_npz[bias_key], dtype=np.float32)
+            current_weights = layer.get_weights()
+            if len(current_weights) != 2:
+                raise ValueError(f"Layer {layer.name} does not expose kernel+bias weights")
+            expected_kernel_shape = current_weights[0].shape
+            expected_bias_shape = current_weights[1].shape
+            if tuple(kernel.shape) != tuple(expected_kernel_shape):
+                raise ValueError(
+                    f"Mixer layer kernel shape mismatch for {layer.name}: "
+                    f"got {kernel.shape}, expected {expected_kernel_shape}"
+                )
+            if tuple(bias.shape) != tuple(expected_bias_shape):
+                raise ValueError(
+                    f"Mixer layer bias shape mismatch for {layer.name}: "
+                    f"got {bias.shape}, expected {expected_bias_shape}"
+                )
+            layer.set_weights([kernel, bias])
 
     def predict_weights_grid(self, training: bool = False) -> tf.Tensor:
         """Run the INR on geometry features and reshape to ``(E, Z, X, N)``.
@@ -1124,7 +1365,6 @@ class DasInrApodMixer(DasInrApod):
 
         intermediate_flat = tf.reshape(intermediate_images, (-1, self.n_apodizations))
         combined_flat = self.pixel_combiner(intermediate_flat, training=training)
-        combined_flat = tf.nn.relu(combined_flat)
         batch_size = tf.shape(delayed_batch)[0]
         combined_image = tf.reshape(combined_flat, (batch_size, self.nz, self.nx))
 

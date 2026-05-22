@@ -34,6 +34,18 @@ model:
   # via a trainable linear layer inside DasInrApodMixer.
   n_apodizations: 3
 
+  mixer_head:
+    # Optional extended head for combining intermediate DAS channels.
+    # enabled=false preserves legacy behavior: Dense(1) + external ReLU.
+    enabled: true
+    # hidden_units can be int or list. Empty list means no hidden layer.
+    # Example: [16, 8]
+    hidden_units: [2]
+    # Activation for hidden layers (used only when hidden_units is non-empty).
+    activation: relu
+    # Activation for the output Dense(1). Use null for linear output.
+    output_activation: relu
+
   symmetry:
     # If enabled, enforce per-channel symmetry with a_sym(f) = a(f) + a(f_flip).
     # f_flip inverts signed coordinate-like features (x, xrel, x_over_z, xrel_over_z).

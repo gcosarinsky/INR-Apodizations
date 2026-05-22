@@ -346,3 +346,68 @@ def parse_lateral_regularization_config(cfg: Mapping[str, Any]) -> dict[str, Any
             "epsilon": auto_eps,
         },
     }
+
+
+def parse_mixer_head_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """Parse and validate optional mixer-head settings from experiment config.
+
+    Reads ``model.mixer_head`` and returns a normalized config dict that can be
+    passed directly to ``DasInrApodMixer``.
+
+    Args:
+        cfg: Full experiment configuration mapping.
+
+    Returns:
+        Dictionary with keys:
+        - ``enabled``: bool
+        - ``hidden_units``: list[int]
+        - ``activation``: str
+        - ``output_activation``: str | None
+
+    Raises:
+        ValueError: If configuration values are invalid.
+    """
+    model_cfg = cfg.get("model", {})
+    mixer_head_cfg_raw = model_cfg.get("mixer_head", {}) if isinstance(model_cfg, Mapping) else {}
+
+    if mixer_head_cfg_raw is None:
+        mixer_head_cfg_raw = {}
+    if not isinstance(mixer_head_cfg_raw, Mapping):
+        raise ValueError("model.mixer_head must be a mapping when provided")
+
+    mixer_head_cfg = dict(mixer_head_cfg_raw)
+    enabled = bool(mixer_head_cfg.get("enabled", False))
+
+    hidden_units_raw = mixer_head_cfg.get("hidden_units", [])
+    if hidden_units_raw is None:
+        hidden_units = []
+    elif isinstance(hidden_units_raw, (int, float)):
+        hidden_units = [int(hidden_units_raw)]
+    elif isinstance(hidden_units_raw, (list, tuple)):
+        hidden_units = [int(unit) for unit in hidden_units_raw]
+    else:
+        raise ValueError(
+            "model.mixer_head.hidden_units must be int/float/list/tuple or null"
+        )
+
+    if any(unit <= 0 for unit in hidden_units):
+        raise ValueError("model.mixer_head.hidden_units entries must be > 0")
+
+    activation = str(mixer_head_cfg.get("activation", "relu")).strip()
+    if len(activation) == 0:
+        raise ValueError("model.mixer_head.activation must be a non-empty string")
+
+    output_activation_raw = mixer_head_cfg.get("output_activation", "relu")
+    if output_activation_raw is None:
+        output_activation = None
+    else:
+        output_activation = str(output_activation_raw).strip()
+        if len(output_activation) == 0:
+            output_activation = None
+
+    return {
+        "enabled": enabled,
+        "hidden_units": hidden_units,
+        "activation": activation,
+        "output_activation": output_activation,
+    }
