@@ -46,10 +46,14 @@ apodizations:
     angle_chunk_size: 1
   inr:
     enabled: true
-    model_path: "sandbox\\inr_das_experiment\\outputs\\train\\20260505_165143\\model.keras"
+    model_path: "sandbox\\outputs\\train\\20260505_165143\\model.keras"
     feature_batch_size: 32768
     z_chunk_size: 16
     angle_chunk_size: 1
+  mixer:
+    enabled: true
+    model_path: "scripts\\outputs\\train_mixer\\20260522_103130"
+    feature_chunk_size: 65536
   nsi:
     enabled: true
     f_number: 1.0

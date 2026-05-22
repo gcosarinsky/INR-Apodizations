@@ -32,7 +32,7 @@ model:
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
-  n_apodizations: 2
+  n_apodizations: 3
 
   symmetry:
     # If enabled, enforce per-channel symmetry with a_sym(f) = a(f) + a(f_flip).
@@ -56,7 +56,7 @@ eval_noise:
   scale: 1.0
 
 training:
-  batch_size: 2
+  batch_size: 1
   epochs: 15
   learning_rate: 0.001
   loss: mae
