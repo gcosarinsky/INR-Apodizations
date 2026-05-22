@@ -50,3 +50,8 @@ apodizations:
     feature_batch_size: 32768
     z_chunk_size: 16
     angle_chunk_size: 1
+  nsi:
+    enabled: true
+    f_number: 1.0
+    dc: 0.05
+    normalize_by_n_subap: false
