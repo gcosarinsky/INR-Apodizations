@@ -36,7 +36,7 @@ model:
 
   mixer_head:
     # Optional extended head for combining intermediate DAS channels.
-    # enabled=false preserves legacy behavior: Dense(1) + external ReLU.
+    # enabled=false preserves legacy behavior: single Dense(1, relu).
     enabled: true
     # hidden_units can be int or list. Empty list means no hidden layer.
     # Example: [16, 8]
@@ -76,7 +76,7 @@ training:
   weight_decay: 0.001
 
   weight_regularization:
-    enabled: false
+    enabled: true
     # type: regularization type applied to the apodization norm.
     # "hinge_low_norm": squared hinge penalty when global Euclidean norm < tau.
     type: hinge_low_norm

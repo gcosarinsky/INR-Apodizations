@@ -279,11 +279,11 @@ lat_reg_auto_eps = float(lat_reg_auto_cfg.get("epsilon", 1e-12))
 mixer_head_resolved = helpers.parse_mixer_head_config(cfg)
 
 if forced_boxcar_enabled:
-    weight_reg_enabled = False
-    lat_reg_enabled = False
-    console.warn(
-        "Forced boxcar is enabled: weight and lateral regularization are disabled at runtime."
-    )
+    if weight_reg_enabled or lat_reg_enabled:
+        console.info(
+            "Forced boxcar is enabled: regularization remains active and is applied "
+            "to masked apodization weights."
+        )
 
 trainer_kwargs = {
     "apodization_model": apodization_model,
