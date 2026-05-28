@@ -9,6 +9,7 @@ from inr_apodizations.evaluation.io_utils import (
     load_config_yaml,
     resolve_mixer_artifacts,
 )
+from inr_apodizations.evaluation.profiles import extract_reflector_profiles
 from inr_apodizations.modeling.das_models import DasInrApodMixer
 from inr_apodizations.picmus import (
     build_coordinate_manager,
@@ -26,6 +27,7 @@ from inr_apodizations.picmus import (
 from inr_apodizations.utils import to_db
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import cupy as cp
 import numpy as np
 import tensorflow as tf
@@ -51,6 +53,165 @@ def _resolve_display_path(path_value: str | Path) -> Path:
         return path
     return (PROJ_ROOT / path).resolve()
 
+
+def _load_manual_scatterers_mm(io_cfg: dict) -> np.ndarray:
+    """Load optional manual scatterers from YAML io config and convert to mm."""
+
+    def _parse_pairs(values, field_name: str, to_mm_scale: float) -> np.ndarray:
+        if values is None:
+            return np.empty((0, 2), dtype=np.float32)
+
+        arr = np.asarray(values, dtype=np.float32)
+        if arr.size == 0:
+            return np.empty((0, 2), dtype=np.float32)
+        if arr.ndim == 1 and arr.shape[0] == 2:
+            arr = arr.reshape(1, 2)
+        if arr.ndim != 2 or arr.shape[1] != 2:
+            raise ValueError(
+                f"io.{field_name} must be [x, z] or a list of [x, z] pairs, got shape {arr.shape}"
+            )
+
+        return (arr * np.float32(to_mm_scale)).astype(np.float32, copy=False)
+
+    manual_mm = _parse_pairs(io_cfg.get("manual_scatterers_mm"), "manual_scatterers_mm", 1.0)
+    manual_m = _parse_pairs(io_cfg.get("manual_scatterers_m"), "manual_scatterers_m", 1000.0)
+
+    if manual_mm.size == 0 and manual_m.size == 0:
+        return np.empty((0, 2), dtype=np.float32)
+    if manual_mm.size == 0:
+        return manual_m
+    if manual_m.size == 0:
+        return manual_mm
+
+    return np.concatenate([manual_mm, manual_m], axis=0)
+
+
+def _profile_to_db(profile: np.ndarray, floor_db: float = -60.0) -> np.ndarray:
+    """Convert one 1D profile to dB with robust local normalization."""
+    prof = np.asarray(profile, dtype=np.float32)
+    valid = np.isfinite(prof)
+    if not np.any(valid):
+        return np.full_like(prof, floor_db, dtype=np.float32)
+
+    ref = float(np.nanmax(np.abs(prof[valid])))
+    if ref <= 0.0:
+        return np.full_like(prof, floor_db, dtype=np.float32)
+
+    prof_db = to_db(np.abs(prof), ref=ref)
+    prof_db = np.where(np.isfinite(prof_db), prof_db, floor_db)
+    return np.maximum(prof_db, floor_db).astype(np.float32, copy=False)
+
+
+def _plot_profile_pages(
+    profile_metrics: dict[str, dict],
+    scatterers_mm: np.ndarray,
+    axis_kind: str,
+    output_dir: Path,
+    ts: str,
+    max_scatterers_per_page: int = 12,
+) -> list[Path]:
+    """Plot reflector profiles in paged figures for lateral or axial direction."""
+    if axis_kind not in {"lateral", "axial"}:
+        raise ValueError(f"axis_kind must be 'lateral' or 'axial', got {axis_kind}")
+    if max_scatterers_per_page <= 0:
+        raise ValueError("max_scatterers_per_page must be a positive integer.")
+
+    method_names = list(profile_metrics.keys())
+    if not method_names:
+        return []
+
+    key_profiles = f"{axis_kind}_profiles"
+    key_offsets = f"{axis_kind}_offsets_mm"
+    offsets_mm = np.asarray(profile_metrics[method_names[0]][key_offsets], dtype=np.float32)
+    n_scatterers = int(scatterers_mm.shape[0])
+
+    if n_scatterers == 0:
+        return []
+
+    n_pages = int(np.ceil(n_scatterers / max_scatterers_per_page))
+    saved_paths: list[Path] = []
+
+    for page_idx in range(n_pages):
+        start = page_idx * max_scatterers_per_page
+        end = min(start + max_scatterers_per_page, n_scatterers)
+        n_this_page = end - start
+        rows, cols = _subplot_grid(n_this_page)
+
+        fig, axes = plt.subplots(rows, cols, figsize=(5.0 * cols, 3.6 * rows), squeeze=False)
+        axes_flat = axes.ravel()
+
+        for local_idx, scatterer_idx in enumerate(range(start, end)):
+            ax = axes_flat[local_idx]
+            x_mm, z_mm = scatterers_mm[scatterer_idx]
+            for method_name in method_names:
+                profiles_arr = np.asarray(profile_metrics[method_name][key_profiles])
+                profile_db = _profile_to_db(profiles_arr[scatterer_idx])
+                ax.plot(offsets_mm, profile_db, label=method_name, linewidth=1.3)
+
+            ax.set_title(f"Pt {scatterer_idx}: x={x_mm:.2f} mm, z={z_mm:.2f} mm")
+            ax.set_xlabel(f"{axis_kind.capitalize()} offset [mm]")
+            ax.set_ylabel("Amplitude [dB]")
+            ax.set_ylim(-60.0, 1.0)
+            ax.grid(True, alpha=0.25)
+            if local_idx == 0:
+                ax.legend(loc="lower left", fontsize=8)
+
+        for local_idx in range(n_this_page, len(axes_flat)):
+            axes_flat[local_idx].axis("off")
+
+        fig.suptitle(
+            f"PICMUS {axis_kind.capitalize()} profiles (scatterers {start}-{end - 1})",
+            fontsize=12,
+        )
+        fig.tight_layout()
+
+        output_path = output_dir / f"picmus_{axis_kind}_profiles_{ts}_p{page_idx + 1:02d}.png"
+        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved_paths.append(output_path)
+
+    return saved_paths
+
+
+def _overlay_profile_windows_on_uniform(
+    ax,
+    scatterers_mm: np.ndarray,
+    cm: CoordinateManager,
+    profile_metrics_uniform: dict,
+) -> None:
+    """Overlay extraction windows used for reflector profiles on Uniform DAS."""
+    coords = cm.get_coordinates_1d(scaled=False)
+    x_coords = np.asarray(coords["x"], dtype=np.float32)
+    z_coords = np.asarray(coords["z"], dtype=np.float32)
+
+    if x_coords.size < 2 or z_coords.size < 2:
+        return
+
+    dx = float(np.abs(x_coords[1] - x_coords[0]))
+    dz = float(np.abs(z_coords[1] - z_coords[0]))
+    half_x = int(profile_metrics_uniform["half_x_px"])
+    half_z = int(profile_metrics_uniform["half_z_px"])
+
+    width_mm = 2.0 * half_x * dx
+    height_mm = 2.0 * half_z * dz
+
+    for x_mm, z_mm in np.asarray(scatterers_mm, dtype=np.float32):
+        ix = int(np.argmin(np.abs(x_coords - x_mm)))
+        iz = int(np.argmin(np.abs(z_coords - z_mm)))
+        x_center = float(x_coords[ix])
+        z_center = float(z_coords[iz])
+
+        rect = Rectangle(
+            (x_center - width_mm / 2.0, z_center - height_mm / 2.0),
+            width_mm,
+            height_mm,
+            fill=False,
+            edgecolor="tab:cyan",
+            linewidth=0.8,
+            alpha=0.5,
+        )
+        ax.add_patch(rect)
+
 """Run PICMUS delayed-sample pipeline and compute uniform DAS image.
 
 Args:
@@ -70,11 +231,20 @@ pipeline_cfg = load_picmus_pipeline_config(config_path)
 io_cfg = pipeline_cfg["io"]
 picmus_data_path = io_cfg["picmus_data_path"]
 print(f"Loading PICMUS data from: {picmus_data_path}")
-angles, rf_real, x_axis_mm, z_axis_mm = load_picmus_hdf5(
+angles, rf_real, x_axis_mm, z_axis_mm, scatterers_mm = load_picmus_hdf5(
     picmus_data_path=picmus_data_path,
     rf_file=io_cfg["rf_file"],
     scan_file=io_cfg["scan_file"],
+    phantom_file=io_cfg["phantom_file"]
 )
+
+manual_scatterers_mm = _load_manual_scatterers_mm(io_cfg)
+n_phantom_scatterers = int(scatterers_mm.shape[0])
+if manual_scatterers_mm.size > 0:
+    scatterers_mm = np.concatenate(
+        [np.asarray(scatterers_mm, dtype=np.float32), manual_scatterers_mm],
+        axis=0,
+    )
 
 angles_sel, rf_sel = select_angle_subset(angles, rf_real, pipeline_cfg["angle_subset"])
 cfg = build_picmus_kernel_config(pipeline_cfg, angles_sel, rf_sel, x_axis_mm, z_axis_mm)
@@ -95,6 +265,13 @@ print(f"RF shape used: {rf_sel.shape}")
 print(f"Delayed samples shape: {delayed_samples.shape}")
 print(f"Uniform DAS image shape: {das_uniform.shape}")
 print(f"Effective ROI [xmin, xmax, zmin, zmax] (mm): {kp.roi_effective}")
+print(f"Loaded phantom scatterers: {n_phantom_scatterers}")
+print(f"Loaded manual scatterers from YAML: {manual_scatterers_mm.shape[0]}")
+print(f"Total scatterers used: {scatterers_mm.shape[0]}")
+
+output_dir = PROJ_ROOT / Path("scripts/outputs/picmus")
+output_dir.mkdir(parents=True, exist_ok=True)
+ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # Compute apodizations if enabled
 print("\nProcessing apodizations...")
@@ -273,6 +450,37 @@ if pipeline_cfg["apodizations"]["nsi"]["enabled"]:
     apod_dict["NSI"] = nsi_img.astype(np.float32, copy=False)
     print(f"  NSI image computed: shape={nsi_img.shape}")
 
+# Compute lateral/axial reflector profiles for all reconstructed images.
+images_for_profiles = {"Uniform": das_uniform, **apod_dict}
+profile_metrics: dict[str, dict] = {}
+for method_name, method_img in images_for_profiles.items():
+    profile_metrics[method_name] = extract_reflector_profiles(
+        image=np.asarray(method_img, dtype=np.float32),
+        scatterers=np.asarray(scatterers_mm, dtype=np.float32),
+        cm=cm,
+        half_width_lateral_mm=1.5,
+        half_width_axial_mm=1.0,
+    )
+
+lateral_profile_figs = _plot_profile_pages(
+    profile_metrics=profile_metrics,
+    scatterers_mm=np.asarray(scatterers_mm, dtype=np.float32),
+    axis_kind="lateral",
+    output_dir=output_dir,
+    ts=ts,
+)
+axial_profile_figs = _plot_profile_pages(
+    profile_metrics=profile_metrics,
+    scatterers_mm=np.asarray(scatterers_mm, dtype=np.float32),
+    axis_kind="axial",
+    output_dir=output_dir,
+    ts=ts,
+)
+
+print("\nReflector profiles computed.")
+print(f"Lateral profile figures: {len(lateral_profile_figs)}")
+print(f"Axial profile figures: {len(axial_profile_figs)}")
+
 # Plot all apodizations side-by-side if any were computed
 if apod_dict:
     n_images = len(apod_dict) + 1  # +1 for uniform
@@ -300,6 +508,12 @@ if apod_dict:
     axes_flat[0].set_title("Uniform DAS (dB)")
     axes_flat[0].set_xlabel("Lateral [mm]")
     axes_flat[0].set_ylabel("Axial [mm]")
+    _overlay_profile_windows_on_uniform(
+        ax=axes_flat[0],
+        scatterers_mm=np.asarray(scatterers_mm, dtype=np.float32),
+        cm=cm,
+        profile_metrics_uniform=profile_metrics["Uniform"],
+    )
 
     # Apodized images
     for idx, (apod_name, das_img) in enumerate(apod_dict.items(), start=1):
@@ -334,9 +548,6 @@ if apod_dict:
         bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.9, "edgecolor": "0.7"},
     )
 
-    output_dir = PROJ_ROOT / Path("scripts/outputs/picmus")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     figure_path = output_dir / f"picmus_apodizations_{ts}.png"
     fig.savefig(figure_path, dpi=150, bbox_inches="tight")
 
@@ -344,5 +555,15 @@ if apod_dict:
 
     print("\nApodization images plotted.")
     print(f"Figure saved to: {figure_path}")
+
+if lateral_profile_figs:
+    print("Saved lateral profile figures:")
+    for p in lateral_profile_figs:
+        print(f"  {p}")
+
+if axial_profile_figs:
+    print("Saved axial profile figures:")
+    for p in axial_profile_figs:
+        print(f"  {p}")
 
 

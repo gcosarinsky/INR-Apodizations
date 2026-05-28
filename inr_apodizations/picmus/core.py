@@ -47,34 +47,41 @@ def load_picmus_hdf5(
     picmus_data_path: str | Path,
     rf_file: str,
     scan_file: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    phantom_file: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load RF, angle, and scan axes arrays from PICMUS HDF5 files.
 
     Args:
         picmus_data_path: Base folder that contains PICMUS HDF5 files.
         rf_file: RF HDF5 file path relative to ``picmus_data_path``.
         scan_file: Scan HDF5 file path relative to ``picmus_data_path``.
+        phantom_file: Phantom HDF5 file path relative to ``picmus_data_path``.
 
     Returns:
-        Tuple ``(angles, rf_real, x_axis_mm, z_axis_mm)`` where:
+        Tuple ``(angles, rf_real, x_axis_mm, z_axis_mm, scatterers_mm)`` where:
             angles: 1D transmit angles array.
             rf_real: RF real-part data with shape (n_angles, n_elements, n_samples).
             x_axis_mm: Scan lateral axis in millimeters.
             z_axis_mm: Scan axial axis in millimeters.
+            scatterers_mm: Scatterer positions with shape (n_scatterers, 2) in millimeters,
+                ordered as [x_mm, z_mm].
 
     Raises:
-        FileNotFoundError: If RF or scan file does not exist.
+        FileNotFoundError: If RF, scan, or phantom file does not exist.
         KeyError: If expected HDF5 keys do not exist.
-        ValueError: If RF shape or scan axes are invalid.
+        ValueError: If RF shape, scan axes, or scatterer positions are invalid.
     """
     base_path = Path(picmus_data_path)
     rf_path = base_path / rf_file
     scan_path = base_path / scan_file
+    phantom_path = base_path / phantom_file
 
     if not rf_path.exists():
         raise FileNotFoundError(f"RF dataset file not found: {rf_path}")
     if not scan_path.exists():
         raise FileNotFoundError(f"Scan file not found: {scan_path}")
+    if not phantom_path.exists():
+        raise FileNotFoundError(f"Phantom file not found: {phantom_path}")
 
     with h5py.File(rf_path, "r") as rf_h5:
         rf_dset = rf_h5["US"]["US_DATASET0000"]
@@ -86,6 +93,41 @@ def load_picmus_hdf5(
         x_axis_mm = 1000.0 * np.ravel(scan_dset["x_axis"][:])
         z_axis_mm = 1000.0 * np.ravel(scan_dset["z_axis"][:])
 
+    with h5py.File(phantom_path, "r") as phantom_h5:
+        phantom_dset = phantom_h5["US"]["US_DATASET0000"]
+        scatterers_positions = None
+
+        if "scatterers_positions" in phantom_dset:
+            scatterers_positions = np.asarray(phantom_dset["scatterers_positions"][:])
+        else:
+            def _find_scatterers(_name: str, obj):
+                nonlocal scatterers_positions
+                if (
+                    scatterers_positions is None
+                    and isinstance(obj, h5py.Dataset)
+                    and obj.name.endswith("scatterers_positions")
+                ):
+                    scatterers_positions = np.asarray(obj[:])
+
+            phantom_dset.visititems(_find_scatterers)
+
+        if scatterers_positions is None:
+            raise KeyError(
+                "Expected dataset 'scatterers_positions' not found under 'US/US_DATASET0000' "
+                f"in phantom HDF5 file {phantom_path}"
+            )
+
+    scatterers_positions = np.asarray(scatterers_positions, dtype=np.float32)
+    if scatterers_positions.ndim != 2 or scatterers_positions.shape[0] != 3:
+        raise ValueError(
+            "Expected scatterers_positions with shape (3, N), got "
+            f"{scatterers_positions.shape}"
+        )
+    if scatterers_positions.shape[1] == 0:
+        raise ValueError("Expected at least one scatterer position in phantom file.")
+
+    scatterers_mm = 1000.0 * scatterers_positions[[0, 2], :].T
+
     if rf_real.ndim != 3:
         raise ValueError(f"Expected rf_real with 3 dimensions, got shape {rf_real.shape}")
     if x_axis_mm.size < 2 or z_axis_mm.size < 2:
@@ -93,7 +135,13 @@ def load_picmus_hdf5(
             f"Expected x_axis/z_axis with at least 2 values, got {x_axis_mm.size} and {z_axis_mm.size}"
         )
 
-    return angles, rf_real, x_axis_mm.astype(np.float32), z_axis_mm.astype(np.float32)
+    return (
+        angles,
+        rf_real,
+        x_axis_mm.astype(np.float32),
+        z_axis_mm.astype(np.float32),
+        scatterers_mm.astype(np.float32),
+    )
 
 
 def select_angle_subset(

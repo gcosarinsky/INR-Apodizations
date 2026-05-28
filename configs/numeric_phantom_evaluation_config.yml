@@ -16,7 +16,7 @@ phantom:
   unit_amplitude: true
   seed: 42
   grid:
-    x_count: 4
+    x_count: 5
     z_count: 6
     x_center_mm: 10.0
     z_start_mm: 5.0

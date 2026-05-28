@@ -5,6 +5,11 @@ io:
   picmus_data_path: "C:/Users/ggc/PROYECTOS/Beamforming_experiments/PICMUS/archive_to_download/database/experiments"
   rf_file: "resolution_distorsion/resolution_distorsion_expe_dataset_rf.hdf5"
   scan_file: "resolution_distorsion/resolution_distorsion_expe_scan.hdf5"
+  phantom_file: "resolution_distorsion/resolution_distorsion_expe_phantom.hdf5"
+  # Optional manual points appended to phantom scatterers.
+  # Each entry is [x, z]. Use either mm or m list (or both).
+  manual_scatterers_mm: [[20, 28], [20, 37]]
+  manual_scatterers_m: 
 
 probe:
   pitch: 0.3
@@ -52,7 +57,7 @@ apodizations:
     angle_chunk_size: 1
   mixer:
     enabled: true
-    model_path: "scripts\\outputs\\train_mixer\\20260522_103130"
+    model_path: "scripts\\outputs\\train_mixer\\20260520_151111"
     feature_chunk_size: 65536
   nsi:
     enabled: true
