@@ -203,7 +203,7 @@ mixer_combined_img = np.asarray(mixer_combined_batch.numpy()[0], dtype=np.float6
 
 images = {
     "hanning": np.asarray(hanning_img, dtype=np.float64),
-    "mixer_combined": mixer_combined_img,
+    "proposed method": mixer_combined_img,
 }
 
 if nsi_enabled:
@@ -252,7 +252,11 @@ profile_cfg = cfg.get("reflector_lateral_profiles", {})
 methods_cfg = profile_cfg.get("methods", list(images.keys()))
 if not isinstance(methods_cfg, list) or len(methods_cfg) == 0:
     raise ValueError("`reflector_lateral_profiles.methods` must be a non-empty list.")
-selected_method_names = [str(name).strip().lower() for name in methods_cfg]
+method_aliases = {"mixer_combined": "proposed method"}
+selected_method_names = [
+    method_aliases.get(str(name).strip().lower(), str(name).strip().lower())
+    for name in methods_cfg
+]
 selected_method_names = list(dict.fromkeys(selected_method_names))
 
 missing_methods = [name for name in selected_method_names if name not in images]
@@ -269,7 +273,7 @@ extent = kp.get_imshow_extent()
 vmin_db = -60.0
 vmax_db = 0.0
 
-rows, cols = _subplot_grid(len(display_labels), max_cols=2)
+rows, cols = 1, len(display_labels)
 fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows), sharex=True, sharey=True)
 axes_flat = np.atleast_1d(np.asarray(axes).ravel())
 first_im = None
@@ -293,7 +297,7 @@ for idx, label in enumerate(display_labels):
 for j in range(len(display_labels), rows * cols):
     axes_flat[j].axis("off")
 
-fig.suptitle("DAS comparison (Mixer)", fontsize=fontsize_title)
+#♣fig.suptitle("DAS comparison (Mixer)", fontsize=fontsize_title)
 fig.tight_layout(rect=[0, 0, 0.92, 1])
 cbar_ax = fig.add_axes([0.93, 0.1, 0.013, 0.78])
 if first_im is not None:
@@ -343,6 +347,10 @@ if profiles_enabled:
     half_width_lateral_mm = float(profile_cfg.get("half_width_lateral_mm", 1.5))
     half_width_axial_mm = float(profile_cfg.get("half_width_axial_mm", 1.0))
     profile_vmin_db = float(profile_cfg.get("vmin_db", -60.0))
+    column_dyn_range_db = float(profile_cfg.get("column_dyn_range_db", -profile_vmin_db))
+    if column_dyn_range_db <= 0.0:
+        raise ValueError("`reflector_lateral_profiles.column_dyn_range_db` must be > 0.")
+    column_vmin_db = -column_dyn_range_db
     snr_radius_mm = float(profile_cfg.get("snr_radius_mm", 1.5))
     snr_y_lim_cfg = profile_cfg.get("snr_y_lim_db", None)
     snr_y_lim_db: tuple[float, float] | None = None
@@ -479,6 +487,97 @@ if profiles_enabled:
         fig_ref.suptitle(f"Reflector {refl_idx} at x={x_mm:.2f} mm, z={z_mm:.2f} mm")
         fig_ref.savefig(profiles_dir / f"reflector_{refl_idx:03d}_profiles_db.png", dpi=150)
         plt.close(fig_ref)
+
+    roi_user = bf_cfg.get("roi_user")
+    if not isinstance(roi_user, (list, tuple)) or len(roi_user) != 4:
+        raise ValueError("`beamforming.roi_user` must be [xmin, xmax, zmin, zmax].")
+    roi_x_min = float(roi_user[0])
+    roi_x_max = float(roi_user[1])
+    if roi_x_max < roi_x_min:
+        raise ValueError("`beamforming.roi_user` must satisfy xmax >= xmin.")
+
+    coordinates = cm.get_coordinates_1d(scaled=False)
+    x_coords_mm = np.asarray(coordinates["x"], dtype=np.float64)
+    z_coords_mm = np.asarray(coordinates["z"], dtype=np.float64)
+    x_count = int(cfg["phantom"]["grid"]["x_count"])
+
+    for x_idx in range(x_count):
+        column_indices = [
+            reflector_idx
+            for reflector_idx in selected_indices.tolist()
+            if int(reflector_idx) % x_count == x_idx
+        ]
+        if not column_indices:
+            continue
+
+        column_x_mm = float(reflector_points[column_indices[0], 0])
+        if not (roi_x_min <= column_x_mm <= roi_x_max):
+            continue
+
+        image_x_idx = int(np.argmin(np.abs(x_coords_mm - column_x_mm)))
+        fig_column, ax_column = plt.subplots(1, 1, figsize=(7, 5), constrained_layout=True)
+        for method_name in selected_method_names:
+            vertical_line = np.asarray(images[method_name])[:, image_x_idx]
+            vertical_line_db = _db_image(vertical_line)
+            ax_column.plot(z_coords_mm, vertical_line_db, linewidth=2, label=method_name)
+
+        ax_column.set_ylim(column_vmin_db, 0.0)
+        ax_column.set_xlabel("Depth z (mm)")
+        ax_column.set_ylabel("Amplitude (dB)")
+        ax_column.set_title(
+            f"Axial profile through reflector column {x_idx} at x={column_x_mm:.2f} mm"
+        )
+        ax_column.grid(True, alpha=0.3)
+        ax_column.legend(fontsize=fontsize_legend)
+        fig_column.savefig(
+            profiles_dir / f"column_{x_idx:03d}_x{column_x_mm:.2f}_axial_profile_db.png",
+            dpi=150,
+        )
+        plt.close(fig_column)
+
+        column_indices = sorted(column_indices, key=lambda index: reflector_points[index, 1])
+        column_z_mm = np.asarray(
+            [reflector_points[reflector_idx, 1] for reflector_idx in column_indices],
+            dtype=np.float64,
+        )
+        column_z_indices = [
+            int(np.argmin(np.abs(z_coords_mm - z_mm))) for z_mm in column_z_mm
+        ]
+        fig_amplitude, ax_amplitude = plt.subplots(
+            1, 1, figsize=(7, 5), constrained_layout=True
+        )
+        for method_name in selected_method_names:
+            image = np.asarray(images[method_name])
+            amplitudes = np.asarray(
+                [np.abs(image[z_idx, image_x_idx]) for z_idx in column_z_indices],
+                dtype=np.float64,
+            )
+            first_amplitude = max(float(amplitudes[0]), 1e-12)
+            amplitudes_db_relative = 20.0 * np.log10(
+                np.maximum(amplitudes, 1e-12) / first_amplitude
+            )
+            ax_amplitude.plot(
+                column_z_mm,
+                amplitudes_db_relative,
+                marker="o",
+                linewidth=2,
+                label=method_name,
+            )
+
+        ax_amplitude.set_ylim(column_vmin_db, 10.0)
+        ax_amplitude.set_xlabel("Nominal depth z (mm)")
+        ax_amplitude.set_ylabel("Peak amplitude relative to first reflector (dB)")
+        # ax_amplitude.set_title(
+        #     f"Nominal reflector amplitudes relative to first reflector in column {x_idx} "
+        #     f"at x={column_x_mm:.2f} mm"
+        # )
+        ax_amplitude.grid(True, alpha=0.3)
+        ax_amplitude.legend(fontsize=fontsize_legend)
+        fig_amplitude.savefig(
+            profiles_dir / f"column_{x_idx:03d}_x{column_x_mm:.2f}_peak_amplitude_vs_z.png",
+            dpi=150,
+        )
+        plt.close(fig_amplitude)
 
     fwhm_csv_path = run_out_dir / "reflector_fwhm_summary.csv"
     per_reflector: dict[int, dict[str, float]] = {}

@@ -68,7 +68,8 @@ reflector_lateral_profiles:
   half_width_axial_mm: 1.0
   line_length_margin_mm: 1.0
   thickness_mm: 0.5
-  vmin_db: -60.0
+  vmin_db: -30.0
+  column_dyn_range_db: 30.0
   save_individual_rows: false
   profile_type: lateral
   snr_radius_mm: 1.5
