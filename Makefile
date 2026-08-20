@@ -63,7 +63,11 @@ create_environment:
 data: requirements
 	$(PYTHON_INTERPRETER) inr_apodizations/dataset.py
 
-
+## Run scripts\generate_rf_dataset_simus.py
+.PHONY: run-generate-rf-dataset-simus
+run-generate-rf-dataset-simus:
+	$(PYTHON_INTERPRETER) scripts/generate_rf_dataset_simus.py
+	
 ## Run create_delayed_samples_dataset script (generates delayed samples dataset)
 .PHONY: run-delayed-samples
 run-delayed-samples:

@@ -1,4 +1,4 @@
-delayed_samples_dataset: "20260326_102630"   # name of the delayed samples dataset to use as input
+delayed_samples_dataset: "20260819_131154"   # name of the delayed samples dataset to use as input
 example_idx: 0                               # single example to process (legacy, used if interactive_mode=false)
 methods: [boxcar, hanning]
 f_number: 1.0

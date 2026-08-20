@@ -101,7 +101,6 @@ def load_yaml_config(config_path: Path) -> dict:
             f"Config file not found at {config_path}. "
             "Create it from configs/das_standard_apodizations_example.yml"
         )
-    from inr_apodizations.experiment_helpers import (
     with config_path.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
 

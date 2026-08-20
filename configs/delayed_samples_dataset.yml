@@ -3,7 +3,7 @@
 # Saved alongside the delayed samples dataset.
 
 # RF input dataset
-rf_dataset_name: "20260406_154917"   # name of the RF dataset to use as input
+rf_dataset_name: "20260819_123422"   # name of the RF dataset to use as input
 
 # Bandpass filter
 f1: 1       # MHz - lower cutoff
@@ -31,6 +31,6 @@ target:
 # Noise processing options for delayed-samples generation
 # If `process_noise` is true and `noise.npy` exists in the RF dataset folder,
 # the script will process the noise with the same kernels and save outputs.
-process_noise: true
+process_noise: false
 save_combined: false
 noise_operation: sum  # how to combine processed noise with signal when saving combined: sum|scale|custom

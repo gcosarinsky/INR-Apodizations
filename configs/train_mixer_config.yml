@@ -1,5 +1,5 @@
 io:
-  dataset_folder: data/delayed_samples_dataset/20260406_155448
+  dataset_folder: data\delayed_samples_dataset\20260819_131154
   scripts_output_root: scripts/outputs/train_mixer
   baseline_output: scripts/outputs/evaluation/baseline
   review_output_root: scripts/outputs/review
@@ -23,7 +23,7 @@ model:
   # hidden_units: Specifies hidden layer sizes for the MLP INR.
   #   Mode 1 (uniform): int value, requires n_hidden_layers
   #   Mode 2 (per-layer): list/tuple of layer sizes; n_hidden_layers is inferred from list length
-  hidden_units: [8, 8, 8]
+  hidden_units: [16, 8, 4]
   n_hidden_layers: 4
   activation: relu
   output_activation: tanh
@@ -32,7 +32,7 @@ model:
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
-  n_apodizations: 3
+  n_apodizations: 2
 
   mixer_head:
     # Optional extended head for combining intermediate DAS channels.
@@ -76,7 +76,7 @@ training:
   weight_decay: 0.001
 
   weight_regularization:
-    enabled: true
+    enabled: false
     # type: regularization type applied to the apodization norm.
     # "hinge_low_norm": squared hinge penalty when global Euclidean norm < tau.
     type: hinge_low_norm
@@ -136,9 +136,9 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: false
+  enabled: true
   # Preferred source: previous run directory with model.keras + history artifacts.
-  source_run_dir: scripts\outputs\train_mixer\20260519_115528
+  source_run_dir: scripts\outputs\train_mixer\20260819_132642
   # Optional fallback when only a model file is available.
   source_model_path: ""
   # Reserved for future optimizer-state persistence. Currently weights-only resume.
@@ -146,7 +146,7 @@ resume:
   # additional: train N extra epochs from previous history length.
   # target_total: use training.epochs as total global epoch target.
   epochs_mode: additional
-  additional_epochs: 5
+  additional_epochs: 10
   strict_compatibility: true
 
 plots:

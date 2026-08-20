@@ -57,7 +57,7 @@ apodizations:
     angle_chunk_size: 1
   mixer:
     enabled: true
-    model_path: "scripts\\outputs\\train_mixer\\20260520_151111"
+    model_path: scripts\outputs\train_mixer\20260819_133522
     feature_chunk_size: 65536
   nsi:
     enabled: true
