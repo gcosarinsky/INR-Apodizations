@@ -43,6 +43,10 @@ angle_subset:
   mode: "all"
   indices: []
 
+profile_plots:
+  # false: combine multiple scatterers per figure; true: one figure per scatterer
+  separate_figures: true
+
 apodizations:
   hanning:
     enabled: true

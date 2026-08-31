@@ -86,7 +86,7 @@ def _load_manual_scatterers_mm(io_cfg: dict) -> np.ndarray:
     return np.concatenate([manual_mm, manual_m], axis=0)
 
 
-def _profile_to_db(profile: np.ndarray, floor_db: float = -60.0) -> np.ndarray:
+def _profile_to_db(profile: np.ndarray, floor_db: float = -40.0) -> np.ndarray:
     """Convert one 1D profile to dB with robust local normalization."""
     prof = np.asarray(profile, dtype=np.float32)
     valid = np.isfinite(prof)
@@ -109,8 +109,19 @@ def _plot_profile_pages(
     output_dir: Path,
     ts: str,
     max_scatterers_per_page: int = 12,
+    separate_figures: bool = False,
 ) -> list[Path]:
-    """Plot reflector profiles in paged figures for lateral or axial direction."""
+    """Plot reflector profiles for lateral or axial direction.
+
+    Args:
+        profile_metrics: Extracted profiles keyed by method name.
+        scatterers_mm: Reflector coordinates in millimeters.
+        axis_kind: Profile direction, either ``"lateral"`` or ``"axial"``.
+        output_dir: Directory where figures are saved.
+        ts: Timestamp used in output filenames.
+        max_scatterers_per_page: Maximum profiles in a combined figure.
+        separate_figures: Whether to save one figure per scatterer.
+    """
     if axis_kind not in {"lateral", "axial"}:
         raise ValueError(f"axis_kind must be 'lateral' or 'axial', got {axis_kind}")
     if max_scatterers_per_page <= 0:
@@ -128,12 +139,13 @@ def _plot_profile_pages(
     if n_scatterers == 0:
         return []
 
-    n_pages = int(np.ceil(n_scatterers / max_scatterers_per_page))
+    scatterers_per_figure = 1 if separate_figures else max_scatterers_per_page
+    n_pages = int(np.ceil(n_scatterers / scatterers_per_figure))
     saved_paths: list[Path] = []
 
     for page_idx in range(n_pages):
-        start = page_idx * max_scatterers_per_page
-        end = min(start + max_scatterers_per_page, n_scatterers)
+        start = page_idx * scatterers_per_figure
+        end = min(start + scatterers_per_figure, n_scatterers)
         n_this_page = end - start
         rows, cols = _subplot_grid(n_this_page)
 
@@ -146,12 +158,13 @@ def _plot_profile_pages(
             for method_name in method_names:
                 profiles_arr = np.asarray(profile_metrics[method_name][key_profiles])
                 profile_db = _profile_to_db(profiles_arr[scatterer_idx])
-                ax.plot(offsets_mm, profile_db, label=method_name, linewidth=1.3)
+                display_name = "Proposed method" if method_name == "Mixer" else method_name
+                ax.plot(offsets_mm, profile_db, label=display_name, linewidth=1.3)
 
             ax.set_title(f"Pt {scatterer_idx}: x={x_mm:.2f} mm, z={z_mm:.2f} mm")
             ax.set_xlabel(f"{axis_kind.capitalize()} offset [mm]")
             ax.set_ylabel("Amplitude [dB]")
-            ax.set_ylim(-60.0, 1.0)
+            ax.set_ylim(-40.0, 1.0)
             ax.grid(True, alpha=0.25)
             if local_idx == 0:
                 ax.legend(loc="lower left", fontsize=8)
@@ -403,7 +416,7 @@ if bool(mixer_cfg.get("enabled", False)):
         )
         mixer_combined_img = np.asarray(mixer_combined_batch.numpy()[0], dtype=np.float32)
         apod_dict["Mixer"] = mixer_combined_img
-        figure_info_lines.append(f"Mixer INR path: {model_file}")
+        figure_info_lines.append(f"Proposed method INR path: {model_file}")
         print(
             "  Mixer DAS computed: "
             f"shape={mixer_combined_img.shape}, run_dir={model_run_dir}"
@@ -450,8 +463,8 @@ if pipeline_cfg["apodizations"]["nsi"]["enabled"]:
     apod_dict["NSI"] = nsi_img.astype(np.float32, copy=False)
     print(f"  NSI image computed: shape={nsi_img.shape}")
 
-# Compute lateral/axial reflector profiles for all reconstructed images.
-images_for_profiles = {"Uniform": das_uniform, **apod_dict}
+# Compute lateral/axial reflector profiles for all plotted reconstructed images.
+images_for_profiles = apod_dict
 profile_metrics: dict[str, dict] = {}
 for method_name, method_img in images_for_profiles.items():
     profile_metrics[method_name] = extract_reflector_profiles(
@@ -462,12 +475,16 @@ for method_name, method_img in images_for_profiles.items():
         half_width_axial_mm=1.0,
     )
 
+profile_plot_cfg = pipeline_cfg.get("profile_plots", {})
+separate_profile_figures = bool(profile_plot_cfg.get("separate_figures", False))
+
 lateral_profile_figs = _plot_profile_pages(
     profile_metrics=profile_metrics,
     scatterers_mm=np.asarray(scatterers_mm, dtype=np.float32),
     axis_kind="lateral",
     output_dir=output_dir,
     ts=ts,
+    separate_figures=separate_profile_figures,
 )
 axial_profile_figs = _plot_profile_pages(
     profile_metrics=profile_metrics,
@@ -475,48 +492,34 @@ axial_profile_figs = _plot_profile_pages(
     axis_kind="axial",
     output_dir=output_dir,
     ts=ts,
+    separate_figures=separate_profile_figures,
 )
 
 print("\nReflector profiles computed.")
 print(f"Lateral profile figures: {len(lateral_profile_figs)}")
 print(f"Axial profile figures: {len(axial_profile_figs)}")
 
-# Plot all apodizations side-by-side if any were computed
-if apod_dict:
-    n_images = len(apod_dict) + 1  # +1 for uniform
-    rows, cols = _subplot_grid(n_images)
-    fig = plt.figure(figsize=(5 * cols, 5 * rows + 1.8), constrained_layout=True)
-    grid = fig.add_gridspec(rows + 1, cols, height_ratios=[1] * rows + [0.24])
+# Plot the requested DAS, NSI, and proposed-method images in one row.
+image_methods = [
+    ("Hanning", "DAS"),
+    ("NSI", "NSI"),
+    ("Mixer", "Proposed method"),
+]
+image_methods = [item for item in image_methods if item[0] in apod_dict]
+if image_methods:
+    rows, cols = 1, len(image_methods)
+    fig = plt.figure(figsize=(5 * cols, 5 + 1.8), constrained_layout=True)
+    grid = fig.add_gridspec(rows + 1, cols, height_ratios=[1, 0.24], wspace=0.05)
     axes_flat = np.asarray(
-        [fig.add_subplot(grid[idx // cols, idx % cols]) for idx in range(rows * cols)],
+        [fig.add_subplot(grid[0, idx]) for idx in range(cols)],
         dtype=object,
     )
     info_ax = fig.add_subplot(grid[rows, :])
-    active_axes = list(axes_flat[:n_images])
+    active_axes = list(axes_flat)
     extent = kp.get_imshow_extent()
 
-    # Uniform DAS
-    das_uniform_db = to_db(das_uniform, ref=float(np.max(np.abs(das_uniform))))
-    im0 = axes_flat[0].imshow(
-        das_uniform_db,
-        aspect="auto",
-        cmap="gray",
-        extent=extent,
-        vmin=-60,
-        vmax=0,
-    )
-    axes_flat[0].set_title("Uniform DAS (dB)")
-    axes_flat[0].set_xlabel("Lateral [mm]")
-    axes_flat[0].set_ylabel("Axial [mm]")
-    _overlay_profile_windows_on_uniform(
-        ax=axes_flat[0],
-        scatterers_mm=np.asarray(scatterers_mm, dtype=np.float32),
-        cm=cm,
-        profile_metrics_uniform=profile_metrics["Uniform"],
-    )
-
-    # Apodized images
-    for idx, (apod_name, das_img) in enumerate(apod_dict.items(), start=1):
+    for idx, (method_name, display_name) in enumerate(image_methods):
+        das_img = apod_dict[method_name]
         das_apod_db = to_db(das_img, ref=float(np.max(np.abs(das_img))))
         im = axes_flat[idx].imshow(
             das_apod_db,
@@ -526,13 +529,15 @@ if apod_dict:
             vmin=-60,
             vmax=0,
         )
-        axes_flat[idx].set_title(f"{apod_name} DAS (dB)")
+        if idx == 0:
+            im0 = im
+        axes_flat[idx].set_title(f"{display_name} (dB)")
         axes_flat[idx].set_xlabel("Lateral [mm]")
-        axes_flat[idx].set_ylabel("Axial [mm]")
-
-    # Hide unused axes when the grid has spare cells (e.g., 5 images -> 2x3).
-    for idx in range(n_images, rows * cols):
-        axes_flat[idx].axis("off")
+        if idx == 0:
+            axes_flat[idx].set_ylabel("Axial [mm]")
+        else:
+            axes_flat[idx].set_ylabel("")
+            axes_flat[idx].tick_params(axis="y", labelleft=False)
 
     fig.colorbar(im0, ax=active_axes, label="dB", fraction=0.028, pad=0.03)
 

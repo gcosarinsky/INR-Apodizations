@@ -14,7 +14,7 @@ model:
   # Preferred convention: explicit ordered components (2 or 3 tokens).
   # Allowed: z, x, abs_x, xrel, abs_xrel, xrel_over_z, x_over_z, z_norm, dist_to_edge, abs_xrel_over_z, abs_x_over_z, xrel_x_over_z2
   physical_feature_components:
-    - abs_xrel_over_z
+    - xrel_over_z
     - abs_x_over_z
     - z
     - xrel_x_over_z2
@@ -32,7 +32,7 @@ model:
   # n_apodizations: number of independent apodization channels output by the INR.
   # Each channel is a separate DAS reconstruction; outputs are combined pixel-wise
   # via a trainable linear layer inside DasInrApodMixer.
-  n_apodizations: 2
+  n_apodizations: 3
 
   mixer_head:
     # Optional extended head for combining intermediate DAS channels.
@@ -136,7 +136,7 @@ training:
   reduce_lr_patience: 3
 
 resume:
-  enabled: true
+  enabled: false
   # Preferred source: previous run directory with model.keras + history artifacts.
   source_run_dir: scripts\outputs\train_mixer\20260819_132642
   # Optional fallback when only a model file is available.
