@@ -12,7 +12,7 @@ flowchart LR
   subgraph Scripts [Pipelines / Scripts]
     GEN_RF[scripts/generate_rf_dataset_simus.py]
     CREATE_DS[scripts/create_delayed_samples_dataset.py]
-    DAS[scripts/das_standard_apodizations.py]
+    DAS[sandbox/inr_das_experiment/evaluation/das_standard_apodizations.py]
   end
 
   subgraph Core [inr_apodizations (library)]

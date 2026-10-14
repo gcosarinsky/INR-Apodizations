@@ -123,7 +123,7 @@ class KernelParameters2D(KernelParametersBase):
         "pitch",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "z_step",
         "t_start",  # floats
@@ -144,7 +144,7 @@ class KernelParameters2D(KernelParametersBase):
         "pitch",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "z_step",
         "x0_roi",
@@ -161,11 +161,12 @@ class KernelParameters2D(KernelParametersBase):
         "nx",
         "nz",
         "n_samples",
+        "wave_source_mode",
     ]
 
     # Names calculated internally
     dependent_float_names = ["x0_roi", "z0_roi", "x_0"]  # x_0 can be user-defined
-    dependent_int_names = ["nx", "nz"]
+    dependent_int_names = ["nx", "nz", "wave_source_mode"]
 
     # Default values for user parameters if not provided
     default_param_values = {
@@ -174,7 +175,7 @@ class KernelParameters2D(KernelParametersBase):
         "pitch": 0.5,  # mm
         "f1": 1,  # MHz
         "f2": 10,  # MHz
-        "bfd": 1,  # twice f#
+        "f_number": 0.5,  # f-number for dynamic focusing
         "x_step": 0.2,  # mm
         "z_step": 0.2,  # mm
         "t_start": 0.0,  # us
@@ -205,6 +206,10 @@ class KernelParameters2D(KernelParametersBase):
             self.x_0 = np.around((self.n_elements - 1) * self.pitch / 2, decimals=2)
         else:
             self.x_0 = self.param_dict["x_0"]
+
+        self.wave_source_mode = int(self.param_dict.get("wave_source_mode", 0))
+        if self.wave_source_mode not in (0, 1):
+            raise ValueError("wave_source_mode must be 0 (legacy) or 1 (force wave_source=0).")
 
     @staticmethod
     def calculate_image_size_and_roi(roi, x_step, z_step, blocksize):
@@ -260,7 +265,7 @@ class KernelParameters3D(KernelParametersBase):
         "pitch_y",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "y_step",
         "z_step",
@@ -288,7 +293,7 @@ class KernelParameters3D(KernelParametersBase):
         "pitch_y",
         "f1",
         "f2",
-        "bfd",
+        "f_number",
         "x_step",
         "y_step",
         "z_step",
@@ -330,7 +335,7 @@ class KernelParameters3D(KernelParametersBase):
         "pitch_y": 0.5,  # mm
         "f1": 1,  # MHz
         "f2": 10,  # MHz
-        "bfd": 1,  # twice f#
+        "f_number": 0.5,  # f-number for dynamic focusing
         "x_step": 0.2,  # mm
         "y_step": 0.2,  # mm
         "z_step": 0.2,  # mm

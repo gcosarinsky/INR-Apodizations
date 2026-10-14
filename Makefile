@@ -3,8 +3,9 @@
 #################################################################################
 
 PROJECT_NAME = inr-apodizations
+ENV_NAME = inr-apodizations
 PYTHON_VERSION = 3.10
-PYTHON_INTERPRETER = python
+PYTHON_INTERPRETER = conda run -n $(ENV_NAME) python
 
 #################################################################################
 # COMMANDS                                                                      #
@@ -62,6 +63,40 @@ create_environment:
 data: requirements
 	$(PYTHON_INTERPRETER) inr_apodizations/dataset.py
 
+## Run scripts\generate_rf_dataset_simus.py
+.PHONY: run-generate-rf-dataset-simus
+run-generate-rf-dataset-simus:
+	$(PYTHON_INTERPRETER) scripts/generate_rf_dataset_simus.py
+	
+## Run create_delayed_samples_dataset script (generates delayed samples dataset)
+.PHONY: run-delayed-samples
+run-delayed-samples:
+	$(PYTHON_INTERPRETER) scripts/create_delayed_samples_dataset.py
+
+## Run training script for mixer model
+.PHONY: run-train-mixer
+run-train-mixer:
+	$(PYTHON_INTERPRETER) scripts\train\train_inr_das_mixer.py
+
+## Run numeric phantom evaluation script
+.PHONY: run-phantom-create
+run-phantom-create:
+	$(PYTHON_INTERPRETER) scripts\evaluation\numeric_phantom\generate_evaluation_simulation.py
+
+## Run numeric phantom evaluation script
+.PHONY: run-phantom-eval
+run-phantom-eval:
+	$(PYTHON_INTERPRETER) scripts/evaluation/numeric_phantom/evaluate_apodizations.py
+
+## Run numeric phantom evaluation script
+.PHONY: run-phantom-eval-mixer
+run-phantom-eval-mixer:
+	$(PYTHON_INTERPRETER) scripts/evaluation/numeric_phantom/evaluate_mixer.py
+
+## Run FFT profile evaluation script
+.PHONY: run-fft-profile-eval
+run-fft-profile-eval:
+	$(PYTHON_INTERPRETER) scripts/evaluation/fft_profile/evaluate_apodization_profile_fft.py
 
 #################################################################################
 # Self Documenting Commands                                                     #

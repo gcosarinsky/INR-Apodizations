@@ -3,7 +3,7 @@
 # Saved alongside the delayed samples dataset.
 
 # RF input dataset
-rf_dataset_name: "20260319_140825"   # name of the RF dataset to use as input
+rf_dataset_name: "20260819_123422"   # name of the RF dataset to use as input
 
 # Bandpass filter
 f1: 1       # MHz - lower cutoff
@@ -11,9 +11,11 @@ f2: 10      # MHz - upper cutoff
 taps: 62    # FIR filter taps
 
 # Beamforming parameters
-bfd: 2                          # f-number for dynamic focusing (chequear definicion, tal vez esta invertido!)
-x_step: 0.2                     # mm - lateral pixel spacing
-z_step: 0.2                     # mm - axial pixel spacing
+f_number: 1                         # f-number for dynamic focusing?
+wave_source_mode: 0                 # 0: legacy (+/-x0 by angle sign), 1: force wave_source=0
+
+x_step: 0.1                     # mm - lateral pixel spacing
+z_step: 0.1                     # mm - axial pixel spacing
 roi_user: [-20, 20, 1, 40]      # [xmin, xmax, zmin, zmax] in mm
 
 # CUDA kernel settings
@@ -23,5 +25,12 @@ n_ch: 128
 
 # Dataset generation settings
 target:
-  sigma_x: 0.5    # target size of the point spread function in mm (lateral)
-  sigma_z: 0.5    # target size of the point spread function in mm (axial)
+  sigma_x: 0.1    # target size of the point spread function in mm (lateral)
+  sigma_z: 0.1    # target size of the point spread function in mm (axial)
+
+# Noise processing options for delayed-samples generation
+# If `process_noise` is true and `noise.npy` exists in the RF dataset folder,
+# the script will process the noise with the same kernels and save outputs.
+process_noise: false
+save_combined: false
+noise_operation: sum  # how to combine processed noise with signal when saving combined: sum|scale|custom

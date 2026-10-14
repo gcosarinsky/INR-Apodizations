@@ -57,6 +57,13 @@ print(f"Size of RF array in MB: {RF_array.nbytes / 1024**2:.2f} MB")
 scatterers_list = []
 txDelays = [pymust.txdelay(param_must, angle).reshape(1, -1) for angle in angles]
 
+# Determine noise generation settings from cfg (optional)
+noise_cfg = cfg.get('noise', {}) if isinstance(cfg, dict) else {}
+noise_enabled = bool(noise_cfg.get('enable', False))
+noise_snr_db = noise_cfg.get('snr_db', 20)
+noise_seed = noise_cfg.get('seed', seed)
+noise_dtype = noise_cfg.get('dtype', 'float32')
+
 #%%
 for i in tqdm(range(n_examples), desc="Generating examples"):
     # Randomly generate scatterer positions within ROI
@@ -88,13 +95,41 @@ np.save(output_folder / 'rf.npy', RF_array)
 np.save(output_folder / 'scatterers.npy', np.array(scatterers_list, dtype=object))
 np.save(output_folder / 'cfg_rf.npy', cfg)
 
-config_yaml_path = output_folder / 'config_rf_info.yml'
+# Prepare extra_params metadata before optional noise generation
 extra_params = {
     'dataset_generated': timestamp,
     'seed': seed,
     'n_samples': n_samples,
     'rf_array_shape': RF_array.shape,
 }
+
+# Optional: generate and save additive noise with same shape as RF_array
+if noise_enabled:
+    print('Generating additive noise with shape:', RF_array.shape)
+    rng_noise = np.random.default_rng(noise_seed)
+    # Convert RF to float for power estimation
+    RF_float = RF_array.astype(np.float32)
+    noise_array = np.zeros_like(RF_float, dtype=np.float32)
+    # Compute per-example RMS and scale noise to match desired SNR
+    for i in tqdm(range(n_examples), desc='Generating noise'):
+        sig = RF_float[i]
+        sig_power = np.mean(sig.astype(np.float32) ** 2)
+        if sig_power <= 0:
+            sigma = 1.0
+        else:
+            snr_linear = 10 ** (noise_snr_db / 10.0)
+            noise_power = sig_power / snr_linear
+            sigma = np.sqrt(noise_power)
+        noise = rng_noise.normal(loc=0.0, scale=sigma, size=sig.shape).astype(np.float32)
+        noise_array[i] = noise
+    # Save noise as float32 by default
+    np.save(output_folder / 'noise.npy', noise_array.astype(getattr(np, noise_dtype)))
+    extra_params['noise_saved'] = True
+    extra_params['noise_snr_db'] = noise_snr_db
+else:
+    extra_params['noise_saved'] = False
+
+config_yaml_path = output_folder / 'config_rf_info.yml'
 save_config_yaml(config_yaml_path, cfg, extra_params)
 print(f"RF configuration saved to: {config_yaml_path}")
 
@@ -103,12 +138,36 @@ print(f"RF array shape: {RF_array.shape}")
 
 # %% plot example, first angle
 if PLOT_RESULTS:
-    plt.figure()
-    plt.imshow(np.abs(RF_array[0, 0, :, :].T), aspect='auto', cmap='gray')
-    plt.title('Example RF Data (First Angle)')
-    plt.xlabel('Element Index')
-    plt.ylabel('Sample Index')
-    plt.colorbar(label='Amplitude')
-    plt.show()
+    # If noise was generated, show a 1D trace (one channel) with and without noise
+    example_idx = 0
+    angle_idx = 0
+    channel_idx = 0
+    if noise_enabled and (("noise_array" in locals()) or (output_folder / 'noise.npy').exists()):
+        if "noise_array" not in locals():
+            noise_array = np.load(output_folder / 'noise.npy')
+        combined = RF_array.astype(np.float32) + noise_array
+        sig = RF_array[example_idx, angle_idx, channel_idx, :].astype(np.float32)
+        sig_noisy = combined[example_idx, angle_idx, channel_idx, :].astype(np.float32)
+        x = np.arange(sig.shape[0])
+        fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+        ax.plot(x, sig, label='Original', color='C0', linewidth=1)
+        ax.plot(x, sig_noisy, label=f'With noise (SNR={noise_snr_db} dB)', color='C1', linewidth=0.8, alpha=0.9)
+        ax.set_title('RF Trace (channel {}) — original vs noisy'.format(channel_idx))
+        ax.set_xlabel('Sample index')
+        ax.set_ylabel('Amplitude')
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
+    else:
+        # Show 2D image if no noise is available
+        plt.figure()
+        plt.imshow(np.abs(RF_array[0, 0, :, :].T), aspect='auto', cmap='gray')
+        plt.title('Example RF Data (First Angle)')
+        plt.xlabel('Element Index')
+        plt.ylabel('Sample Index')
+        plt.colorbar(label='Amplitude')
+        plt.show()
 
 
+
+# %%

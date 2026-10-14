@@ -1,5 +1,29 @@
 import tensorflow as tf
 import numpy as np
+import warnings
+
+
+ALLOWED_PHYSICAL_FEATURE_COMPONENTS = (
+    "z",
+    "x",
+    "abs_x",
+    "xrel",
+    "abs_xrel",
+    "xrel_over_z",
+    "x_over_z",
+    "z_norm",
+    "dist_to_edge",
+    "abs_xrel_over_z",
+    "abs_x_over_z",
+    "xrel_x_over_z2",
+)
+
+LEGACY_FEATURE_SET_TO_COMPONENTS = {
+    "distance_depth_edge": ("abs_xrel", "z", "dist_to_edge"),
+    "distance_depth_center": ("abs_xrel", "z", "abs_x"),
+    "distance_depth": ("abs_xrel", "z"),
+    "x_rel_depth_edge": ("xrel", "z", "dist_to_edge"),
+}
 
 
 class CoordinateManager:
@@ -8,7 +32,19 @@ class CoordinateManager:
 
     Generates and stores:
     - Spatial coordinates: x, z, x_elem (in mm and scaled by D)
-    - Physical features: |x - x_elem|, z, D/2 - |x| (in mm and scaled by D)
+        - Physical features, configurable by ordered component tokens:
+            - 'z': z
+            - 'x': x
+            - 'abs_x': |x|
+            - 'xrel': x - x_elem
+            - 'abs_xrel': |x - x_elem|
+            - 'xrel_over_z': (x - x_elem) / z
+            - 'x_over_z': x / z
+            - 'z_norm': z / z_ref
+            - 'dist_to_edge': D/2 - |x| (legacy-compatible)
+            - 'abs_xrel_over_z': |x - x_elem| / z
+            - 'abs_x_over_z': |x| / z  (assumes x_center = 0, which is always the case in this project)
+            - 'xrel_x_over_z2': (x - x_elem) * x / z^2  (= xrel_over_z * x_over_z; invariant under simultaneous sign flip of x and xrel)
 
     Scaling: all coordinates are scaled by dividing by D (array aperture)
 
@@ -18,15 +54,38 @@ class CoordinateManager:
     - Points: (n_elem * n_points, 3) - for arbitrary points
     """
 
-    def __init__(self, kp):
+    def __init__(
+        self,
+        kp,
+        physical_feature_set="distance_depth_edge",
+        physical_feature_components=None,
+        z_ref=None,
+    ):
         """
+        Initializes the coordinate manager.
+
         Args:
-            kp: KernelParameters object (2D or 3D) with system parameters
-            Type of features to generate
-                - 'physical': [|x - x_elem|, z, D/2 - |x|]
-                - 'coordinates': [x, z, x_elem]
+            kp: KernelParameters object (2D or 3D) with system parameters.
+            physical_feature_set: Legacy physical feature preset.
+            physical_feature_components: Optional ordered feature token list.
+                Allowed tokens: ('z', 'x', 'abs_x', 'xrel', 'abs_xrel', 'xrel_over_z',
+                'x_over_z', 'z_norm', 'dist_to_edge', 'abs_xrel_over_z', 'abs_x_over_z',
+                'xrel_x_over_z2').
+                If provided, this takes precedence over `physical_feature_set`.
+            z_ref: Depth normalization reference used by the `z_norm` feature.
+                If None, defaults to the probe aperture D.
+
+        Raises:
+            ValueError: If the requested feature configuration is invalid.
         """
         self.kp = kp
+        self.physical_feature_set = str(physical_feature_set)
+        self.physical_feature_components = self._resolve_physical_feature_components(
+            physical_feature_set=self.physical_feature_set,
+            physical_feature_components=physical_feature_components,
+        )
+        self.physical_feature_names = self.physical_feature_components
+        self.n_physical_features = len(self.physical_feature_names)
 
         # Verify that it is 2D (for now)
         if not hasattr(kp, 'nx') or not hasattr(kp, 'nz'):
@@ -49,6 +108,9 @@ class CoordinateManager:
         self.D_half = kp.x_0
         self.D = 2 * self.D_half
         self.x_center = 0.0  # Assuming center at x=0
+        self.z_ref = float(self.D if z_ref is None else z_ref)
+        if self.z_ref <= 0.0:
+            raise ValueError("z_ref must be > 0")
 
         # ====================================================================
         # STEP 2: Scale coordinates by D
@@ -66,16 +128,61 @@ class CoordinateManager:
         self._coords_grid_scaled = None  # (n_elem, nz, nx, 3)
         self._coords_flat_scaled = None  # (n_elem * nz * nx, 3)
 
-        # Features [|x-x_elem|, z, D/2-|x|]
-        self._features_grid_mm = None  # (n_elem, nz, nx, 3)
-        self._features_flat_mm = None  # (n_elem * nz * nx, 3)
-        self._features_grid_scaled = None  # (n_elem, nz, nx, 3)
-        self._features_flat_scaled = None  # (n_elem * nz * nx, 3)
+        # Features depend on the selected physical feature set.
+        self._features_grid_mm = None  # (n_elem, nz, nx, n_physical_features)
+        self._features_flat_mm = None  # (n_elem * nz * nx, n_physical_features)
+        self._features_grid_scaled = None  # (n_elem, nz, nx, n_physical_features)
+        self._features_flat_scaled = None  # (n_elem * nz * nx, n_physical_features)
 
         print(f"📐 [CoordinateManager] Initialized:")
         print(f"   Grid shape: (nz={self.nz}, nx={self.nx})")
         print(f"   Elements: {self.n_elem}")
         print(f"   Aperture D: {self.D:.2f} mm")
+        print(f"   Physical feature set: {self.physical_feature_set}")
+        print(f"   Physical feature components: {self.physical_feature_components}")
+
+    def _resolve_physical_feature_components(self, physical_feature_set, physical_feature_components):
+        """Resolve selected physical feature components from explicit list or legacy preset."""
+        if physical_feature_components is not None:
+            if not isinstance(physical_feature_components, (list, tuple)):
+                raise ValueError(
+                    "physical_feature_components must be a list/tuple of strings "
+                    f"from {ALLOWED_PHYSICAL_FEATURE_COMPONENTS}"
+                )
+
+            resolved = tuple(str(token).strip() for token in physical_feature_components)
+            if len(resolved) < 1:
+                raise ValueError(
+                    "physical_feature_components must contain at least 1 token"
+                )
+            if len(set(resolved)) != len(resolved):
+                raise ValueError("physical_feature_components cannot contain duplicate tokens")
+
+            invalid_tokens = [
+                token for token in resolved if token not in ALLOWED_PHYSICAL_FEATURE_COMPONENTS
+            ]
+            if invalid_tokens:
+                raise ValueError(
+                    "Invalid physical feature tokens: "
+                    f"{invalid_tokens}. Allowed tokens: {ALLOWED_PHYSICAL_FEATURE_COMPONENTS}"
+                )
+
+            self.physical_feature_set = "components_list"
+            return resolved
+
+        if physical_feature_set not in LEGACY_FEATURE_SET_TO_COMPONENTS:
+            raise ValueError(
+                "physical_feature_set must be one of "
+                f"{tuple(LEGACY_FEATURE_SET_TO_COMPONENTS.keys())} "
+                "when physical_feature_components is not provided"
+            )
+
+        warnings.warn(
+            "physical_feature_set is deprecated. Use physical_feature_components in YAML.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return LEGACY_FEATURE_SET_TO_COMPONENTS[physical_feature_set]
 
     # ========================================================================
     # PRIVATE METHODS: Base coordinate creation
@@ -100,54 +207,108 @@ class CoordinateManager:
     # PRIVATE METHODS: Physical feature calculation
     # ========================================================================
 
-    def _compute_physical_features_mm(self, X_mm, Z_mm, x_elem_mm):
+    def _stack_physical_features(self, feature_tensors):
         """
-        Computes physical features IN MILLIMETERS.
+        Stacks the selected physical features along the last axis.
 
         Args:
-            X_mm: grid of x coordinates (nz, nx) in mm
-            Z_mm: grid of z coordinates (nz, nx) in mm
-            x_elem_mm: x coordinate of the element in mm (scalar)
+            feature_tensors: Sequence of feature tensors with shape (nz, nx).
 
         Returns:
-            tuple: (dist_to_elem, depth, dist_to_edge) in mm
+            tensor: Physical features with shape (nz, nx, n_physical_features).
         """
-        # Feature 1: |x - x_elem| in mm
-        dist_to_elem = tf.abs(X_mm - x_elem_mm)
+        return tf.stack(feature_tensors, axis=-1)
 
-        # Feature 2: z in mm
-        depth = Z_mm
+    def _component_tensor_mm(self, token, x_grid, z_grid, x_elem_grid):
+        """Return one physical feature tensor in millimeters for the selected token."""
+        if token == "z":
+            return tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        if token == "x":
+            return tf.broadcast_to(x_grid, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x":
+            return tf.broadcast_to(tf.abs(x_grid - self.x_center), [self.n_elem, self.nz, self.nx])
+        if token == "xrel":
+            return tf.broadcast_to(x_grid - x_elem_grid, [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel":
+            return tf.broadcast_to(tf.abs(x_grid - x_elem_grid), [self.n_elem, self.nz, self.nx])
+        if token == "xrel_over_z":
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(
+                (x_grid - x_elem_grid) / z_safe,
+                [self.n_elem, self.nz, self.nx],
+            )
+        if token == "x_over_z":
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(x_grid / z_safe, [self.n_elem, self.nz, self.nx])
+        if token == "z_norm":
+            return tf.broadcast_to(
+                z_grid / tf.cast(self.z_ref, tf.float32),
+                [self.n_elem, self.nz, self.nx],
+            )
+        if token == "dist_to_edge":
+            return tf.broadcast_to(self.D_half - tf.abs(x_grid - self.x_center), [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel_over_z":
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid - x_elem_grid) / z_safe, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x_over_z":
+            # Assumes x_center = 0 (symmetric array), so |x - x_center| = |x|.
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid) / z_safe, [self.n_elem, self.nz, self.nx])
+        if token == "xrel_x_over_z2":
+            z_safe = tf.maximum(z_grid, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(
+                (x_grid - x_elem_grid) * x_grid / (z_safe * z_safe),
+                [self.n_elem, self.nz, self.nx],
+            )
+        raise ValueError(f"Unsupported physical feature token: {token}")
 
-        # Feature 3: D/2 - |x - x_center| in mm
-        x_from_center = tf.abs(X_mm - self.x_center)
-        dist_to_edge = self.D_half - x_from_center
-
-        return dist_to_elem, depth, dist_to_edge
-
-    def _compute_physical_features_scaled(self, X_mm, Z_scaled, x_elem_mm):
-        """
-        Computes physical features SCALED by D.
-
-        Args:
-            X_mm: grid of x coordinates (nz, nx) in mm
-            Z_scaled: grid of z coordinates (nz, nx) scaled by D
-            x_elem_mm: x coordinate of the element in mm (scalar)
-
-        Returns:
-            tuple: (dist_to_elem_scaled, depth_scaled, dist_to_edge_scaled)
-        """
-        # Feature 1: |x - x_elem| / D
-        dist_to_elem = tf.abs(X_mm - x_elem_mm)
-        dist_to_elem_scaled = dist_to_elem / self.D
-
-        # Feature 2: z / D (already scaled)
-        depth_scaled = Z_scaled
-
-        # Feature 3: (D/2 - |x - x_center|) / D = 0.5 - |x - x_center| / D
-        x_from_center = tf.abs(X_mm - self.x_center)
-        dist_to_edge = self.D_half - x_from_center
-        dist_to_edge_scaled = dist_to_edge / self.D
-        return dist_to_elem_scaled, depth_scaled, dist_to_edge_scaled
+    def _component_tensor_scaled(self, token, x_grid_mm, z_grid_scaled, x_elem_grid_mm):
+        """Return one D-scaled physical feature tensor for the selected token."""
+        if token == "z":
+            return tf.broadcast_to(z_grid_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "x":
+            return tf.broadcast_to(x_grid_mm / self.D, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x":
+            abs_x_scaled = tf.abs(x_grid_mm - self.x_center) / self.D
+            return tf.broadcast_to(abs_x_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "xrel":
+            xrel_scaled = (x_grid_mm - x_elem_grid_mm) / self.D
+            return tf.broadcast_to(xrel_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel":
+            abs_xrel_scaled = tf.abs(x_grid_mm - x_elem_grid_mm) / self.D
+            return tf.broadcast_to(abs_xrel_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "xrel_over_z":
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(
+                (x_grid_mm - x_elem_grid_mm) / z_mm,
+                [self.n_elem, self.nz, self.nx],
+            )
+        if token == "x_over_z":
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(x_grid_mm / z_mm, [self.n_elem, self.nz, self.nx])
+        if token == "z_norm":
+            z_mm = z_grid_scaled * self.D
+            return tf.broadcast_to(
+                z_mm / tf.cast(self.z_ref, tf.float32),
+                [self.n_elem, self.nz, self.nx],
+            )
+        if token == "dist_to_edge":
+            dist_to_edge_scaled = (self.D_half - tf.abs(x_grid_mm - self.x_center)) / self.D
+            return tf.broadcast_to(dist_to_edge_scaled, [self.n_elem, self.nz, self.nx])
+        if token == "abs_xrel_over_z":
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid_mm - x_elem_grid_mm) / z_mm, [self.n_elem, self.nz, self.nx])
+        if token == "abs_x_over_z":
+            # Assumes x_center = 0 (symmetric array), so |x - x_center| = |x|.
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(tf.abs(x_grid_mm) / z_mm, [self.n_elem, self.nz, self.nx])
+        if token == "xrel_x_over_z2":
+            z_mm = tf.maximum(z_grid_scaled * self.D, tf.cast(1e-8, tf.float32))
+            return tf.broadcast_to(
+                (x_grid_mm - x_elem_grid_mm) * x_grid_mm / (z_mm * z_mm),
+                [self.n_elem, self.nz, self.nx],
+            )
+        raise ValueError(f"Unsupported physical feature token: {token}")
 
     # ========================================================================
     # PRIVATE METHODS: Grid construction
@@ -159,15 +320,15 @@ class CoordinateManager:
         z_mm_tf = tf.constant(self.z_coords_mm, dtype=tf.float32)
         x_elem_mm_tf = tf.constant(self.x_elem_coords_mm, dtype=tf.float32)
 
-        Z_mm, X_mm = tf.meshgrid(z_mm_tf, x_mm_tf, indexing='ij')
+        x_grid = tf.reshape(x_mm_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_mm_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        coords_list = []
-        for x_elem_mm in x_elem_mm_tf:
-            x_elem_grid = tf.fill(X_mm.shape, x_elem_mm)
-            coords = tf.stack([X_mm, Z_mm, x_elem_grid], axis=-1)  # (nz, nx, 3)
-            coords_list.append(coords)
+        x_grid = tf.broadcast_to(x_grid, [self.n_elem, self.nz, self.nx])
+        z_grid = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        x_elem_grid = tf.broadcast_to(x_elem_grid, [self.n_elem, self.nz, self.nx])
 
-        self._coords_grid_mm = tf.stack(coords_list, axis=0)  # (n_elem, nz, nx, 3)
+        self._coords_grid_mm = tf.stack([x_grid, z_grid, x_elem_grid], axis=-1)
         self._coords_flat_mm = tf.reshape(self._coords_grid_mm, [-1, 3])
 
     def _build_coordinates_grid_scaled(self):
@@ -176,15 +337,15 @@ class CoordinateManager:
         z_scaled_tf = tf.constant(self.z_coords_scaled, dtype=tf.float32)
         x_elem_scaled_tf = tf.constant(self.x_elem_coords_scaled, dtype=tf.float32)
 
-        Z_scaled, X_scaled = tf.meshgrid(z_scaled_tf, x_scaled_tf, indexing='ij')
+        x_grid = tf.reshape(x_scaled_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_scaled_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_scaled_tf, [-1, 1, 1])
 
-        coords_list = []
-        for x_elem_scaled in x_elem_scaled_tf:
-            x_elem_grid = tf.fill(X_scaled.shape, x_elem_scaled)
-            coords = tf.stack([X_scaled, Z_scaled, x_elem_grid], axis=-1)  # (nz, nx, 3)
-            coords_list.append(coords)
+        x_grid = tf.broadcast_to(x_grid, [self.n_elem, self.nz, self.nx])
+        z_grid = tf.broadcast_to(z_grid, [self.n_elem, self.nz, self.nx])
+        x_elem_grid = tf.broadcast_to(x_elem_grid, [self.n_elem, self.nz, self.nx])
 
-        self._coords_grid_scaled = tf.stack(coords_list, axis=0)  # (n_elem, nz, nx, 3)
+        self._coords_grid_scaled = tf.stack([x_grid, z_grid, x_elem_grid], axis=-1)
         self._coords_flat_scaled = tf.reshape(self._coords_grid_scaled, [-1, 3])
 
     def _build_features_grid_mm(self):
@@ -193,16 +354,17 @@ class CoordinateManager:
         z_mm_tf = tf.constant(self.z_coords_mm, dtype=tf.float32)
         x_elem_mm_tf = tf.constant(self.x_elem_coords_mm, dtype=tf.float32)
 
-        Z_mm, X_mm = tf.meshgrid(z_mm_tf, x_mm_tf, indexing='ij')
+        x_grid = tf.reshape(x_mm_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_mm_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        features_list = []
-        for x_elem_mm in x_elem_mm_tf:
-            feat1, feat2, feat3 = self._compute_physical_features_mm(X_mm, Z_mm, x_elem_mm)
-            features = tf.stack([feat1, feat2, feat3], axis=-1)  # (nz, nx, 3)
-            features_list.append(features)
+        feature_tensors = tuple(
+            self._component_tensor_mm(token, x_grid, z_grid, x_elem_grid)
+            for token in self.physical_feature_components
+        )
 
-        self._features_grid_mm = tf.stack(features_list, axis=0)  # (n_elem, nz, nx, 3)
-        self._features_flat_mm = tf.reshape(self._features_grid_mm, [-1, 3])
+        self._features_grid_mm = self._stack_physical_features(feature_tensors)
+        self._features_flat_mm = tf.reshape(self._features_grid_mm, [-1, self.n_physical_features])
 
     def _build_features_grid_scaled(self):
         """Builds grid of physical features SCALED by D."""
@@ -210,16 +372,20 @@ class CoordinateManager:
         z_scaled_tf = tf.constant(self.z_coords_scaled, dtype=tf.float32)
         x_elem_mm_tf = tf.constant(self.x_elem_coords_mm, dtype=tf.float32)
 
-        Z_scaled, X_mm = tf.meshgrid(z_scaled_tf, x_mm_tf, indexing='ij')
+        x_grid = tf.reshape(x_mm_tf, [1, 1, -1])
+        z_grid = tf.reshape(z_scaled_tf, [1, -1, 1])
+        x_elem_grid = tf.reshape(x_elem_mm_tf, [-1, 1, 1])
 
-        features_list = []
-        for x_elem_mm in x_elem_mm_tf:
-            feat1, feat2, feat3 = self._compute_physical_features_scaled(X_mm, Z_scaled, x_elem_mm)
-            features = tf.stack([feat1, feat2, feat3], axis=-1)  # (nz, nx, 3)
-            features_list.append(features)
+        feature_tensors = tuple(
+            self._component_tensor_scaled(token, x_grid, z_grid, x_elem_grid)
+            for token in self.physical_feature_components
+        )
 
-        self._features_grid_scaled = tf.stack(features_list, axis=0)  # (n_elem, nz, nx, 3)
-        self._features_flat_scaled = tf.reshape(self._features_grid_scaled, [-1, 3])
+        self._features_grid_scaled = self._stack_physical_features(feature_tensors)
+        self._features_flat_scaled = tf.reshape(
+            self._features_grid_scaled,
+            [-1, self.n_physical_features]
+        )
 
     # ========================================================================
     # PUBLIC METHODS: Get 1D coordinates
@@ -300,13 +466,13 @@ class CoordinateManager:
 
     def get_features_grid(self, scaled=False):
         """
-        Returns features [|x-x_elem|, z, D/2-|x|] in grid format.
+        Returns the selected physical features in grid format.
 
         Args:
-            scaled: False for mm, True for scaled by D
+            scaled: False for mm, True for scaled by D.
 
         Returns:
-            tensor: (n_elem, nz, nx, 3)
+            tensor: (n_elem, nz, nx, n_physical_features)
         """
         if scaled:
             if self._features_grid_scaled is None:
@@ -319,14 +485,14 @@ class CoordinateManager:
 
     def get_features_flat(self, scaled=False):
         """
-        Returns features [|x-x_elem|, z, D/2-|x|] in flat format.
+        Returns the selected physical features in flat format.
         This is the format to pass to ApodizationINR.
 
         Args:
-            scaled: False for mm, True for scaled by D
+            scaled: False for mm, True for scaled by D.
 
         Returns:
-            tensor: (n_elem * nz * nx, 3)
+            tensor: (n_elem * nz * nx, n_physical_features)
         """
         if scaled:
             if self._features_flat_scaled is None:
@@ -346,11 +512,11 @@ class CoordinateManager:
         Returns features for a specific element.
 
         Args:
-            elem_idx: index of the element
-            scaled: False for mm, True for scaled by D
+            elem_idx: Index of the element.
+            scaled: False for mm, True for scaled by D.
 
         Returns:
-            tensor: (nz, nx, 3)
+            tensor: (nz, nx, n_physical_features)
         """
         if elem_idx < 0 or elem_idx >= self.n_elem:
             raise ValueError(f"elem_idx must be between 0 and {self.n_elem - 1}")
@@ -394,4 +560,23 @@ class CoordinateManager:
             'D': self.D,
             'D_half': self.D_half,
             'x_center': self.x_center
+        }
+
+    def get_physical_feature_info(self):
+        """
+        Returns information about the selected physical feature set.
+
+        Returns:
+            dict: {
+                'physical_feature_set': str,
+                'physical_feature_components': tuple[str, ...],
+                'physical_feature_names': tuple[str, ...],
+                'n_physical_features': int
+            }
+        """
+        return {
+            'physical_feature_set': self.physical_feature_set,
+            'physical_feature_components': self.physical_feature_components,
+            'physical_feature_names': self.physical_feature_names,
+            'n_physical_features': self.n_physical_features,
         }

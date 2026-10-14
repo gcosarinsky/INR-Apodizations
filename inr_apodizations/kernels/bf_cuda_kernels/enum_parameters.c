@@ -4,14 +4,14 @@ enum FloatParams {
     PITCH,
     F1,
     F2,
-    BFD,
+    F_NUMBER,
     X_STEP,
     Z_STEP,
     X0_ROI,
     Z0_ROI,
     T_START,
     X_0,
-    FLOAT_PARAMS_COUNT // Número total de parámetros float
+    FLOAT_PARAMS_COUNT // Total number of float parameters
 };
 
 enum IntParams {
@@ -23,5 +23,6 @@ enum IntParams {
     NX,
     NZ,
     N_SAMPLES,
-    INT_PARAMS_COUNT // Número total de parámetros int
+    WAVE_SOURCE_MODE,
+    INT_PARAMS_COUNT // Total number of int parameters
 };
